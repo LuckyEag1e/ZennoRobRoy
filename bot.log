@@ -1,0 +1,228 @@
+
+> uma-club-bot@1.0.0 start
+> node src/index.js
+
+Logged in as Zenno Rob Roy#6572
+Daily club summary scheduled for 14:00 UTC.
+Approved-inactivity expiry sweep scheduled for 00:05 UTC.
+News feed polling umamusume.com every 10 minutes.
+(node:223158) DeprecationWarning: The ready event has been renamed to clientReady to distinguish it from the gateway READY event and will only emit under that name in v15. Please use clientReady instead.
+(Use `node --trace-deprecation ...` to show where the warning was created)
+Received SIGTERM, shutting down.
+
+> uma-club-bot@1.0.0 start
+> node src/index.js
+
+Logged in as Zenno Rob Roy#6572
+Daily club summary scheduled for 14:00 UTC.
+Approved-inactivity expiry sweep scheduled for 00:05 UTC.
+News feed polling umamusume.com every 10 minutes.
+(node:223546) DeprecationWarning: The ready event has been renamed to clientReady to distinguish it from the gateway READY event and will only emit under that name in v15. Please use clientReady instead.
+(Use `node --trace-deprecation ...` to show where the warning was created)
+Received SIGTERM, shutting down.
+
+> uma-club-bot@1.0.0 start
+> node src/index.js
+
+Logged in as Zenno Rob Roy#6572
+Daily club summary scheduled for 14:00 UTC.
+Approved-inactivity expiry sweep scheduled for 00:05 UTC.
+News feed polling umamusume.com every 10 minutes.
+(node:223699) DeprecationWarning: The ready event has been renamed to clientReady to distinguish it from the gateway READY event and will only emit under that name in v15. Please use clientReady instead.
+(Use `node --trace-deprecation ...` to show where the warning was created)
+Received SIGTERM, shutting down.
+
+> uma-club-bot@1.0.0 start
+> node src/index.js
+
+Logged in as Zenno Rob Roy#6572
+Daily club summary scheduled for 14:00 UTC.
+Approved-inactivity expiry sweep scheduled for 00:05 UTC.
+News feed polling umamusume.com every 10 minutes.
+(node:223795) DeprecationWarning: The ready event has been renamed to clientReady to distinguish it from the gateway READY event and will only emit under that name in v15. Please use clientReady instead.
+(Use `node --trace-deprecation ...` to show where the warning was created)
+Received SIGTERM, shutting down.
+
+> uma-club-bot@1.0.0 start
+> node src/index.js
+
+Logged in as Zenno Rob Roy#6572
+Daily club summary scheduled for 14:00 UTC.
+Approved-inactivity expiry sweep scheduled for 00:05 UTC.
+News feed polling umamusume.com every 10 minutes.
+(node:223862) DeprecationWarning: The ready event has been renamed to clientReady to distinguish it from the gateway READY event and will only emit under that name in v15. Please use clientReady instead.
+(Use `node --trace-deprecation ...` to show where the warning was created)
+Received SIGTERM, shutting down.
+
+> uma-club-bot@1.0.0 start
+> node src/index.js
+
+Logged in as Zenno Rob Roy#6572
+Daily club summary scheduled for 14:00 UTC.
+Approved-inactivity expiry sweep scheduled for 00:05 UTC.
+News feed polling umamusume.com every 10 minutes.
+(node:223925) DeprecationWarning: The ready event has been renamed to clientReady to distinguish it from the gateway READY event and will only emit under that name in v15. Please use clientReady instead.
+(Use `node --trace-deprecation ...` to show where the warning was created)
+Posted daily summary for TOKAI TEIO.
+Posted daily summary for Hachimiers.
+News feed: posted 3 announcement(s).
+Posted daily summary for TOKAI TEIO.
+Posted daily summary for Hachimiers.
+News feed: posted 2 announcement(s).
+Posted daily summary for TOKAI TEIO.
+Posted daily summary for Hachimiers.
+News feed: posted 2 announcement(s).
+Posted daily summary for TOKAI TEIO.
+Posted daily summary for Hachimiers.
+News feed: posted 2 announcement(s).
+Posted daily summary for TOKAI TEIO.
+Posted daily summary for Hachimiers.
+News feed: posted 1 announcement(s).
+Posted daily summary for TOKAI TEIO.
+Posted daily summary for Hachimiers.
+News feed: posted 1 announcement(s).
+News feed: posted 1 announcement(s).
+News feed: posted 1 announcement(s).
+Posted daily summary for TOKAI TEIO.
+Posted daily summary for Hachimiers.
+(node:223925) Warning: Supplying "ephemeral" for interaction response options is deprecated. Utilize flags instead.
+News feed: posted 2 announcement(s).
+News feed: posted 1 announcement(s).
+Posted daily summary for TOKAI TEIO.
+Posted daily summary for Hachimiers.
+News feed: posted 6 announcement(s).
+News feed: posted 1 announcement(s).
+News feed: posted 1 announcement(s).
+News feed: posted 1 announcement(s).
+News feed check failed: Error: umamusume.com news API returned 503 Service Temporarily Unavailable
+    at fetchNewsList (/opt/uma-bot/src/newsFeed.js:20:22)
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async checkNews (/opt/uma-bot/src/newsFeed.js:90:19)
+News feed check failed: Error: umamusume.com news API returned 503 Service Temporarily Unavailable
+    at fetchNewsList (/opt/uma-bot/src/newsFeed.js:20:22)
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async checkNews (/opt/uma-bot/src/newsFeed.js:90:19)
+News feed check failed: Error: umamusume.com news API returned 503 Service Temporarily Unavailable
+    at fetchNewsList (/opt/uma-bot/src/newsFeed.js:20:22)
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async checkNews (/opt/uma-bot/src/newsFeed.js:90:19)
+News feed check failed: Error: umamusume.com news API returned 503 Service Temporarily Unavailable
+    at fetchNewsList (/opt/uma-bot/src/newsFeed.js:20:22)
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async checkNews (/opt/uma-bot/src/newsFeed.js:90:19)
+News feed check failed: Error: umamusume.com news API returned 503 Service Temporarily Unavailable
+    at fetchNewsList (/opt/uma-bot/src/newsFeed.js:20:22)
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async checkNews (/opt/uma-bot/src/newsFeed.js:90:19)
+News feed check failed: Error: umamusume.com news API returned 503 Service Temporarily Unavailable
+    at fetchNewsList (/opt/uma-bot/src/newsFeed.js:20:22)
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async checkNews (/opt/uma-bot/src/newsFeed.js:90:19)
+Posted daily summary for TOKAI TEIO.
+Posted daily summary for Hachimiers.
+News feed check failed: Error: umamusume.com news API returned 503 Service Temporarily Unavailable
+    at fetchNewsList (/opt/uma-bot/src/newsFeed.js:20:22)
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async checkNews (/opt/uma-bot/src/newsFeed.js:90:19)
+News feed check failed: Error: umamusume.com news API returned 503 Service Temporarily Unavailable
+    at fetchNewsList (/opt/uma-bot/src/newsFeed.js:20:22)
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async checkNews (/opt/uma-bot/src/newsFeed.js:90:19)
+News feed check failed: Error: umamusume.com news API returned 503 Service Temporarily Unavailable
+    at fetchNewsList (/opt/uma-bot/src/newsFeed.js:20:22)
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async checkNews (/opt/uma-bot/src/newsFeed.js:90:19)
+News feed check failed: Error: umamusume.com news API returned 503 Service Temporarily Unavailable
+    at fetchNewsList (/opt/uma-bot/src/newsFeed.js:20:22)
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async checkNews (/opt/uma-bot/src/newsFeed.js:90:19)
+News feed check failed: Error: umamusume.com news API returned 503 Service Temporarily Unavailable
+    at fetchNewsList (/opt/uma-bot/src/newsFeed.js:20:22)
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async checkNews (/opt/uma-bot/src/newsFeed.js:90:19)
+News feed check failed: Error: umamusume.com news API returned 503 Service Temporarily Unavailable
+    at fetchNewsList (/opt/uma-bot/src/newsFeed.js:20:22)
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async checkNews (/opt/uma-bot/src/newsFeed.js:90:19)
+News feed check failed: Error: umamusume.com news API returned 503 Service Temporarily Unavailable
+    at fetchNewsList (/opt/uma-bot/src/newsFeed.js:20:22)
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async checkNews (/opt/uma-bot/src/newsFeed.js:90:19)
+News feed check failed: Error: umamusume.com news API returned 503 Service Temporarily Unavailable
+    at fetchNewsList (/opt/uma-bot/src/newsFeed.js:20:22)
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async checkNews (/opt/uma-bot/src/newsFeed.js:90:19)
+News feed check failed: Error: umamusume.com news API returned 503 Service Temporarily Unavailable
+    at fetchNewsList (/opt/uma-bot/src/newsFeed.js:20:22)
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async checkNews (/opt/uma-bot/src/newsFeed.js:90:19)
+News feed check failed: Error: umamusume.com news API returned 503 Service Temporarily Unavailable
+    at fetchNewsList (/opt/uma-bot/src/newsFeed.js:20:22)
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async checkNews (/opt/uma-bot/src/newsFeed.js:90:19)
+News feed check failed: Error: umamusume.com news API returned 503 Service Temporarily Unavailable
+    at fetchNewsList (/opt/uma-bot/src/newsFeed.js:20:22)
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async checkNews (/opt/uma-bot/src/newsFeed.js:90:19)
+News feed check failed: Error: umamusume.com news API returned 503 Service Temporarily Unavailable
+    at fetchNewsList (/opt/uma-bot/src/newsFeed.js:20:22)
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async checkNews (/opt/uma-bot/src/newsFeed.js:90:19)
+News feed check failed: Error: umamusume.com news API returned 503 Service Temporarily Unavailable
+    at fetchNewsList (/opt/uma-bot/src/newsFeed.js:20:22)
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async checkNews (/opt/uma-bot/src/newsFeed.js:90:19)
+News feed check failed: Error: umamusume.com news API returned 503 Service Temporarily Unavailable
+    at fetchNewsList (/opt/uma-bot/src/newsFeed.js:20:22)
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async checkNews (/opt/uma-bot/src/newsFeed.js:90:19)
+News feed check failed: Error: umamusume.com news API returned 503 Service Temporarily Unavailable
+    at fetchNewsList (/opt/uma-bot/src/newsFeed.js:20:22)
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async checkNews (/opt/uma-bot/src/newsFeed.js:90:19)
+News feed check failed: Error: umamusume.com news API returned 503 Service Temporarily Unavailable
+    at fetchNewsList (/opt/uma-bot/src/newsFeed.js:20:22)
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async checkNews (/opt/uma-bot/src/newsFeed.js:90:19)
+News feed check failed: Error: umamusume.com news API returned 503 Service Temporarily Unavailable
+    at fetchNewsList (/opt/uma-bot/src/newsFeed.js:20:22)
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async checkNews (/opt/uma-bot/src/newsFeed.js:90:19)
+News feed check failed: Error: umamusume.com news API returned 503 Service Temporarily Unavailable
+    at fetchNewsList (/opt/uma-bot/src/newsFeed.js:20:22)
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async checkNews (/opt/uma-bot/src/newsFeed.js:90:19)
+News feed check failed: Error: umamusume.com news API returned 503 Service Temporarily Unavailable
+    at fetchNewsList (/opt/uma-bot/src/newsFeed.js:20:22)
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async checkNews (/opt/uma-bot/src/newsFeed.js:90:19)
+News feed check failed: Error: umamusume.com news API returned 503 Service Temporarily Unavailable
+    at fetchNewsList (/opt/uma-bot/src/newsFeed.js:20:22)
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async checkNews (/opt/uma-bot/src/newsFeed.js:90:19)
+News feed check failed: Error: umamusume.com news API returned 503 Service Temporarily Unavailable
+    at fetchNewsList (/opt/uma-bot/src/newsFeed.js:20:22)
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async checkNews (/opt/uma-bot/src/newsFeed.js:90:19)
+News feed check failed: Error: umamusume.com news API returned 503 Service Temporarily Unavailable
+    at fetchNewsList (/opt/uma-bot/src/newsFeed.js:20:22)
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async checkNews (/opt/uma-bot/src/newsFeed.js:90:19)
+News feed check failed: Error: umamusume.com news API returned 503 Service Temporarily Unavailable
+    at fetchNewsList (/opt/uma-bot/src/newsFeed.js:20:22)
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async checkNews (/opt/uma-bot/src/newsFeed.js:90:19)
+News feed check failed: Error: umamusume.com news API returned 503 Service Temporarily Unavailable
+    at fetchNewsList (/opt/uma-bot/src/newsFeed.js:20:22)
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async checkNews (/opt/uma-bot/src/newsFeed.js:90:19)
+News feed check failed: Error: umamusume.com news API returned 503 Service Temporarily Unavailable
+    at fetchNewsList (/opt/uma-bot/src/newsFeed.js:20:22)
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async checkNews (/opt/uma-bot/src/newsFeed.js:90:19)
+News feed: posted 1 announcement(s).
+Posted daily summary for TOKAI TEIO.
+Posted daily summary for Hachimiers.
+News feed: posted 1 announcement(s).
+News feed: posted 1 announcement(s).
+News feed: posted 1 announcement(s).

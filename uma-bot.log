@@ -1,0 +1,66 @@
+
+> uma-club-bot@1.0.0 start
+> node src/index.js
+
+Logged in as Zenno Rob Roy#6572
+Daily club summary scheduled for 14:00 UTC.
+Approved-inactivity expiry sweep scheduled for 00:05 UTC.
+(node:9308) DeprecationWarning: The ready event has been renamed to clientReady to distinguish it from the gateway READY event and will only emit under that name in v15. Please use clientReady instead.
+(Use `node --trace-deprecation ...` to show where the warning was created)
+Posted daily club summary.
+Posted daily club summary.
+Posted daily club summary.
+Posted daily club summary.
+Posted daily club summary.
+Posted daily club summary.
+Posted daily club summary.
+Received SIGTERM, shutting down.
+
+> uma-club-bot@1.0.0 start
+> node src/index.js
+
+Logged in as Zenno Rob Roy#6572
+Daily club summary scheduled for 14:00 UTC.
+Approved-inactivity expiry sweep scheduled for 00:05 UTC.
+News feed polling umamusume.com every 10 minutes.
+(node:80137) DeprecationWarning: The ready event has been renamed to clientReady to distinguish it from the gateway READY event and will only emit under that name in v15. Please use clientReady instead.
+(Use `node --trace-deprecation ...` to show where the warning was created)
+News feed: seeded 20 existing announcements, nothing posted.
+Posted daily club summary.
+News feed: posted 1 announcement(s).
+Received SIGTERM, shutting down.
+
+> uma-club-bot@1.0.0 start
+> node src/index.js
+
+Logged in as Zenno Rob Roy#6572
+Daily club summary scheduled for 14:00 UTC.
+Approved-inactivity expiry sweep scheduled for 00:05 UTC.
+News feed polling umamusume.com every 10 minutes.
+(node:100681) DeprecationWarning: The ready event has been renamed to clientReady to distinguish it from the gateway READY event and will only emit under that name in v15. Please use clientReady instead.
+(Use `node --trace-deprecation ...` to show where the warning was created)
+Received SIGTERM, shutting down.
+
+> uma-club-bot@1.0.0 start
+> node src/index.js
+
+Logged in as Zenno Rob Roy#6572
+Daily club summary scheduled for 14:00 UTC.
+Approved-inactivity expiry sweep scheduled for 00:05 UTC.
+News feed polling umamusume.com every 10 minutes.
+(node:100872) DeprecationWarning: The ready event has been renamed to clientReady to distinguish it from the gateway READY event and will only emit under that name in v15. Please use clientReady instead.
+(Use `node --trace-deprecation ...` to show where the warning was created)
+Posted daily club summary.
+News feed: posted 2 announcement(s).
+Posted daily club summary.
+News feed: posted 4 announcement(s).
+Posted daily club summary.
+Posted daily club summary.
+Posted daily club summary.
+News feed: posted 1 announcement(s).
+Posted daily club summary.
+(node:100872) Warning: Supplying "ephemeral" for interaction response options is deprecated. Utilize flags instead.
+News feed: posted 1 announcement(s).
+Posted daily club summary.
+News feed: posted 1 announcement(s).
+Received SIGTERM, shutting down.
