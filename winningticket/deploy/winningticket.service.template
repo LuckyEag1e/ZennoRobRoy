@@ -1,0 +1,17 @@
+[Unit]
+Description=WinningTicket (Discord bracket prediction bot)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=__DEPLOY_USER__
+WorkingDirectory=__DEPLOY_DIR__
+ExecStart=__DEPLOY_DIR__/.venv/bin/python __DEPLOY_DIR__/bot.py
+Restart=on-failure
+RestartSec=5
+# Keep resource usage bounded -- adjust/remove if the host isn't memory-constrained.
+MemoryMax=200M
+
+[Install]
+WantedBy=multi-user.target

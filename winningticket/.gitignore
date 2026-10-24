@@ -1,0 +1,9 @@
+.venv/
+__pycache__/
+*.pyc
+.env
+data/
+deploy.local.sh
+# Real tournament brackets hold real people's names; only the example is committed.
+*.csv
+!example_bracket.csv

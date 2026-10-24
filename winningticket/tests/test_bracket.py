@@ -1,0 +1,204 @@
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+import pytest
+
+from bracket import (
+    BracketError,
+    Match,
+    build_feeder_index,
+    bye_team_id,
+    generate_tree,
+    is_bye,
+    resolvable_matches,
+    resolve_all_slots,
+    resolve_slot,
+)
+
+
+def test_generate_tree_4_teams():
+    specs = generate_tree([(1, 2), (3, 4)])
+    round1 = [s for s in specs if s.round == 1]
+    round2 = [s for s in specs if s.round == 2]
+    assert len(round1) == 2
+    assert len(round2) == 1
+    assert round1[0].feeds_into_round == 2
+    assert round1[0].feeds_into_slot_index == 0
+    assert round1[0].feeds_into_side == "A"
+    assert round1[1].feeds_into_side == "B"
+    assert round2[0].feeds_into_round is None
+
+
+def test_generate_tree_16_teams():
+    team_pairs = [(i, i + 1) for i in range(0, 16, 2)]
+    specs = generate_tree(team_pairs)
+    assert len(specs) == 15  # N-1 matches for N teams
+    by_round = {}
+    for s in specs:
+        by_round.setdefault(s.round, []).append(s)
+    assert len(by_round[1]) == 8
+    assert len(by_round[2]) == 4
+    assert len(by_round[3]) == 2
+    assert len(by_round[4]) == 1
+
+    for r in (1, 2, 3):
+        slots = sorted(s.slot_index for s in by_round[r])
+        assert slots == list(range(len(by_round[r])))
+        for s in by_round[r]:
+            assert s.feeds_into_round == r + 1
+    assert by_round[4][0].feeds_into_round is None
+
+    # every round r+1 match has exactly one A feeder and one B feeder
+    feeders_by_target = {}
+    for s in specs:
+        if s.feeds_into_round is None:
+            continue
+        key = (s.feeds_into_round, s.feeds_into_slot_index)
+        feeders_by_target.setdefault(key, {})[s.feeds_into_side] = s
+    for r in (2, 3, 4):
+        for slot in range(len(by_round[r])):
+            sides = feeders_by_target[(r, slot)]
+            assert set(sides.keys()) == {"A", "B"}
+
+
+@pytest.mark.parametrize("n", [0, 3, 5, 17])
+def test_generate_tree_rejects_non_power_of_two(n):
+    with pytest.raises(BracketError):
+        generate_tree([(i, i + 1) for i in range(n)])
+
+
+def test_generate_tree_1_match():
+    specs = generate_tree([(1, 2)])
+    assert len(specs) == 1
+    assert specs[0].feeds_into_round is None
+
+
+def _build_4_team_fixture():
+    # round 1: match 100 (team 1 vs 2), match 101 (team 3 vs 4)
+    # round 2: match 200 (final)
+    m100 = Match(id=100, round=1, slot_index=0, team_a_id=1, team_b_id=2,
+                 feeds_into_match_id=200, feeds_into_side="A")
+    m101 = Match(id=101, round=1, slot_index=1, team_a_id=3, team_b_id=4,
+                 feeds_into_match_id=200, feeds_into_side="B")
+    m200 = Match(id=200, round=2, slot_index=0)
+    matches_by_id = {100: m100, 101: m101, 200: m200}
+    feeders = build_feeder_index(list(matches_by_id.values()))
+    return matches_by_id, feeders
+
+
+def test_resolve_slot_round1_returns_fixed_teams():
+    matches_by_id, feeders = _build_4_team_fixture()
+    result = resolve_slot(matches_by_id[100], matches_by_id, lambda mid: None, feeders)
+    assert result == (1, 2)
+
+
+def test_resolve_slot_round2_unresolved_when_feeder_incomplete():
+    matches_by_id, feeders = _build_4_team_fixture()
+    winners = {100: 1}  # only match 100 decided
+    result = resolve_slot(matches_by_id[200], matches_by_id, lambda mid: winners.get(mid), feeders)
+    assert result == (1, None)
+
+
+def test_resolve_slot_round2_resolved_when_both_feeders_decided():
+    matches_by_id, feeders = _build_4_team_fixture()
+    winners = {100: 1, 101: 3}
+    result = resolve_slot(matches_by_id[200], matches_by_id, lambda mid: winners.get(mid), feeders)
+    assert result == (1, 3)
+
+
+def test_resolve_all_slots_full_bracket_no_results():
+    matches_by_id, feeders = _build_4_team_fixture()
+    slots = resolve_all_slots(matches_by_id, lambda mid: None, feeders)
+    assert slots[200] == (None, None)
+
+
+def test_resolvable_matches_only_returns_matches_with_both_slots_known_and_no_result():
+    matches_by_id, feeders = _build_4_team_fixture()
+    winners = {}
+    existing_results = set()
+
+    resolvable = resolvable_matches(matches_by_id, feeders, lambda mid: winners.get(mid), existing_results)
+    assert {m.id for m in resolvable} == {100, 101}
+
+    winners[100] = 1
+    existing_results.add(100)
+    resolvable = resolvable_matches(matches_by_id, feeders, lambda mid: winners.get(mid), existing_results)
+    assert {m.id for m in resolvable} == {101}  # final still missing feeder B
+
+    winners[101] = 3
+    existing_results.add(101)
+    resolvable = resolvable_matches(matches_by_id, feeders, lambda mid: winners.get(mid), existing_results)
+    assert {m.id for m in resolvable} == {200}
+
+
+def test_user_upset_round1_changes_round2_options():
+    matches_by_id, feeders = _build_4_team_fixture()
+    # user predicts team 2 (upset) beats team 1, and team 3 beats team 4
+    user_picks = {100: 2, 101: 3}
+    team_a, team_b = resolve_slot(matches_by_id[200], matches_by_id,
+                                   lambda mid: user_picks.get(mid), feeders)
+    assert (team_a, team_b) == (2, 3)
+
+
+def test_user_predictions_independent_of_real_results():
+    matches_by_id, feeders = _build_4_team_fixture()
+    real_winners = {100: 1, 101: 3}  # no upset in reality
+    user_picks = {100: 2, 101: 3}  # user predicted the upset
+
+    real_slots = resolve_slot(matches_by_id[200], matches_by_id,
+                               lambda mid: real_winners.get(mid), feeders)
+    predicted_slots = resolve_slot(matches_by_id[200], matches_by_id,
+                                    lambda mid: user_picks.get(mid), feeders)
+
+    assert real_slots == (1, 3)
+    assert predicted_slots == (2, 3)
+
+
+def _build_4_team_fixture_with_bye():
+    # round 1: match 100 (team 1 vs team 2, real match), match 101 (team 3, bye -- no opponent)
+    # round 2: match 200 (final)
+    m100 = Match(id=100, round=1, slot_index=0, team_a_id=1, team_b_id=2,
+                 feeds_into_match_id=200, feeds_into_side="A")
+    m101 = Match(id=101, round=1, slot_index=1, team_a_id=3, team_b_id=None,
+                 feeds_into_match_id=200, feeds_into_side="B")
+    m200 = Match(id=200, round=2, slot_index=0)
+    matches_by_id = {100: m100, 101: m101, 200: m200}
+    feeders = build_feeder_index(list(matches_by_id.values()))
+    return matches_by_id, feeders
+
+
+def test_is_bye_true_for_round1_single_team():
+    matches_by_id, _ = _build_4_team_fixture_with_bye()
+    assert is_bye(matches_by_id[101]) is True
+    assert bye_team_id(matches_by_id[101]) == 3
+
+
+def test_is_bye_false_for_round1_both_teams():
+    matches_by_id, _ = _build_4_team_fixture_with_bye()
+    assert is_bye(matches_by_id[100]) is False
+    assert bye_team_id(matches_by_id[100]) is None
+
+
+def test_is_bye_false_for_later_round_even_with_one_slot_unknown():
+    matches_by_id, _ = _build_4_team_fixture_with_bye()
+    # round 2 match naturally starts with both slots None -- that's "undecided", not a bye
+    assert is_bye(matches_by_id[200]) is False
+
+
+def test_resolve_slot_bye_feeder_auto_advances_without_a_recorded_result():
+    matches_by_id, feeders = _build_4_team_fixture_with_bye()
+    # no match_results/predictions recorded for match 101 at all
+    winners = {100: 1}
+    team_a, team_b = resolve_slot(matches_by_id[200], matches_by_id, lambda mid: winners.get(mid), feeders)
+    assert (team_a, team_b) == (1, 3)  # team 3 auto-advanced from its bye
+
+
+def test_resolvable_matches_excludes_bye_matches():
+    matches_by_id, feeders = _build_4_team_fixture_with_bye()
+    winners = {100: 1}
+    resolvable = resolvable_matches(matches_by_id, feeders, lambda mid: winners.get(mid), {100})
+    # match 101 is a bye (never needs a recorded result); final (200) is now resolvable
+    # since team 3 auto-advanced from its bye and team 1 won match 100
+    assert {m.id for m in resolvable} == {200}
