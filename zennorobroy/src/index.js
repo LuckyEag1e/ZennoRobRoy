@@ -9,6 +9,7 @@ const { archiveSnapshot } = require('./archive');
 const {
   getQuota,
   getGoal,
+  getSavedClubKeys,
   getGuildIdsWithInactivityApprovals,
   getAllInactivityApprovals,
   clearInactivityApproval,
@@ -16,6 +17,25 @@ const {
 const { removeApprovedInactivityRole } = require('./discord/inactivityRole');
 const { checkNews } = require('./newsFeed');
 const { CLUBS } = require('./clubs');
+
+// Settings, history and portraits live in zennorobroy/data and zennorobroy/assets, and git
+// doesn't track either. A copy at the root of this repo means the bot's files were never
+// moved into this folder, and starting anyway would quietly run with empty settings.
+const repoRoot = path.join(__dirname, '..', '..');
+for (const folder of ['data', 'assets']) {
+  const leftover = path.join(repoRoot, folder);
+  if (fs.existsSync(path.join(repoRoot, '.git')) && fs.existsSync(leftover)) {
+    throw new Error(`Found ${leftover}. Move it into zennorobroy/ (see "Upgrading" in README.md) before starting the bot.`);
+  }
+}
+
+// A saved quota or goal under a key no club uses usually means CLUB_KEY or CLUB_KEY_2 in .env
+// has a typo, which would leave that club running without its settings.
+for (const key of getSavedClubKeys()) {
+  if (!CLUBS.some((c) => c.key === key)) {
+    console.warn(`data/config.json has a quota or goal saved for club key "${key}", but no club in .env uses it. Check CLUB_KEY and CLUB_KEY_2.`);
+  }
+}
 
 const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 client.commands = new Collection();

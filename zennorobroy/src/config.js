@@ -46,6 +46,18 @@ function setGoal(guildId, clubKey, amount) {
   save(config);
 }
 
+// Every club key that has a saved quota or goal in any guild.
+function getSavedClubKeys() {
+  const config = load();
+  const keys = new Set();
+  for (const byGuild of [config.clubQuota, config.clubGoal]) {
+    for (const byClub of Object.values(byGuild || {})) {
+      Object.keys(byClub).forEach((key) => keys.add(key));
+    }
+  }
+  return keys;
+}
+
 function isAuthorized(guildId, userId) {
   const config = load();
   return (config.authorized?.[guildId] || []).includes(userId);
@@ -154,6 +166,7 @@ module.exports = {
   setQuota,
   getGoal,
   setGoal,
+  getSavedClubKeys,
   isAuthorized,
   authorize,
   getLinkedTrainer,

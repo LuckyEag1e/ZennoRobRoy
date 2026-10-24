@@ -46,9 +46,11 @@ Discord bot that reports Umamusume club (circle) stats from the Chrono Genesis A
 Club names and keys used to be hardcoded. They now come from `.env`, and the bot moved from
 the repo root into `zennorobroy/`. On the machine that runs it:
 
-1. Stop the bot. `git pull` moves tracked files but leaves `.env`, `data/` and
-   `node_modules/` at the repo root, so move them into `zennorobroy/` (or run
-   `npm install` there).
+1. Stop the bot. `git pull` moves tracked files but leaves untracked ones at the repo
+   root. Move `.env`, `data/` and `assets/` into `zennorobroy/`, and either move
+   `node_modules/` too or run `npm install` there. `git status --ignored` lists anything
+   else left behind. The bot refuses to start while `data/` or `assets/` is still at the
+   root.
 2. Add `CLUB_KEY`/`CLUB_NAME`, and `CLUB_KEY_2`/`CLUB_NAME_2` for a second club, to
    `zennorobroy/.env`. Each key must be the one already under your guild ID in the
    `clubQuota` and `clubGoal` sections of `data/config.json`, or that club's quota and goal
