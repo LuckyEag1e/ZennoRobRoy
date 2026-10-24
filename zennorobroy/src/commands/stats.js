@@ -3,7 +3,7 @@ const { fetchClubProfile } = require('../api/chronoApi');
 const { buildMemberDetailedImage } = require('../discord/memberDetailedImage');
 const { archiveSnapshot } = require('../archive');
 const { getQuota, getGoal } = require('../config');
-const { getClub, addClubOption } = require('../clubs');
+const { addClubOption, clubFromOption } = require('../clubs');
 
 module.exports = {
   data: addClubOption(
@@ -13,12 +13,9 @@ module.exports = {
   ),
 
   async execute(interaction) {
-    const club = getClub(interaction.options.getString('club'));
+    const club = await clubFromOption(interaction);
+    if (!club) return;
     const circleId = club.circleId;
-    if (!circleId) {
-      await interaction.reply({ content: `No circle ID is configured for ${club.name}.`, ephemeral: true });
-      return;
-    }
     await interaction.deferReply();
 
     try {

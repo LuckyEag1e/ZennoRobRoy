@@ -1,6 +1,6 @@
 const { SlashCommandBuilder } = require('discord.js');
 const { getQuota, setQuota, isAuthorized } = require('../config');
-const { getClub, addClubOption } = require('../clubs');
+const { addClubOption, clubFromOption } = require('../clubs');
 
 module.exports = {
   data: addClubOption(
@@ -14,7 +14,8 @@ module.exports = {
 
   async execute(interaction) {
     const amount = interaction.options.getInteger('amount');
-    const club = getClub(interaction.options.getString('club'));
+    const club = await clubFromOption(interaction);
+    if (!club) return;
 
     if (amount === null) {
       const current = getQuota(interaction.guildId, club.key);

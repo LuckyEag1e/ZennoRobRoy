@@ -27,6 +27,9 @@ Discord bot that reports Umamusume club (circle) stats from the Chrono Genesis A
    CHANNEL_ID=your-channel-id
    ```
 
+   Each club also needs `CLUB_NAME` and `CLUB_KEY` (and `_2` versions for a second club).
+   The bot won't start without them once that club's circle ID is set.
+
 4. **Install & register commands**
    ```
    npm install
@@ -37,6 +40,23 @@ Discord bot that reports Umamusume club (circle) stats from the Chrono Genesis A
    ```
    npm start
    ```
+
+## Upgrading from the version with club names in `src/clubs.js`
+
+Club names and keys used to be hardcoded. They now come from `.env`, and the bot moved from
+the repo root into `zennorobroy/`. On the machine that runs it:
+
+1. Stop the bot. `git pull` moves tracked files but leaves `.env`, `data/` and
+   `node_modules/` at the repo root, so move them into `zennorobroy/` (or run
+   `npm install` there).
+2. Add `CLUB_KEY`/`CLUB_NAME`, and `CLUB_KEY_2`/`CLUB_NAME_2` for a second club, to
+   `zennorobroy/.env`. Each key must be the one already under your guild ID in the
+   `clubQuota` and `clubGoal` sections of `data/config.json`, or that club's quota and goal
+   are lost. Use the names the bot showed before.
+3. Rename the second club's color variables to `CLUB_2_COLOR_*`. The bot warns at startup
+   about any `*_COLOR_*` variable it doesn't read.
+4. Update whatever starts the bot so it runs from `zennorobroy/`, then run
+   `npm run deploy-commands` (so the `club` option offers the new keys) and `npm start`.
 
 ## Notes
 

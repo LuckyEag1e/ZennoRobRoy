@@ -112,7 +112,7 @@ async function postDailySummary() {
     return;
   }
 
-  for (const club of CLUBS.filter((c) => c.circleId)) {
+  for (const club of CLUBS) {
     try {
       const data = await fetchClubProfile(club.circleId, process.env.CHRONO_API_KEY);
       archiveSnapshot(club.circleId, data);
