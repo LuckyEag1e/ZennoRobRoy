@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from typing import Callable, Optional
 
-from bracket import Match, WinnerLookup, bye_team_id, is_bye
+from bracket import Match, WinnerLookup, bye_team_id, final_match, is_bye
 from labels import team_label
 
 # (match, team_a_id, team_b_id) -> {team_id: '+' or '-'} for whichever teams
@@ -164,7 +164,7 @@ def render_tree(
     )
     bye_names = ", ".join(team_label(teams_by_id, bye_team_id(m)) for m in byes)
 
-    root = next(m for m in matches_by_id.values() if m.feeds_into_match_id is None)
+    root = final_match(matches_by_id)
     tree_lines, _ = _render_match(root, feeders_by_target, teams_by_id, slots, winner_of, marker_fn)
 
     # Tracing which two branches converge at the final through a deep tree is

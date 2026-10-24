@@ -70,3 +70,14 @@ def test_parse_rejects_empty_file():
 def test_parse_rejects_header_only_no_rows():
     with pytest.raises(CsvValidationError):
         parse_csv("team_a,team_b\n")
+
+
+def test_parse_strips_spaces_around_header_names():
+    rows = parse_csv("team_a, team_b\nTeam A,Team B\nTeam C,Team D\n")
+    assert rows[0]["team_b"] == "Team B"
+    assert rows[1]["team_b"] == "Team D"
+
+
+def test_parse_accepts_excel_byte_order_mark():
+    rows = parse_csv("\ufeffteam_a,team_b\nTeam A,Team B\n")
+    assert rows[0]["team_a"] == "Team A"

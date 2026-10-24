@@ -28,7 +28,15 @@ from bracket import (
     resolve_slot,
     rounds,
 )
-from labels import crowd_verdict, matchup_label, pick_review_lines, pick_share, score_label, team_label
+from labels import (
+    crowd_verdict,
+    dropped_results_note,
+    matchup_label,
+    pick_review_lines,
+    pick_share,
+    score_label,
+    team_label,
+)
 
 CLI_DB_PATH = Path(__file__).parent / "data" / "cli.db"
 GUILD_ID = 1  # single pretend guild for local testing
@@ -110,19 +118,13 @@ class WinningTicketCLI(cmd.Cmd):
 
     def do_open(self, arg: str) -> None:
         "Open a tournament for predictions: open <name>"
-        tournament = self._require_tournament(arg.strip())
-        if tournament is None:
-            return
-        db.set_tournament_status(self.conn, tournament["id"], "predictions_open")
-        print(f"Predictions open for '{tournament['name']}'.")
+        if self._advance_status(arg.strip(), "predictions_open"):
+            print(f"Predictions open for '{arg.strip()}'.")
 
     def do_lock(self, arg: str) -> None:
         "Lock a tournament and start recording real results: lock <name>"
-        tournament = self._require_tournament(arg.strip())
-        if tournament is None:
-            return
-        db.set_tournament_status(self.conn, tournament["id"], "in_progress")
-        print(f"'{tournament['name']}' locked. Use 'matchresult' to record real outcomes.")
+        if self._advance_status(arg.strip(), "in_progress"):
+            print(f"'{arg.strip()}' locked. Use 'matchresult' to record real outcomes.")
 
     def do_bracket(self, arg: str) -> None:
         "Show the real bracket's current progress: bracket <name>"
@@ -204,17 +206,14 @@ class WinningTicketCLI(cmd.Cmd):
             return
         matches_by_id, feeders, teams_by_id = db.load_bracket(self.conn, tournament["id"])
         results_by_match = db.get_results(self.conn, tournament["id"])
-        predictions_by_user = db.get_all_predictions(self.conn, tournament["id"])
-        scores = compute_leaderboard(matches_by_id, results_by_match, predictions_by_user)
-        score = next((s for s in scores if s.user_id == self.user_id), None)
+        score = compute_leaderboard(matches_by_id, results_by_match, {self.user_id: picks})[0]
 
         slots = resolve_all_slots(matches_by_id, picks.get, feeders)
         print(render_tree(
             matches_by_id, feeders, teams_by_id, slots,
             picks.get, prediction_marker(results_by_match, picks),
         ))
-        if score is not None:
-            print(f"\nScore: {score_label(score)}")
+        print(f"\nScore: {score_label(score)}")
 
     # -- match results ---------------------------------------------------------
 
@@ -339,8 +338,8 @@ class WinningTicketCLI(cmd.Cmd):
         if match is None:
             return
         if input("Clear this result? [y/N] ").strip().lower() == "y":
-            db.delete_result(self.conn, match.id)
-            print("Cleared.")
+            dropped = db.clear_result(self.conn, tournament["id"], match.id)
+            print("Cleared." + dropped_results_note(dropped))
         else:
             print("Cancelled.")
 
@@ -370,6 +369,18 @@ class WinningTicketCLI(cmd.Cmd):
             print("Cancelled.")
 
     # -- shared helpers ---------------------------------------------------------
+
+    def _advance_status(self, name: str, new_status: str) -> bool:
+        """Move a tournament one step along its lifecycle, refusing to skip or go back."""
+        tournament = self._require_tournament(name)
+        if tournament is None:
+            return False
+        if not db.is_next_status(tournament["status"], new_status):
+            print(f"'{name}' is {tournament['status']}, so it can't move to {new_status} from here. "
+                  f"Use admin_setstatus to force a status.")
+            return False
+        db.set_tournament_status(self.conn, tournament["id"], new_status)
+        return True
 
     def _require_tournament(self, name: str):
         if not name:
@@ -432,18 +443,18 @@ class WinningTicketCLI(cmd.Cmd):
             return
         winner_id = team_a if winner_choice == "1" else team_b
         loser_id = team_b if winner_choice == "1" else team_a
-        db.upsert_result(self.conn, match.id, winner_id, self.user_id)
+        dropped = db.record_result(self.conn, tournament["id"], match.id, winner_id, self.user_id)
 
         winner_label = team_label(teams_by_id, winner_id)
         loser_label = team_label(teams_by_id, loser_id)
         if match.feeds_into_match_id is None:
-            db.set_tournament_status(self.conn, tournament["id"], "completed")
-            print(f"Recorded: {winner_label} defeats {loser_label}. CHAMPION: {winner_label}!")
+            print(f"Recorded: {winner_label} defeats {loser_label}. CHAMPION: {winner_label}!{dropped_results_note(dropped)}")
             return
         opponent = next_opponent(match, feeders, db.get_results(self.conn, tournament["id"]).get)
         print(
             f"Recorded: {winner_label} defeats {loser_label}. "
             f"Advances to Round {match.round + 1} vs {team_label(teams_by_id, opponent)}."
+            f"{dropped_results_note(dropped)}"
         )
 
     # -- exit ---------------------------------------------------------------

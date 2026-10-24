@@ -4,6 +4,8 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
+from common import requires_manage_server
+
 
 def _command_list_embed(title: str, sections: list[tuple[str, str]]) -> discord.Embed:
     embed = discord.Embed(title=title)
@@ -16,7 +18,7 @@ class HelpCog(commands.Cog):
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
 
-    group = app_commands.Group(name="help", description="Show what commands are available")
+    group = app_commands.Group(name="help", description="Show what commands are available", guild_only=True)
 
     @group.command(name="players", description="Commands for filling out and checking your bracket")
     async def players(self, interaction: discord.Interaction) -> None:
@@ -30,7 +32,7 @@ class HelpCog(commands.Cog):
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
     @group.command(name="organizers", description="How to run a tournament, step by step")
-    @app_commands.default_permissions(manage_guild=True)
+    @requires_manage_server
     async def organizers(self, interaction: discord.Interaction) -> None:
         embed = discord.Embed(
             title="Running a tournament",
@@ -62,7 +64,7 @@ class HelpCog(commands.Cog):
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
     @group.command(name="admin", description="Troubleshooting/correction commands")
-    @app_commands.default_permissions(manage_guild=True)
+    @requires_manage_server
     async def admin(self, interaction: discord.Interaction) -> None:
         embed = _command_list_embed("Admin / troubleshooting commands", [
             ("/admin setstatus tournament:<name> status:<status>", "Force a tournament's status directly, bypassing the normal open/lock flow."),

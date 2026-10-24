@@ -8,12 +8,13 @@ import db
 from bracket import Match, bracket_order, matches_with_both_teams, resolve_all_slots
 from common import (
     MAX_SELECT_OPTIONS,
+    MatchPicker,
     TournamentSession,
-    match_select_options,
+    WinnerPicker,
     resolve_tournament,
     tournament_name_autocomplete,
 )
-from labels import team_label
+from labels import dropped_results_note, team_label
 
 STATUS_CHOICES = [app_commands.Choice(name=status, value=status) for status in db.STATUSES]
 
@@ -38,10 +39,9 @@ async def team_name_autocomplete(interaction: discord.Interaction, current: str)
 
 
 class ConfirmView(discord.ui.View):
-    def __init__(self, on_confirm, on_cancel=None, timeout: int = 120) -> None:
+    def __init__(self, on_confirm, timeout: int = 120) -> None:
         super().__init__(timeout=timeout)
         self._on_confirm = on_confirm
-        self._on_cancel = on_cancel
 
     @discord.ui.button(label="Confirm", style=discord.ButtonStyle.danger)
     async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
@@ -49,93 +49,7 @@ class ConfirmView(discord.ui.View):
 
     @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
     async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        if self._on_cancel:
-            await self._on_cancel(interaction)
-        else:
-            await interaction.response.edit_message(content="Cancelled.", view=None)
-
-
-class AdminWinnerButton(discord.ui.Button):
-    def __init__(self, session: TournamentSession, match: Match, winner_id: int, loser_id: int,
-                 label: str, had_existing_result: bool) -> None:
-        super().__init__(label=label[:80], style=discord.ButtonStyle.success)
-        self.session = session
-        self.match = match
-        self.winner_id = winner_id
-        self.loser_id = loser_id
-        self.had_existing_result = had_existing_result
-
-    async def callback(self, interaction: discord.Interaction) -> None:
-        winner_label = team_label(self.session.teams_by_id, self.winner_id)
-
-        async def record_winner(confirm_interaction: discord.Interaction) -> None:
-            conn = db.get_connection()
-            try:
-                db.upsert_result(conn, self.match.id, self.winner_id, confirm_interaction.user.id)
-            finally:
-                conn.close()
-            await confirm_interaction.response.edit_message(
-                content=f"✅ Set Round {self.match.round} winner to **{winner_label}**.", view=None
-            )
-
-        if self.had_existing_result:
-            view = ConfirmView(on_confirm=record_winner)
-            await interaction.response.edit_message(
-                content=f"This match already has a recorded result. Overwrite with **{winner_label}**?",
-                view=view,
-            )
-        else:
-            await record_winner(interaction)
-
-
-class AdminMatchSelect(discord.ui.Select):
-    def __init__(self, session: TournamentSession, matches: list[Match],
-                 slots: dict, results_by_match: dict) -> None:
-        super().__init__(
-            placeholder="Select a match...",
-            options=match_select_options(matches, slots, session.teams_by_id, results_by_match),
-        )
-        self.session = session
-        self.slots = slots
-        self.results_by_match = results_by_match
-
-    async def callback(self, interaction: discord.Interaction) -> None:
-        match_id = int(self.values[0])
-        match = self.session.matches_by_id[match_id]
-        team_a, team_b = self.slots[match_id]
-        a_label = team_label(self.session.teams_by_id, team_a)
-        b_label = team_label(self.session.teams_by_id, team_b)
-        had_existing = match_id in self.results_by_match
-
-        view = discord.ui.View(timeout=120)
-        view.add_item(AdminWinnerButton(self.session, match, team_a, team_b, a_label, had_existing))
-        view.add_item(AdminWinnerButton(self.session, match, team_b, team_a, b_label, had_existing))
-        await interaction.response.edit_message(
-            content=f"Round {match.round}: **{a_label}** vs **{b_label}** — force winner to:", view=view
-        )
-
-
-class AdminClearResultSelect(discord.ui.Select):
-    def __init__(self, session: TournamentSession, matches: list[Match], slots: dict) -> None:
-        super().__init__(
-            placeholder="Select a match to clear...",
-            options=match_select_options(matches, slots, session.teams_by_id),
-        )
-        self.session = session
-
-    async def callback(self, interaction: discord.Interaction) -> None:
-        match_id = int(self.values[0])
-
-        async def clear_result(confirm_interaction: discord.Interaction) -> None:
-            conn = db.get_connection()
-            try:
-                db.delete_result(conn, match_id)
-            finally:
-                conn.close()
-            await confirm_interaction.response.edit_message(content="✅ Result cleared.", view=None)
-
-        view = ConfirmView(on_confirm=clear_result)
-        await interaction.response.edit_message(content="Clear this match's recorded result?", view=view)
+        await interaction.response.edit_message(content="Cancelled.", view=None)
 
 
 class AdminCog(commands.Cog):
@@ -144,7 +58,7 @@ class AdminCog(commands.Cog):
 
     group = app_commands.Group(
         name="admin", description="Admin troubleshooting/editing commands",
-        default_permissions=discord.Permissions(manage_guild=True),
+        default_permissions=discord.Permissions(manage_guild=True), guild_only=True,
     )
 
     async def _load_session(self, interaction: discord.Interaction, conn, tournament: str) -> TournamentSession | None:
@@ -228,9 +142,44 @@ class AdminCog(commands.Cog):
             await interaction.response.send_message("No matches have both teams known yet.", ephemeral=True)
             return
 
-        view = discord.ui.View(timeout=120)
-        view.add_item(AdminMatchSelect(session, known, slots, results_by_match))
-        await interaction.response.send_message("Select a match to force a result for:", view=view, ephemeral=True)
+        async def ask_for_winner(pick_interaction: discord.Interaction, match: Match) -> None:
+            team_a, team_b = slots[match.id]
+
+            async def choose(winner_interaction: discord.Interaction, winner_id: int, loser_id: int) -> None:
+                winner_label = team_label(session.teams_by_id, winner_id)
+
+                async def record(confirm_interaction: discord.Interaction) -> None:
+                    conn = db.get_connection()
+                    try:
+                        dropped = db.record_result(conn, session.tournament_id, match.id, winner_id,
+                                                   confirm_interaction.user.id)
+                    finally:
+                        conn.close()
+                    await confirm_interaction.response.edit_message(
+                        content=f"✅ Set Round {match.round} winner to **{winner_label}**.{dropped_results_note(dropped)}",
+                        view=None,
+                    )
+
+                if match.id in results_by_match:
+                    await winner_interaction.response.edit_message(
+                        content=f"This match already has a recorded result. Overwrite with **{winner_label}**? "
+                                f"Later results that depended on the old winner will be cleared.",
+                        view=ConfirmView(on_confirm=record),
+                    )
+                else:
+                    await record(winner_interaction)
+
+            await pick_interaction.response.edit_message(
+                content=f"Round {match.round}: **{team_label(session.teams_by_id, team_a)}** vs "
+                        f"**{team_label(session.teams_by_id, team_b)}** — force winner to:",
+                view=WinnerPicker(team_a, team_b, session.teams_by_id, choose),
+            )
+
+        await interaction.response.send_message(
+            "Select a match to force a result for:",
+            view=MatchPicker(known, slots, session.teams_by_id, ask_for_winner, results_by_match),
+            ephemeral=True,
+        )
 
     @group.command(name="clearresult", description="Delete a recorded match result")
     @app_commands.describe(tournament="Tournament name")
@@ -251,9 +200,27 @@ class AdminCog(commands.Cog):
             await interaction.response.send_message("No recorded results to clear.", ephemeral=True)
             return
 
-        view = discord.ui.View(timeout=120)
-        view.add_item(AdminClearResultSelect(session, decided, slots))
-        await interaction.response.send_message("Select a result to clear:", view=view, ephemeral=True)
+        async def confirm_clear(pick_interaction: discord.Interaction, match: Match) -> None:
+            async def clear(confirm_interaction: discord.Interaction) -> None:
+                conn = db.get_connection()
+                try:
+                    dropped = db.clear_result(conn, session.tournament_id, match.id)
+                finally:
+                    conn.close()
+                await confirm_interaction.response.edit_message(
+                    content=f"✅ Result cleared.{dropped_results_note(dropped)}", view=None
+                )
+
+            await pick_interaction.response.edit_message(
+                content="Clear this match's recorded result? Later results that depended on it will be cleared too.",
+                view=ConfirmView(on_confirm=clear),
+            )
+
+        await interaction.response.send_message(
+            "Select a result to clear:",
+            view=MatchPicker(decided, slots, session.teams_by_id, confirm_clear),
+            ephemeral=True,
+        )
 
     @group.command(name="clearpredictions", description="Wipe one user's saved predictions for a tournament")
     @app_commands.describe(tournament="Tournament name", user="The user whose predictions should be cleared")

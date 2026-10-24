@@ -26,11 +26,14 @@ def parse_csv(content: str) -> list[dict]:
     team_a, team_b (either may be None for a bye -- not both), seed_a
     (optional), seed_b (optional).
     """
-    reader = csv.DictReader(io.StringIO(content))
+    # Excel saves CSVs with a byte-order mark, which would otherwise stick to the first column name.
+    reader = csv.DictReader(io.StringIO(content.lstrip("\ufeff")))
     if reader.fieldnames is None:
         raise CsvValidationError("CSV file is empty or has no header row")
 
-    fieldnames = {f.strip() for f in reader.fieldnames}
+    # Strip the names DictReader keys each row by, so "team_a, team_b" still finds team_b.
+    reader.fieldnames = [f.strip() for f in reader.fieldnames]
+    fieldnames = set(reader.fieldnames)
     required = {"team_a", "team_b"}
     missing = required - fieldnames
     if missing:

@@ -40,6 +40,13 @@ def crowd_verdict(counts: dict[int, int], team_a: int, team_b: int, teams_by_id:
     return f"Favorite: {team_label(teams_by_id, favorite)}"
 
 
+def dropped_results_note(dropped: list[int]) -> str:
+    """Suffix telling an admin that changing a result also cleared later ones."""
+    if not dropped:
+        return ""
+    return f" Also cleared {len(dropped)} later result(s) that no longer matched the bracket; re-record them."
+
+
 def pick_review_lines(matches_by_id: dict[int, Match], picks: dict[int, int], teams_by_id: dict) -> list[str]:
     """One line per match, in bracket order, showing the user's pick (or the bye)."""
     lines = []

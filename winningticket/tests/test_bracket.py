@@ -10,11 +10,14 @@ from bracket import (
     Match,
     build_feeder_index,
     bye_team_id,
+    final_match,
     generate_tree,
     is_bye,
+    next_match_to_pick,
     resolvable_matches,
     resolve_all_slots,
     resolve_slot,
+    stale_results,
 )
 
 
@@ -202,3 +205,37 @@ def test_resolvable_matches_excludes_bye_matches():
     # match 101 is a bye (never needs a recorded result); final (200) is now resolvable
     # since team 3 auto-advanced from its bye and team 1 won match 100
     assert {m.id for m in resolvable} == {200}
+
+
+def test_final_match_is_the_one_feeding_nothing():
+    matches_by_id, _ = _build_4_team_fixture()
+    assert final_match(matches_by_id).id == 200
+
+
+def test_stale_results_keeps_consistent_results():
+    matches_by_id, feeders = _build_4_team_fixture()
+    assert stale_results(matches_by_id, feeders, {100: 1, 101: 3, 200: 1}) == []
+
+
+def test_stale_results_drops_later_winner_after_earlier_result_changes():
+    matches_by_id, feeders = _build_4_team_fixture()
+    # team 1 won the final, but match 100 was then changed so team 2 advanced instead
+    assert stale_results(matches_by_id, feeders, {100: 2, 101: 3, 200: 1}) == [200]
+
+
+def test_stale_results_keeps_later_winner_who_is_still_in_the_match():
+    matches_by_id, feeders = _build_4_team_fixture()
+    # team 3 won the final from the other side, so changing match 100 doesn't affect it
+    assert stale_results(matches_by_id, feeders, {100: 2, 101: 3, 200: 3}) == []
+
+
+def test_stale_results_drops_later_winner_after_earlier_result_is_cleared():
+    matches_by_id, feeders = _build_4_team_fixture()
+    assert stale_results(matches_by_id, feeders, {101: 3, 200: 1}) == [200]
+
+
+def test_next_match_to_pick_follows_bracket_order_and_skips_byes():
+    matches_by_id, _ = _build_4_team_fixture_with_bye()
+    assert next_match_to_pick(matches_by_id, {}).id == 100
+    assert next_match_to_pick(matches_by_id, {100: 1}).id == 200
+    assert next_match_to_pick(matches_by_id, {100: 1, 200: 3}) is None

@@ -92,6 +92,20 @@ def bracket_order(match: Match) -> tuple[int, int]:
     return (match.round, match.slot_index)
 
 
+def final_match(matches_by_id: dict[int, Match]) -> Match:
+    return next(m for m in matches_by_id.values() if m.feeds_into_match_id is None)
+
+
+def next_match_to_pick(matches_by_id: dict[int, Match], picks: dict[int, int]) -> Optional[Match]:
+    """The first match in bracket order that still needs a pick, or None once the bracket is
+    complete. Deriving it from the picks (rather than counting steps) means a repeated or
+    stale click can't skip a match."""
+    for match in sorted(matches_by_id.values(), key=bracket_order):
+        if not is_bye(match) and match.id not in picks:
+            return match
+    return None
+
+
 def matches_in_round(matches_by_id: dict[int, Match], round_num: int) -> list[Match]:
     return sorted((m for m in matches_by_id.values() if m.round == round_num), key=bracket_order)
 
@@ -196,6 +210,26 @@ def matches_with_both_teams(
     """Matches whose two teams are both known, in bracket order, whether or not they've been played."""
     known = [m for m in matches_by_id.values() if slots[m.id][0] is not None and slots[m.id][1] is not None]
     return sorted(known, key=bracket_order)
+
+
+def stale_results(
+    matches_by_id: dict[int, Match],
+    feeders_by_target: dict[int, dict[str, Match]],
+    results_by_match: dict[int, int],
+) -> list[int]:
+    """Match ids whose recorded winner is no longer one of the two teams in that match,
+    which happens after an earlier result is changed or cleared. Dropping one result can
+    make a later one stale too, so the bracket is walked in order against what remains."""
+    remaining = dict(results_by_match)
+    stale = []
+    for match in sorted(matches_by_id.values(), key=bracket_order):
+        winner = remaining.get(match.id)
+        if winner is None:
+            continue
+        if winner not in resolve_slot(match, matches_by_id, remaining.get, feeders_by_target):
+            del remaining[match.id]
+            stale.append(match.id)
+    return stale
 
 
 def next_opponent(

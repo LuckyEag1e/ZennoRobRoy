@@ -34,8 +34,10 @@ Concepts that span several files:
 - **Only round 1 stores teams.** Later rounds' teams are derived each time through `resolve_slot`/`resolve_all_slots` by following `feeds_into_match_id`/`feeds_into_side` back to the feeder winners. The `winner_of` callback decides whose bracket gets resolved: point it at real `match_results` for reality, or at one user's predictions for their own bracket. `/predict` only offers round 2+ choices that come from the user's earlier picks.
 - **Scoring** compares the predicted winner with the actual winner at the same `match_id`. A correct pick is worth `2 ** (round - 1)` points.
 - **Byes** are round-1 matches with exactly one team. They advance automatically through `effective_winner`, never get a result row, and are hidden from `/predict`, `/match result`, and `/match stats`.
-- **Tournament status** moves `setup` → `predictions_open` (`/tournament open`) → `in_progress` (`/tournament lock`) → `completed` (set automatically when the final result is recorded). `/admin setstatus` can force any status. Cogs gate their actions on the current status.
-- Admin commands use `default_permissions(manage_guild=True)`.
+- **Tournament status** moves `setup` → `predictions_open` (`/tournament open`) → `in_progress` (`/tournament lock`) → `completed`. Open and lock only move one step forward (`db.is_next_status`); `/admin setstatus` can force any status. Cogs gate their actions on the current status.
+- **Results** are only written through `db.record_result` and `db.clear_result`. They drop later results whose winner is no longer in that match (`bracket.stale_results`) and keep `completed` in step with whether the final is decided.
+- **Admin permissions:** Discord ignores `default_permissions` on subcommands, so it's only set on the all-admin `/admin` group. Admin subcommands in groups members also use (`/tournament`, `/match`, `/help`) use `common.requires_manage_server`, a check at run time. Every command is guild-only.
+- **Select menus** hold at most 25 options, so match choices go through `common.MatchPicker`, which pages.
 
 ## Deployment
 

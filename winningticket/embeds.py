@@ -60,7 +60,7 @@ def render_my_picks_embed(
     picks: dict[int, int],
     teams_by_id: dict[int, sqlite3.Row],
     results_by_match: dict[int, int],
-    score: UserScore | None,
+    score: UserScore,
 ) -> discord.Embed:
     tree = render_tree(
         matches_by_id, feeders_by_target, teams_by_id, slots,
@@ -68,8 +68,7 @@ def render_my_picks_embed(
     )
     embed = discord.Embed(title=f"{user.display_name}'s picks: {tournament_name}", description=tree)
 
-    if score is not None:
-        embed.set_footer(text=f"Current score: {score_label(score)}")
+    embed.set_footer(text=f"Current score: {score_label(score)}")
 
     return embed
 

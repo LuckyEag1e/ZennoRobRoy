@@ -6,7 +6,7 @@ from discord.ext import commands
 
 import db
 from bracket import compute_leaderboard, resolve_all_slots
-from common import resolve_emoji, resolve_tournament, tournament_name_autocomplete
+from common import requires_manage_server, resolve_emoji, resolve_tournament, tournament_name_autocomplete
 from csv_import import CsvValidationError, import_tournament, parse_csv
 from embeds import render_bracket_embed, render_leaderboard_embed
 
@@ -15,11 +15,34 @@ class TournamentCog(commands.Cog):
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
 
-    group = app_commands.Group(name="tournament", description="Manage bracket prediction tournaments")
+    group = app_commands.Group(
+        name="tournament", description="Manage bracket prediction tournaments", guild_only=True
+    )
+
+    @staticmethod
+    async def _advance_status(interaction: discord.Interaction, name: str, new_status: str) -> bool:
+        """Move a tournament one step along its lifecycle. Replies with an error and
+        returns False if it isn't at the step just before `new_status`."""
+        conn = db.get_connection()
+        try:
+            tournament = await resolve_tournament(interaction, conn, name)
+            if tournament is None:
+                return False
+            if not db.is_next_status(tournament["status"], new_status):
+                await interaction.response.send_message(
+                    f"**{name}** is `{tournament['status']}`, so it can't move to `{new_status}` from here. "
+                    f"Use `/admin setstatus` to force a status.",
+                    ephemeral=True,
+                )
+                return False
+            db.set_tournament_status(conn, tournament["id"], new_status)
+            return True
+        finally:
+            conn.close()
 
     @group.command(name="create", description="Create a tournament from a bracket CSV")
     @app_commands.describe(name="Tournament name", csv_file="CSV with team_a,team_b[,seed_a,seed_b] columns")
-    @app_commands.default_permissions(manage_guild=True)
+    @requires_manage_server
     async def create(self, interaction: discord.Interaction, name: str, csv_file: discord.Attachment) -> None:
         conn = db.get_connection()
         try:
@@ -53,37 +76,25 @@ class TournamentCog(commands.Cog):
     @group.command(name="open", description="Open a tournament for predictions")
     @app_commands.describe(name="Tournament name")
     @app_commands.autocomplete(name=tournament_name_autocomplete)
-    @app_commands.default_permissions(manage_guild=True)
+    @requires_manage_server
     async def open_predictions(self, interaction: discord.Interaction, name: str) -> None:
-        conn = db.get_connection()
-        try:
-            tournament = await resolve_tournament(interaction, conn, name)
-            if tournament is None:
-                return
-            db.set_tournament_status(conn, tournament["id"], "predictions_open")
-            emoji = resolve_emoji(self.bot, "winningticket")
-            await interaction.response.send_message(
-                f"{emoji} Predictions are now open for **{name}**! Run `/predict tournament:{name}` to fill out your bracket."
-            )
-        finally:
-            conn.close()
+        if not await self._advance_status(interaction, name, "predictions_open"):
+            return
+        emoji = resolve_emoji(self.bot, "winningticket")
+        await interaction.response.send_message(
+            f"{emoji} Predictions are now open for **{name}**! Run `/predict tournament:{name}` to fill out your bracket."
+        )
 
     @group.command(name="lock", description="Lock predictions and start recording real results")
     @app_commands.describe(name="Tournament name")
     @app_commands.autocomplete(name=tournament_name_autocomplete)
-    @app_commands.default_permissions(manage_guild=True)
+    @requires_manage_server
     async def lock(self, interaction: discord.Interaction, name: str) -> None:
-        conn = db.get_connection()
-        try:
-            tournament = await resolve_tournament(interaction, conn, name)
-            if tournament is None:
-                return
-            db.set_tournament_status(conn, tournament["id"], "in_progress")
-            await interaction.response.send_message(
-                f"🔒 Predictions are locked for **{name}**. Use `/match result` to record real outcomes."
-            )
-        finally:
-            conn.close()
+        if not await self._advance_status(interaction, name, "in_progress"):
+            return
+        await interaction.response.send_message(
+            f"🔒 Predictions are locked for **{name}**. Use `/match result` to record real outcomes."
+        )
 
     @group.command(name="bracket", description="Show the current bracket")
     @app_commands.describe(name="Tournament name")

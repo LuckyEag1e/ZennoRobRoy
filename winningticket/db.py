@@ -5,13 +5,18 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-from bracket import Match, MatchSpec, build_feeder_index
+from bracket import Match, MatchSpec, build_feeder_index, final_match, stale_results
 
 DB_PATH = Path(__file__).parent / "data" / "tourney.db"
 
 # Tournament statuses, in lifecycle order.
 STATUSES = ("setup", "predictions_open", "in_progress", "completed")
 _STATUS_SQL_LIST = ", ".join(f"'{status}'" for status in STATUSES)
+
+
+def is_next_status(current: str, new: str) -> bool:
+    """True if `new` directly follows `current` in the normal lifecycle (open, then lock)."""
+    return STATUSES.index(new) == STATUSES.index(current) + 1
 
 SCHEMA = f"""
 PRAGMA foreign_keys = ON;
@@ -100,6 +105,10 @@ def get_tournament_by_name(conn: sqlite3.Connection, guild_id: int, name: str) -
         "SELECT * FROM tournaments WHERE guild_id = ? AND name = ?",
         (guild_id, name),
     ).fetchone()
+
+
+def get_tournament(conn: sqlite3.Connection, tournament_id: int) -> sqlite3.Row:
+    return conn.execute("SELECT * FROM tournaments WHERE id = ?", (tournament_id,)).fetchone()
 
 
 def get_tournament_names(conn: sqlite3.Connection, guild_id: int) -> list[str]:
@@ -211,22 +220,47 @@ def get_results(conn: sqlite3.Connection, tournament_id: int) -> dict[int, int]:
     return {r["match_id"]: r["winner_team_id"] for r in rows}
 
 
-def upsert_result(conn: sqlite3.Connection, match_id: int, winner_team_id: int, recorded_by: int) -> None:
-    conn.execute(
-        """INSERT INTO match_results (match_id, winner_team_id, recorded_by)
-           VALUES (?, ?, ?)
-           ON CONFLICT(match_id) DO UPDATE SET
-               winner_team_id = excluded.winner_team_id,
-               recorded_by = excluded.recorded_by,
-               recorded_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')""",
-        (match_id, winner_team_id, recorded_by),
-    )
-    conn.commit()
+def record_result(conn: sqlite3.Connection, tournament_id: int, match_id: int,
+                  winner_team_id: int, recorded_by: int) -> list[int]:
+    """Save (or overwrite) a match's real winner. Returns the ids of later results that
+    were dropped because their winner is no longer in that match."""
+    with conn:
+        conn.execute(
+            """INSERT INTO match_results (match_id, winner_team_id, recorded_by)
+               VALUES (?, ?, ?)
+               ON CONFLICT(match_id) DO UPDATE SET
+                   winner_team_id = excluded.winner_team_id,
+                   recorded_by = excluded.recorded_by,
+                   recorded_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')""",
+            (match_id, winner_team_id, recorded_by),
+        )
+        return _settle_results(conn, tournament_id)
 
 
-def delete_result(conn: sqlite3.Connection, match_id: int) -> None:
-    conn.execute("DELETE FROM match_results WHERE match_id = ?", (match_id,))
-    conn.commit()
+def clear_result(conn: sqlite3.Connection, tournament_id: int, match_id: int) -> list[int]:
+    """Delete a match's real result. Returns the ids of later results dropped with it."""
+    with conn:
+        conn.execute("DELETE FROM match_results WHERE match_id = ?", (match_id,))
+        return _settle_results(conn, tournament_id)
+
+
+def _settle_results(conn: sqlite3.Connection, tournament_id: int) -> list[int]:
+    """After a result changes, drop results it invalidated and keep the status in step:
+    a decided final means completed, and an undecided one can't stay completed."""
+    matches_by_id, feeders, _ = load_bracket(conn, tournament_id)
+    results_by_match = get_results(conn, tournament_id)
+    stale = stale_results(matches_by_id, feeders, results_by_match)
+    conn.executemany("DELETE FROM match_results WHERE match_id = ?", [(match_id,) for match_id in stale])
+
+    final_id = final_match(matches_by_id).id
+    final_decided = final_id in results_by_match and final_id not in stale
+    status = get_tournament(conn, tournament_id)["status"]
+    if final_decided:
+        status = "completed"
+    elif status == "completed":
+        status = "in_progress"
+    conn.execute("UPDATE tournaments SET status = ? WHERE id = ?", (status, tournament_id))
+    return stale
 
 
 # -- predictions ----------------------------------------------------------------

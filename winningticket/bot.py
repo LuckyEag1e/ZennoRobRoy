@@ -6,6 +6,7 @@ import os
 
 import aiohttp
 import discord
+from discord import app_commands
 from discord.ext import commands
 from dotenv import load_dotenv
 
@@ -43,6 +44,7 @@ class WinningTicketBot(commands.Bot):
 
         for cog in INITIAL_COGS:
             await self.load_extension(cog)
+        self.tree.on_error = self.on_app_command_error
 
         if DEV_GUILD_ID:
             guild = discord.Object(id=int(DEV_GUILD_ID))
@@ -52,6 +54,17 @@ class WinningTicketBot(commands.Bot):
         else:
             await self.tree.sync()
             log.info("Synced global commands")
+
+    async def on_app_command_error(
+        self, interaction: discord.Interaction, error: app_commands.AppCommandError
+    ) -> None:
+        if isinstance(error, app_commands.MissingPermissions):
+            await interaction.response.send_message(
+                "You need the Manage Server permission to use this command.", ephemeral=True
+            )
+            return
+        command = interaction.command.qualified_name if interaction.command else "?"
+        log.error("Error in /%s", command, exc_info=error)
 
     async def on_ready(self) -> None:
         log.info("Logged in as %s (%s)", self.user, self.user.id if self.user else "?")

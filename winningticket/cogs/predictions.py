@@ -7,7 +7,7 @@ from discord import app_commands
 from discord.ext import commands
 
 import db
-from bracket import Match, compute_leaderboard, is_bye, matches_in_round, resolve_all_slots, resolve_slot, rounds
+from bracket import Match, compute_leaderboard, is_bye, matches_in_round, next_match_to_pick, resolve_all_slots, resolve_slot
 from common import resolve_tournament, tournament_name_autocomplete
 from embeds import render_my_picks_embed
 from labels import pick_review_lines, team_label
@@ -27,6 +27,17 @@ async def _dismiss(message: discord.Message | None) -> None:
         pass
 
 
+async def _show_next_step(interaction: discord.Interaction, session: PredictionSession) -> None:
+    old_message = session.message
+    embed, view = build_step_payload(session)
+    # A fresh message per step (never editing the previous one) avoids a
+    # Discord desktop-client rendering bug seen with rapid repeated edits
+    # to the same ephemeral message's components.
+    await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+    session.message = await interaction.original_response()
+    await _dismiss(old_message)
+
+
 @dataclass
 class PredictionSession:
     tournament_id: int
@@ -35,35 +46,23 @@ class PredictionSession:
     feeders_by_target: dict
     teams_by_id: dict
     picks: dict[int, int] = field(default_factory=dict)
-    current_round: int = 1
-    current_match_index: int = 0
     message: discord.Message | None = None
 
 
 def build_step_payload(session: PredictionSession) -> tuple[discord.Embed, discord.ui.View]:
-    while True:
-        round_matches = matches_in_round(session.matches_by_id, session.current_round)
-        while session.current_match_index < len(round_matches) and is_bye(
-            round_matches[session.current_match_index]
-        ):
-            session.current_match_index += 1
-        if session.current_match_index < len(round_matches):
-            break
-        next_round = session.current_round + 1
-        if next_round not in rounds(session.matches_by_id):
-            return build_confirm_payload(session)
-        session.current_round = next_round
-        session.current_match_index = 0
+    match = next_match_to_pick(session.matches_by_id, session.picks)
+    if match is None:
+        return build_confirm_payload(session)
 
-    match = round_matches[session.current_match_index]
     team_a, team_b = resolve_slot(
         match, session.matches_by_id, session.picks.get, session.feeders_by_target
     )
     a_label = team_label(session.teams_by_id, team_a)
     b_label = team_label(session.teams_by_id, team_b)
 
+    round_matches = [m for m in matches_in_round(session.matches_by_id, match.round) if not is_bye(m)]
     embed = discord.Embed(
-        title=f"Round {session.current_round} — Match {session.current_match_index + 1} of {len(round_matches)}",
+        title=f"Round {match.round} — Match {round_matches.index(match) + 1} of {len(round_matches)}",
         description="Who do you predict will win this matchup?",
     )
     embed.add_field(name=a_label, value="​", inline=True)
@@ -115,16 +114,14 @@ class TeamChoiceButton(discord.ui.Button):
         self.team_id = team_id
 
     async def callback(self, interaction: discord.Interaction) -> None:
-        old_message = self.session.message
+        # A double-click or a button on an older step answers a matchup that's already
+        # been picked; ignore it rather than overwrite the pick.
+        awaited = next_match_to_pick(self.session.matches_by_id, self.session.picks)
+        if awaited is None or awaited.id != self.match_id:
+            await interaction.response.defer()
+            return
         self.session.picks[self.match_id] = self.team_id
-        self.session.current_match_index += 1
-        embed, view = build_step_payload(self.session)
-        # A fresh message per step (never editing the previous one) avoids a
-        # Discord desktop-client rendering bug seen with rapid repeated edits
-        # to the same ephemeral message's components.
-        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
-        self.session.message = await interaction.original_response()
-        await _dismiss(old_message)
+        await _show_next_step(interaction, self.session)
 
 
 class ConfirmSubmitButton(discord.ui.Button):
@@ -136,6 +133,19 @@ class ConfirmSubmitButton(discord.ui.Button):
         old_message = self.session.message
         conn = db.get_connection()
         try:
+            status = db.get_tournament(conn, self.session.tournament_id)["status"]
+            if status != "predictions_open":
+                await interaction.response.send_message(
+                    "Predictions closed before you confirmed, so your bracket wasn't saved.", ephemeral=True
+                )
+                await _dismiss(old_message)
+                return
+            if next_match_to_pick(self.session.matches_by_id, self.session.picks) is not None:
+                await interaction.response.send_message(
+                    "Your bracket isn't finished yet. Run `/predict` again to fill it in.", ephemeral=True
+                )
+                await _dismiss(old_message)
+                return
             db.upsert_predictions(conn, self.session.tournament_id, self.session.user_id, self.session.picks)
         except Exception:
             await interaction.response.send_message(
@@ -159,14 +169,8 @@ class RestartButton(discord.ui.Button):
         self.session = session
 
     async def callback(self, interaction: discord.Interaction) -> None:
-        old_message = self.session.message
         self.session.picks = {}
-        self.session.current_round = 1
-        self.session.current_match_index = 0
-        embed, view = build_step_payload(self.session)
-        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
-        self.session.message = await interaction.original_response()
-        await _dismiss(old_message)
+        await _show_next_step(interaction, self.session)
 
 
 class PredictionsCog(commands.Cog):
@@ -174,6 +178,7 @@ class PredictionsCog(commands.Cog):
         self.bot = bot
 
     @app_commands.command(name="predict", description="Fill out your bracket prediction")
+    @app_commands.guild_only()
     @app_commands.describe(tournament="Tournament name")
     @app_commands.autocomplete(tournament=tournament_name_autocomplete)
     async def predict(self, interaction: discord.Interaction, tournament: str) -> None:
@@ -204,6 +209,7 @@ class PredictionsCog(commands.Cog):
         session.message = await interaction.original_response()
 
     @app_commands.command(name="mypicks", description="Show your saved bracket predictions")
+    @app_commands.guild_only()
     @app_commands.describe(tournament="Tournament name")
     @app_commands.autocomplete(tournament=tournament_name_autocomplete)
     async def mypicks(self, interaction: discord.Interaction, tournament: str) -> None:
@@ -221,9 +227,7 @@ class PredictionsCog(commands.Cog):
             matches_by_id, feeders, teams_by_id = db.load_bracket(conn, tournament_row["id"])
             slots = resolve_all_slots(matches_by_id, picks.get, feeders)
             results_by_match = db.get_results(conn, tournament_row["id"])
-            predictions_by_user = db.get_all_predictions(conn, tournament_row["id"])
-            scores = compute_leaderboard(matches_by_id, results_by_match, predictions_by_user)
-            score = next((s for s in scores if s.user_id == interaction.user.id), None)
+            score = compute_leaderboard(matches_by_id, results_by_match, {interaction.user.id: picks})[0]
         finally:
             conn.close()
 

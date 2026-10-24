@@ -6,79 +6,56 @@ from discord.ext import commands
 
 import db
 from bracket import Match, matches_with_both_teams, next_opponent, pick_distribution, resolvable_matches, resolve_all_slots
-from common import TournamentSession, match_select_options, resolve_tournament, tournament_name_autocomplete
+from common import (
+    MatchPicker,
+    TournamentSession,
+    WinnerPicker,
+    requires_manage_server,
+    resolve_tournament,
+    tournament_name_autocomplete,
+)
 from embeds import render_match_stats_embed
 from labels import team_label
 
 
-class MatchSelect(discord.ui.Select):
-    def __init__(self, session: TournamentSession, pending: list[Match], slots: dict) -> None:
-        super().__init__(
-            placeholder="Select a match...",
-            options=match_select_options(pending, slots, session.teams_by_id),
-        )
-        self.session = session
-        self.slots = slots
-
-    async def callback(self, interaction: discord.Interaction) -> None:
-        match_id = int(self.values[0])
-        match = self.session.matches_by_id[match_id]
-        team_a, team_b = self.slots[match_id]
-        a_label = team_label(self.session.teams_by_id, team_a)
-        b_label = team_label(self.session.teams_by_id, team_b)
-
-        view = discord.ui.View(timeout=300)
-        view.add_item(WinnerButton(self.session, match, team_a, team_b, a_label))
-        view.add_item(WinnerButton(self.session, match, team_b, team_a, b_label))
-        await interaction.response.edit_message(
-            content=f"Round {match.round}: **{a_label}** vs **{b_label}** — who won?", view=view
-        )
-
-
-class WinnerButton(discord.ui.Button):
-    def __init__(self, session: TournamentSession, match: Match, winner_id: int, loser_id: int, label: str) -> None:
-        super().__init__(label=label[:80], style=discord.ButtonStyle.success)
-        self.session = session
-        self.match = match
-        self.winner_id = winner_id
-        self.loser_id = loser_id
-
-    async def callback(self, interaction: discord.Interaction) -> None:
-        winner_label = team_label(self.session.teams_by_id, self.winner_id)
-        loser_label = team_label(self.session.teams_by_id, self.loser_id)
-        conn = db.get_connection()
-        try:
-            db.upsert_result(conn, self.match.id, self.winner_id, interaction.user.id)
-            if self.match.feeds_into_match_id is None:
-                db.set_tournament_status(conn, self.session.tournament_id, "completed")
-                advance_text = f"🏆 **{winner_label}** is the champion of {self.session.tournament_name}!"
-            else:
-                results_by_match = db.get_results(conn, self.session.tournament_id)
-                opponent = next_opponent(self.match, self.session.feeders_by_target, results_by_match.get)
-                advance_text = (
-                    f"**{winner_label}** advances to Round {self.match.round + 1} "
-                    f"to face {team_label(self.session.teams_by_id, opponent)}."
-                )
-        finally:
-            conn.close()
-
-        await interaction.response.edit_message(content=f"✅ Result recorded. {advance_text}", view=None)
-        if interaction.channel is not None:
-            await interaction.channel.send(
-                f"📣 Round {self.match.round}: **{winner_label}** defeats **{loser_label}**. {advance_text}"
+async def _record_and_announce(interaction: discord.Interaction, session: TournamentSession,
+                               match: Match, winner_id: int, loser_id: int) -> None:
+    winner_label = team_label(session.teams_by_id, winner_id)
+    loser_label = team_label(session.teams_by_id, loser_id)
+    conn = db.get_connection()
+    try:
+        db.record_result(conn, session.tournament_id, match.id, winner_id, interaction.user.id)
+        if match.feeds_into_match_id is None:
+            advance_text = f"🏆 **{winner_label}** is the champion of {session.tournament_name}!"
+        else:
+            results_by_match = db.get_results(conn, session.tournament_id)
+            opponent = next_opponent(match, session.feeders_by_target, results_by_match.get)
+            advance_text = (
+                f"**{winner_label}** advances to Round {match.round + 1} "
+                f"to face {team_label(session.teams_by_id, opponent)}."
             )
+    finally:
+        conn.close()
+
+    await interaction.response.edit_message(content=f"✅ Result recorded. {advance_text}", view=None)
+    if interaction.channel is not None:
+        await interaction.channel.send(
+            f"📣 Round {match.round}: **{winner_label}** defeats **{loser_label}**. {advance_text}"
+        )
 
 
 class ResultsCog(commands.Cog):
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
 
-    match_group = app_commands.Group(name="match", description="Record and view match results/stats")
+    match_group = app_commands.Group(
+        name="match", description="Record and view match results/stats", guild_only=True
+    )
 
     @match_group.command(name="result", description="Record the real outcome of a ready match")
     @app_commands.describe(tournament="Tournament name")
     @app_commands.autocomplete(tournament=tournament_name_autocomplete)
-    @app_commands.default_permissions(manage_guild=True)
+    @requires_manage_server
     async def result(self, interaction: discord.Interaction, tournament: str) -> None:
         conn = db.get_connection()
         try:
@@ -109,9 +86,23 @@ class ResultsCog(commands.Cog):
             )
             return
 
-        view = discord.ui.View(timeout=300)
-        view.add_item(MatchSelect(session, pending, slots))
-        await interaction.response.send_message("Select a match to record a result for:", view=view, ephemeral=True)
+        async def ask_for_winner(pick_interaction: discord.Interaction, match: Match) -> None:
+            team_a, team_b = slots[match.id]
+
+            async def record(winner_interaction: discord.Interaction, winner_id: int, loser_id: int) -> None:
+                await _record_and_announce(winner_interaction, session, match, winner_id, loser_id)
+
+            await pick_interaction.response.edit_message(
+                content=f"Round {match.round}: **{team_label(session.teams_by_id, team_a)}** vs "
+                        f"**{team_label(session.teams_by_id, team_b)}** — who won?",
+                view=WinnerPicker(team_a, team_b, session.teams_by_id, record),
+            )
+
+        await interaction.response.send_message(
+            "Select a match to record a result for:",
+            view=MatchPicker(pending, slots, session.teams_by_id, ask_for_winner),
+            ephemeral=True,
+        )
 
     @match_group.command(name="stats", description="See the pool's pick breakdown for a matchup")
     @app_commands.describe(tournament="Tournament name")
@@ -137,21 +128,17 @@ class ResultsCog(commands.Cog):
             )
             return
 
-        select = discord.ui.Select(
-            placeholder="Select a match...", options=match_select_options(known, slots, teams_by_id)
-        )
-
-        async def show_pick_breakdown(select_interaction: discord.Interaction) -> None:
-            match = matches_by_id[int(select.values[0])]
+        async def show_pick_breakdown(pick_interaction: discord.Interaction, match: Match) -> None:
             team_a, team_b = slots[match.id]
             counts = pick_distribution(matches_by_id, predictions_by_user, match.round, team_a, team_b)
             embed = render_match_stats_embed(tournament, match, team_a, team_b, counts, teams_by_id)
-            await select_interaction.response.edit_message(content=None, embed=embed, view=None)
+            await pick_interaction.response.edit_message(content=None, embed=embed, view=None)
 
-        select.callback = show_pick_breakdown
-        view = discord.ui.View(timeout=300)
-        view.add_item(select)
-        await interaction.response.send_message("Select a matchup to see the pool's picks:", view=view, ephemeral=True)
+        await interaction.response.send_message(
+            "Select a matchup to see the pool's picks:",
+            view=MatchPicker(known, slots, teams_by_id, show_pick_breakdown),
+            ephemeral=True,
+        )
 
 
 async def setup(bot: commands.Bot) -> None:

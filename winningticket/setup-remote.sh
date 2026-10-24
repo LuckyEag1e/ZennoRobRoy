@@ -8,9 +8,13 @@
 # run as on the remote host -- defaults to whoever DEPLOY_HOST's SSH user is).
 set -euo pipefail
 
-if [ -f "$(dirname "$0")/deploy.local.sh" ]; then
+# Everything below (rsync's ./, the service template) is relative to this folder,
+# so work from here no matter where the script was started.
+cd "$(dirname "$0")"
+
+if [ -f deploy.local.sh ]; then
   # shellcheck source=/dev/null
-  source "$(dirname "$0")/deploy.local.sh"
+  source deploy.local.sh
 fi
 
 : "${DEPLOY_HOST:?Set DEPLOY_HOST, or create deploy.local.sh -- see deploy.local.sh.example}"
