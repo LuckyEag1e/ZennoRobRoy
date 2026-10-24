@@ -2,22 +2,24 @@ const { fetchClubProfile } = require('./api/chronoApi');
 const { themeFromEnv, LIGHT_THEME, DARK_THEME } = require('./discord/memberCardShared');
 
 // Clubs selectable via the `club` option on /stats and /stats_simple. Both are in
-// the same Discord server. Each club's colors come from <colorPrefix>_COLOR_* in
-// .env (TOKAI TEIO keeps the original MEMBERS_COLOR_* names); anything unset falls
-// back to the defaults given here. The theme is used by /stats, /stats_simple and
-// the daily post.
+// the same Discord server. Names, keys and circle IDs come from .env so no real
+// club details live in the repo. The key is what data/config.json stores per-club
+// settings under, so changing it orphans that club's quota and goal. Club 1's
+// colors use the MEMBERS_COLOR_* names and club 2's use CLUB_2_COLOR_*; anything
+// unset falls back to the defaults given here. The theme is used by /stats,
+// /stats_simple and the daily post.
 const CLUBS = [
   {
-    key: 'tokai_teio',
-    name: 'TOKAI TEIO',
+    key: process.env.CLUB_KEY || 'club_1',
+    name: process.env.CLUB_NAME || 'Club 1',
     circleId: process.env.CIRCLE_ID,
     theme: LIGHT_THEME,
   },
   {
-    key: 'hachimiers',
-    name: 'Hachimiers',
+    key: process.env.CLUB_KEY_2 || 'club_2',
+    name: process.env.CLUB_NAME_2 || 'Club 2',
     circleId: process.env.CIRCLE_ID_2,
-    theme: themeFromEnv('HACHIMIERS', DARK_THEME),
+    theme: themeFromEnv('CLUB_2', DARK_THEME),
   },
 ];
 

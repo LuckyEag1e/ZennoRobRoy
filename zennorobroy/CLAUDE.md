@@ -1,4 +1,4 @@
-# Uma Club Bot — Session Notes
+# ZennoRobRoy — Session Notes
 
 Discord bot for an Umamusume Pretty Derby club, pulling data from the (reverse-engineered,
 undocumented) Chrono Genesis API and reporting club/member performance into a Discord server.
@@ -6,18 +6,15 @@ undocumented) Chrono Genesis API and reporting club/member performance into a Di
 ## Current state
 
 - Fully working, running locally (not containerized/systemd'd — just `npm start` in a terminal).
-- Tested end-to-end against the live API and a real test Discord server ("Eagle archives",
-  guild ID `1048404951212249258`, channel `#bot` = `1435304436636450869`).
-- Bot identity: renamed at least twice since — was **Fine Motion#6572** (application/client ID
-  `1535455956463259668`), as of 2026-08-24 logs in as **Zenno Rob Roy#6572** (same client ID, so
-  this is a Username change on the **Bot** tab of the Developer Portal, same mechanism as the
-  earlier rename, not a new application). If it logs in under yet another name later, that's
-  expected — the rename happens directly in the Discord Developer Portal, outside this repo, so
-  these notes will lag until someone notices and updates them.
+- Tested end-to-end against the live API and a real test Discord server.
+- Bot identity: the bot's display name has been changed more than once on the **Bot** tab of the
+  Developer Portal (same application/client ID each time). If it logs in under a new name, that's
+  expected.
+- Deployment-specific details (host, guild/channel IDs, club names and circle IDs) live in the
+  gitignored `CLAUDE.local.md`, never in this file.
 - No git repo initialized in this directory yet.
-- **Confirmed production target**: `1426009141100548300` ("TOKAI TEIO - Umamusume Club") is the
-  real club server, not another dev/test guild — the user has been given permission to roll the
-  bot out there for real. `GUILD_ID` already includes it (see "Key implementation decisions" for
+- **Confirmed production target**: one of the guilds in `GUILD_ID` is the real club server, not
+  another dev/test guild — the user has been given permission to roll the bot out there for real. `GUILD_ID` already includes it (see "Key implementation decisions" for
   the full list), so slash commands are live there.
 - Not running right now unless a previous session's background `npm start` is still alive —
   check before assuming it's live, and restart it after any code change (no hot reload).
@@ -34,10 +31,7 @@ undocumented) Chrono Genesis API and reporting club/member performance into a Di
   crashing/losing power give zero warning — no code change can fix that class of failure.
 - **Daily auto-post is re-enabled** (as of 2026-08-24, explicit user request to reinstate it):
   `scheduleDailyPost();` is called from the `ready` handler in `src/index.js` again. `CHANNEL_ID`
-  now points at `1536373450103455834`, a channel in the production TOKAI TEIO guild (no longer the
-  Eagle archives test channel). `POST_HOUR_UTC=14` (14:00 UTC = 16:00 in the user's local
-  timezone, UTC+2 at time of setting — re-derive the offset rather than assuming it's still UTC+2
-  if this ever needs revisiting, since it wasn't given as a named timezone). All slash commands
+  now points at a channel in the production guild (no longer the test channel). All slash commands
   (`/club`, `/members`, `/members_detailed`, etc.) are unaffected either way and still work on
   demand.
 
@@ -46,36 +40,35 @@ undocumented) Chrono Genesis API and reporting club/member performance into a Di
   `src/newsFeed.js` polls every 10 min the undocumented JSON endpoint the site's SvelteKit news page
   calls (`POST https://umamusume.com/api/ajax/pr_info_index?format=json`, body
   `{announce_label:0, limit, offset}`), posts new items as embeds to `NEWS_CHANNEL_ID`
-  (`#umamusume-news` in TOKAI TEIO), and reposts as "[Updated]" when `update_at` changes (gift
+  (a news channel in the production guild), and reposts as "[Updated]" when `update_at` changes (gift
   distributions are often announced as edits to an existing notice). State in `data/news.json`;
   first run with no state file seeds silently. Unset `NEWS_CHANNEL_ID` disables it.
 
-- **Second club: Hachimiers** (added 2026-10-12, after the clubs merged). Circle `609694326`,
-  set as `CIRCLE_ID_2` in `.env`; the same `CHRONO_API_KEY` works for both circles. Both clubs are
-  in the TOKAI TEIO Discord server. `/members` → **`/stats_simple`** and `/members_detailed` →
+- **Second club** (added 2026-10-12, after the clubs merged). Its circle is `CIRCLE_ID_2` in
+  `.env`; the same `CHRONO_API_KEY` works for both circles. Both clubs are in the same Discord
+  server. Club names and the keys used in `data/config.json` come from `CLUB_NAME`/`CLUB_KEY` and
+  `CLUB_NAME_2`/`CLUB_KEY_2` in `.env`. `/members` → **`/stats_simple`** and `/members_detailed` →
   **`/stats`** (renamed on the user's request). Both take an optional `club` choice option
-  (TOKAI TEIO, the default, or Hachimiers). The club registry is `src/clubs.js`. Each club has
-  one palette (`theme` in `clubs.js`) used by `/stats`, `/stats_simple` and the daily post (which posts one `/stats` card per club, TOKAI TEIO first, to `CHANNEL_ID`):
+  (club 1, the default, or club 2). The club registry is `src/clubs.js`. Each club has
+  one palette (`theme` in `clubs.js`) used by `/stats`, `/stats_simple` and the daily post (which posts one `/stats` card per club, club 1 first, to `CHANNEL_ID`):
   as of 2026-10-13 both are dark pastel themes set in `.env` (user request: "keep the concept of a
-  peach and an orange, but more pastel and dark themed"): TOKAI TEIO = dark pastel red (peach → pink → red on 2026-10-13, user asked for "more of a red"; warning-row red bumped to a more saturated `#ff4d4d` so it still stands out from the red border) via
-  `MEMBERS_COLOR_*`, Hachimiers = dark orange via `HACHIMIERS_COLOR_*` (its "yellow" role is a
+  peach and an orange, but more pastel and dark themed"): club 1 = dark pastel red (peach → pink → red on 2026-10-13, user asked for "more of a red"; warning-row red bumped to a more saturated `#ff4d4d` so it still stands out from the red border) via
+  `MEMBERS_COLOR_*`, club 2 = dark orange via `CLUB_2_COLOR_*` (its "yellow" role is a
   pastel blue so warning rows stand out from the orange). The light pink defaults in
   `memberCardShared.js` are now only fallbacks. `/stats` is
   the user's default/main leaderboard command from 2026-10-13 on; the dark theme now only
   applies to `/profile`. **Per-club quota/goal** (same day): `/quota` and
   `/set_goal` take the same `club` option. Values now live in `data/config.json` under
   `clubQuota[guildId][clubKey]` / `clubGoal[guildId][clubKey]`; the old per-guild `quota`/`goal`
-  keys were migrated to `tokai_teio` and removed (backup: `data/config.json.bak-2026-10-12`).
+  keys were migrated to club 1's key and removed (backup: `data/config.json.bak-2026-10-12`).
   `/link_trainer` and `/check_links` search every club's roster (`fetchAllClubs` in `clubs.js`), so
-  Hachimiers members can link, and `/approve_inactivity` (keyed by friend_viewer_id) then works for
+  club 2's members can link, and `/approve_inactivity` (keyed by friend_viewer_id) then works for
   them too. **Still single-club**: `/club` and `/profile` use `CIRCLE_ID` only. The command descriptions below still use the old `/members`
   names and the old per-guild quota wording.
 
 ## Environment
 
-- Host: Linux box, user `lzb`, LAN IP `192.168.2.85`, sshd active on port 22. The user connects
-  via Windows Remote Desktop and transferred files here over `scp`/WinSCP.
-- Test circle used throughout development: `507766504` ("TOKAI TEIO"), 30 members.
+- Host and test-circle details are in the gitignored `CLAUDE.local.md`.
 
 ## Architecture
 
@@ -282,10 +275,8 @@ reference/                   gitignored-by-convention (not actually in .gitignor
   persist across restarts without touching `.env` or requiring a redeploy.
 - **`GUILD_ID` accepts a comma-separated list**: `deploy-commands.js` splits and registers commands
   to every listed guild individually (instant per-guild registration, rather than the up-to-1-hour
-  global sync). Currently three guilds: `1048404951212249258` (Eagle archives, the original test
-  server), `1536320938700705872` ("Bot test"), and `1426009141100548300` ("TOKAI TEIO - Umamusume
-  Club" — the club's actual server, matching the club name used as the test circle throughout this
-  project; likely the real production target, not just another dev server). No other code reads
+  global sync). Currently two test servers plus the club's production server (IDs in
+  `CLAUDE.local.md`). No other code reads
   `GUILD_ID` — everything else in the bot (quota, authorise, trainer links, inactivity credit) is
   already scoped per-guild via `interaction.guildId` in `data/config.json`, so adding a guild here
   only affects command registration speed, not runtime behavior.

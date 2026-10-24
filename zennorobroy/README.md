@@ -1,4 +1,4 @@
-# Uma Club Bot
+# ZennoRobRoy
 
 Discord bot that reports Umamusume club (circle) stats from the Chrono Genesis API.
 
@@ -17,8 +17,10 @@ Discord bot that reports Umamusume club (circle) stats from the Chrono Genesis A
    - In Discord, enable Developer Mode (User Settings → Advanced), then right-click the target channel → Copy Channel ID.
 
 3. **Fill in `.env`**
-   The Chrono Genesis API key and circle ID are already filled in from what you shared. Add:
+   Copy `.env.example` to `.env` and fill it in. At minimum:
    ```
+   CHRONO_API_KEY=your-chrono-genesis-key
+   CIRCLE_ID=your-circle-id
    DISCORD_TOKEN=your-bot-token
    CLIENT_ID=your-application-id
    GUILD_ID=your-server-id      # optional, makes slash commands register instantly for dev (comma-separated for multiple servers)
