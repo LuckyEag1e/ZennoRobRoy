@@ -1,0 +1,9 @@
+# Copy this file to deploy.local.sh (gitignored) and fill in your real
+# values. deploy.sh and setup-remote.sh both auto-source it if present, so
+# your actual host/path/user never need to be typed on the command line or
+# committed to the repo.
+
+export DEPLOY_HOST=your-ssh-host-or-alias
+export DEPLOY_DIR=/home/your-remote-username/winningticket   # absolute path, no ~
+export DEPLOY_SERVICE_NAME=winningticket
+export DEPLOY_USER=your-remote-username   # only needed by setup-remote.sh
