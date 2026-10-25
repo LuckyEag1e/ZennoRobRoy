@@ -45,6 +45,13 @@ class Match:
 
 
 @dataclass
+class Podium:
+    champion: Optional[int]
+    runner_up: Optional[int]
+    third_places: list[int]  # both semi-final losers: there's no third-place game
+
+
+@dataclass
 class UserScore:
     user_id: int
     points: int
@@ -351,3 +358,36 @@ def pick_distribution(
             if predicted_winner in counts:
                 counts[predicted_winner] += 1
     return counts
+
+
+def podium(
+    matches_by_id: dict[int, Match],
+    feeders_by_target: dict[int, dict[str, Match]],
+    results_by_match: dict[int, int],
+) -> Podium:
+    """The final's winner and loser, and the losers of the games that fed into the final."""
+    slots = resolve_all_slots(matches_by_id, results_by_match.get, feeders_by_target)
+
+    def loser(match: Match) -> Optional[int]:
+        winner = results_by_match.get(match.id)
+        if winner is None:
+            return None
+        team_a, team_b = slots[match.id]
+        return team_b if winner == team_a else team_a
+
+    final = final_match(matches_by_id)
+    semi_finals = [m for m in feeders_by_target.get(final.id, {}).values() if m is not None and not is_bye(m)]
+    third_places = [team for team in map(loser, semi_finals) if team is not None]
+    return Podium(results_by_match.get(final.id), loser(final), third_places)
+
+
+def top_places(scores: list[UserScore], places: int = 3) -> list[tuple[int, UserScore]]:
+    """(place, score) for everyone placing in the top `places`. Tied points share a place,
+    and the next place is skipped for each extra player tied (1, 1, 3)."""
+    placed = []
+    for i, score in enumerate(scores):  # already sorted by points, highest first
+        place = i + 1 if i == 0 or score.points != scores[i - 1].points else placed[-1][0]
+        if place > places:
+            break
+        placed.append((place, score))
+    return placed

@@ -8,6 +8,8 @@ import pytest
 from bracket import (
     BracketError,
     Match,
+    Podium,
+    bracket_order,
     build_feeder_index,
     bye_team_id,
     byes_in_round,
@@ -16,6 +18,7 @@ from bracket import (
     generate_tree,
     is_bye,
     next_match_to_pick,
+    podium,
     resolvable_matches,
     resolve_all_slots,
     resolve_slot,
@@ -292,3 +295,32 @@ def test_a_game_between_two_byes_scores_as_round_1():
     game = _match_between(matches_by_id, 1, 2)
     [score] = compute_leaderboard(matches_by_id, {game.id: 1}, {7: {game.id: 1}})
     assert score.points == 1
+
+
+def _play_out(matches_by_id, winner_of_pair):
+    """Results for every game, decided by `winner_of_pair(team_a, team_b)`."""
+    feeders = build_feeder_index(list(matches_by_id.values()))
+    results = {}
+    for match in sorted(matches_by_id.values(), key=bracket_order):
+        if not is_bye(match):
+            results[match.id] = winner_of_pair(*resolve_slot(match, matches_by_id, results.get, feeders))
+    return feeders, results
+
+
+def test_podium_has_both_semi_final_losers_in_third():
+    matches_by_id = matches_from_pairs([(1, 2), (3, 4), (5, 6), (7, 8)])
+    feeders, results = _play_out(matches_by_id, min)
+    assert podium(matches_by_id, feeders, results) == Podium(champion=1, runner_up=5, third_places=[3, 7])
+
+
+def test_podium_leaves_out_a_bye_into_the_final():
+    # 3 goes straight to the final, so only the other side's semi-final has a loser.
+    matches_by_id = matches_from_pairs([(1, 2), (3, None)])
+    feeders, results = _play_out(matches_by_id, min)
+    assert podium(matches_by_id, feeders, results) == Podium(champion=1, runner_up=3, third_places=[2])
+
+
+def test_podium_before_the_final_is_played():
+    matches_by_id = matches_from_pairs([(1, 2), (3, 4)])
+    feeders = build_feeder_index(list(matches_by_id.values()))
+    assert podium(matches_by_id, feeders, {}) == Podium(champion=None, runner_up=None, third_places=[])

@@ -58,9 +58,9 @@ Admin:
 - `/tournament open name:<name>` — let members start `/predict`
 - `/tournament lock name:<name>` — stop prediction submissions, start recording real results
 - `/match result tournament:<name>` — pick a ready match and record who really won
-- `/tournament conclude name:<name>` — archive a completed tournament. Its results stay in
-  the database (for future seeding), but it disappears from every command and its name
-  can be reused.
+- `/tournament conclude name:<name>` — archive a completed tournament and post its podium
+  and top pick'em scorers. Its results stay in the database (for future seeding), but it
+  disappears from every command and its name can be reused.
 - `/admin ...` — troubleshooting/correction commands (force status, force/overwrite a
   result, clear a result, edit a team's name/seed, clear a user's predictions, delete
   a tournament). All require the Manage Server permission.

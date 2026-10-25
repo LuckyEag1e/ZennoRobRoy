@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import Callable, Optional
 
-from bracket import Match, UserScore, byes_in_round, effective_winner, matches_in_round, rounds
+from bracket import Match, Podium, UserScore, byes_in_round, effective_winner, matches_in_round, rounds, top_places
+
+MEDALS = {1: "🥇", 2: "🥈", 3: "🥉"}
 
 
 def team_label(teams_by_id: dict, team_id: Optional[int]) -> str:
@@ -56,3 +58,16 @@ def pick_review_lines(matches_by_id: dict[int, Match], picks: dict[int, int], te
         for match in byes_in_round(matches_by_id, round_num):
             lines.append(f"Round {round_num}: {team_label(teams_by_id, effective_winner(match, picks.get))} (bye)")
     return lines
+
+
+def podium_lines(result: Podium, teams_by_id: dict) -> list[str]:
+    lines = [f"{MEDALS[1]} {team_label(teams_by_id, result.champion)}",
+             f"{MEDALS[2]} {team_label(teams_by_id, result.runner_up)}"]
+    if result.third_places:
+        lines.append(f"{MEDALS[3]} " + " & ".join(team_label(teams_by_id, t) for t in result.third_places))
+    return lines
+
+
+def pickem_podium_lines(scores: list[UserScore], player_label: Callable[[int], str]) -> list[str]:
+    """The top three pick'em scorers, with `player_label` naming each by user id."""
+    return [f"{MEDALS[place]} {player_label(s.user_id)} — {score_label(s)}" for place, s in top_places(scores)]

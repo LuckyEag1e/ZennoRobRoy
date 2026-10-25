@@ -1,14 +1,16 @@
 from __future__ import annotations
 
+import sqlite3
+
 import discord
 from discord import app_commands
 from discord.ext import commands
 
 import db
-from bracket import compute_leaderboard, resolve_all_slots
+from bracket import compute_leaderboard, podium, resolve_all_slots
 from common import requires_manage_server, resolve_emoji, resolve_tournament, tournament_name_autocomplete
 from csv_import import CsvValidationError, import_tournament, parse_csv
-from embeds import render_bracket_embed, render_leaderboard_embed
+from embeds import render_bracket_embed, render_final_results_embed, render_leaderboard_embed
 
 
 class TournamentCog(commands.Cog):
@@ -20,23 +22,23 @@ class TournamentCog(commands.Cog):
     )
 
     @staticmethod
-    async def _advance_status(interaction: discord.Interaction, name: str, new_status: str) -> bool:
-        """Move a tournament one step along its lifecycle. Replies with an error and
-        returns False if it isn't at the step just before `new_status`."""
+    async def _advance_status(interaction: discord.Interaction, name: str, new_status: str) -> sqlite3.Row | None:
+        """Move a tournament one step along its lifecycle and return it. Replies with an
+        error and returns None if it isn't at the step just before `new_status`."""
         conn = db.get_connection()
         try:
             tournament = await resolve_tournament(interaction, conn, name)
             if tournament is None:
-                return False
+                return None
             if not db.is_next_status(tournament["status"], new_status):
                 await interaction.response.send_message(
                     f"**{name}** is `{tournament['status']}`, so it can't move to `{new_status}` from here. "
                     f"Use `/admin setstatus` to force a status.",
                     ephemeral=True,
                 )
-                return False
+                return None
             db.set_tournament_status(conn, tournament["id"], new_status)
-            return True
+            return tournament
         finally:
             conn.close()
 
@@ -78,7 +80,7 @@ class TournamentCog(commands.Cog):
     @app_commands.autocomplete(name=tournament_name_autocomplete)
     @requires_manage_server
     async def open_predictions(self, interaction: discord.Interaction, name: str) -> None:
-        if not await self._advance_status(interaction, name, "predictions_open"):
+        if await self._advance_status(interaction, name, "predictions_open") is None:
             return
         emoji = resolve_emoji(self.bot, "winningticket")
         await interaction.response.send_message(
@@ -90,7 +92,7 @@ class TournamentCog(commands.Cog):
     @app_commands.autocomplete(name=tournament_name_autocomplete)
     @requires_manage_server
     async def lock(self, interaction: discord.Interaction, name: str) -> None:
-        if not await self._advance_status(interaction, name, "in_progress"):
+        if await self._advance_status(interaction, name, "in_progress") is None:
             return
         await interaction.response.send_message(
             f"🔒 Predictions are locked for **{name}**. Use `/match result` to record real outcomes."
@@ -101,12 +103,19 @@ class TournamentCog(commands.Cog):
     @app_commands.autocomplete(name=tournament_name_autocomplete)
     @requires_manage_server
     async def conclude(self, interaction: discord.Interaction, name: str) -> None:
-        if not await self._advance_status(interaction, name, "concluded"):
+        tournament = await self._advance_status(interaction, name, "concluded")
+        if tournament is None:
             return
-        await interaction.response.send_message(
-            f"🏁 **{name}** is concluded. Its results are saved, but it no longer shows up in any "
-            f"command, and the name is free for a new tournament."
-        )
+        conn = db.get_connection()
+        try:
+            matches_by_id, feeders, teams_by_id = db.load_bracket(conn, tournament["id"])
+            results_by_match = db.get_results(conn, tournament["id"])
+            predictions_by_user = db.get_all_predictions(conn, tournament["id"])
+        finally:
+            conn.close()
+        scores = compute_leaderboard(matches_by_id, results_by_match, predictions_by_user)
+        result = podium(matches_by_id, feeders, results_by_match)
+        await interaction.response.send_message(embed=render_final_results_embed(name, result, teams_by_id, scores))
 
     @group.command(name="bracket", description="Show the current bracket")
     @app_commands.describe(name="Tournament name")
