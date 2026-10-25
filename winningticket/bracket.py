@@ -38,6 +38,14 @@ class Match:
     team_b_id: Optional[int] = None
     feeds_into_match_id: Optional[int] = None
     feeds_into_side: Optional[str] = None  # 'A' or 'B'
+    # The round players see, which also sets the points. It differs from `round` (the tree
+    # column) when byes meet: their match sits in round 2 of the tree but is both teams'
+    # first game. assign_played_rounds() sets it from the whole tree.
+    played_round: Optional[int] = None
+
+    def __post_init__(self) -> None:
+        if self.played_round is None:
+            self.played_round = self.round
 
 
 @dataclass
@@ -83,13 +91,34 @@ def check_matchup_count(count: int) -> None:
         )
 
 
+def assign_played_rounds(matches_by_id: dict[int, Match]) -> None:
+    """Number each match by the round it's actually played in. A real game comes one round
+    after the later of its two feeder games. A bye takes the round before its team's first
+    game, so a bye into a first game gets round 0 and isn't shown as a bye at all."""
+    feeders_by_target = build_feeder_index(list(matches_by_id.values()))
+
+    def assign(match: Match) -> int:
+        if match.round == 1:
+            match.played_round = 0 if is_bye(match) else 1
+        else:
+            feeders = feeders_by_target[match.id]
+            match.played_round = 1 + max(assign(feeders["A"]), assign(feeders["B"]))
+        return match.played_round
+
+    assign(final_match(matches_by_id))
+    for match in matches_by_id.values():
+        if is_bye(match) and match.feeds_into_match_id is not None:
+            match.played_round = matches_by_id[match.feeds_into_match_id].played_round - 1
+
+
 def rounds(matches_by_id: dict[int, Match]) -> list[int]:
-    return sorted({m.round for m in matches_by_id.values()})
+    return sorted({m.played_round for m in matches_by_id.values() if m.played_round >= 1})
 
 
 def bracket_order(match: Match) -> tuple[int, int]:
-    """Sort key: earlier rounds first, then top to bottom."""
-    return (match.round, match.slot_index)
+    """Sort key: earlier rounds first, then top to bottom. The second part is the match's
+    first round-1 row, which compares matches from different tree columns."""
+    return (match.played_round, match.slot_index << (match.round - 1))
 
 
 def final_match(matches_by_id: dict[int, Match]) -> Match:
@@ -107,7 +136,7 @@ def next_match_to_pick(matches_by_id: dict[int, Match], picks: dict[int, int]) -
 
 
 def matches_in_round(matches_by_id: dict[int, Match], round_num: int) -> list[Match]:
-    return sorted((m for m in matches_by_id.values() if m.round == round_num), key=bracket_order)
+    return sorted((m for m in matches_by_id.values() if m.played_round == round_num), key=bracket_order)
 
 
 def generate_tree(team_pairs: list[tuple[Optional[int], Optional[int]]]) -> list[MatchSpec]:
@@ -285,7 +314,7 @@ def compute_leaderboard(
                 continue
             possible_picks += 1
             if predicted_winner == actual_winner:
-                points += 2 ** (match.round - 1)
+                points += 2 ** (match.played_round - 1)
                 correct_picks += 1
         scores.append(
             UserScore(
@@ -312,7 +341,7 @@ def pick_distribution(
     users' predicted brackets can place a team in different match_ids once
     round >= 2. Returns {team_id: count}, including zero counts for both.
     """
-    round_match_ids = {m.id for m in matches_by_id.values() if m.round == round_num}
+    round_match_ids = {m.id for m in matches_by_id.values() if m.played_round == round_num}
     counts = {team_a_id: 0, team_b_id: 0}
     for preds in predictions_by_user.values():
         for match_id, predicted_winner in preds.items():

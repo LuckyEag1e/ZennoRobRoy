@@ -58,6 +58,10 @@ class HelpCog(commands.Cog):
                 "`/tournament bracket name:<name>` — the live bracket\n"
                 "`/tournament leaderboard name:<name>` — standings\n"
                 "`/match stats tournament:<name>` — pick breakdown for a matchup\n\n"
+                "**6. Conclude it** once everyone has seen the final results\n"
+                "`/tournament conclude name:<name>`\n"
+                "Keeps its results but removes it from every command, and frees the "
+                "name for a new tournament. Only a completed tournament can be concluded.\n\n"
                 "Need to fix a mistake (wrong result, bad team name, etc.)? See `/help admin`."
             ),
         )

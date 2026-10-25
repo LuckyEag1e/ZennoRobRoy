@@ -19,7 +19,7 @@ def team_label(teams_by_id: dict, team_id: Optional[int]) -> str:
 
 def matchup_label(match: Match, slots: dict, teams_by_id: dict) -> str:
     team_a, team_b = slots[match.id]
-    return f"R{match.round}: {team_label(teams_by_id, team_a)} vs {team_label(teams_by_id, team_b)}"
+    return f"R{match.played_round}: {team_label(teams_by_id, team_a)} vs {team_label(teams_by_id, team_b)}"
 
 
 def score_label(score: UserScore) -> str:

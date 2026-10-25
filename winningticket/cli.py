@@ -126,6 +126,11 @@ class WinningTicketCLI(cmd.Cmd):
         if self._advance_status(arg.strip(), "in_progress"):
             print(f"'{arg.strip()}' locked. Use 'matchresult' to record real outcomes.")
 
+    def do_conclude(self, arg: str) -> None:
+        "Archive a finished tournament, keeping its results: conclude <name>"
+        if self._advance_status(arg.strip(), "concluded"):
+            print(f"'{arg.strip()}' concluded. Its results are kept, but it can't be selected any more.")
+
     def do_bracket(self, arg: str) -> None:
         "Show the real bracket's current progress: bracket <name>"
         tournament = self._require_tournament(arg.strip())
@@ -244,7 +249,7 @@ class WinningTicketCLI(cmd.Cmd):
             return
         team_a, team_b = slots[match.id]
         predictions_by_user = db.get_all_predictions(self.conn, tournament["id"])
-        counts = pick_distribution(matches_by_id, predictions_by_user, match.round, team_a, team_b)
+        counts = pick_distribution(matches_by_id, predictions_by_user, match.played_round, team_a, team_b)
         total = sum(counts.values())
         for team_id in (team_a, team_b):
             print(f"{team_label(teams_by_id, team_id)}: {pick_share(counts[team_id], total)}")
@@ -453,7 +458,7 @@ class WinningTicketCLI(cmd.Cmd):
         opponent = next_opponent(match, feeders, db.get_results(self.conn, tournament["id"]).get)
         print(
             f"Recorded: {winner_label} defeats {loser_label}. "
-            f"Advances to Round {match.round + 1} vs {team_label(teams_by_id, opponent)}."
+            f"Advances to Round {matches_by_id[match.feeds_into_match_id].played_round} vs {team_label(teams_by_id, opponent)}."
             f"{dropped_results_note(dropped)}"
         )
 

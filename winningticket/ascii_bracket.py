@@ -85,6 +85,19 @@ def prediction_marker(results_by_match: dict, picks: dict) -> LineMarker:
     return marker
 
 
+# A rendered subtree: its lines with their visible widths, plus the column its
+# connectors end at. Widths are tracked explicitly because the ANSI escape bytes
+# would throw off len().
+Rendered = tuple[list[tuple[str, int]], int]
+
+
+def _render_team(team_id: Optional[int], match: Match, teams_by_id: dict, marks: dict) -> Rendered:
+    """One entrant, marked by the result of `match`, the first game they play."""
+    mark = marks.get(team_id, " ")
+    plain = f"{mark}{_fit(team_label(teams_by_id, team_id))}"
+    return [(_colorize(plain, match.played_round, mark), len(plain))], len(plain)
+
+
 def _render_match(
     match: Match,
     feeders_by_target: dict,
@@ -92,57 +105,48 @@ def _render_match(
     slots: dict,
     winner_of: WinnerLookup,
     marker_fn: LineMarker,
-) -> tuple[list[str], int]:
-    """Returns (lines, visible_width). visible_width is tracked explicitly,
-    not derived from len(), since embedded ANSI escape bytes would otherwise
-    throw off alignment/padding math."""
-    if match.round == 1:
-        if is_bye(match):
-            sole = bye_team_id(match)
-            plain = f"+{_fit(team_label(teams_by_id, sole))}"
-            return [_colorize(plain, 1, "+")], len(plain)
-        team_a, team_b = match.team_a_id, match.team_b_id
-        marks = marker_fn(match, team_a, team_b)
-        plain_a = f"{marks.get(team_a, ' ')}{_fit(team_label(teams_by_id, team_a))}"
-        plain_b = f"{marks.get(team_b, ' ')}{_fit(team_label(teams_by_id, team_b))}"
-        return [
-            _colorize(plain_a, 1, marks.get(team_a, " ")),
-            _colorize(plain_b, 1, marks.get(team_b, " ")),
-        ], len(plain_a)
-
-    def render_feeder(side: str) -> tuple[list[str], int]:
-        feeder = feeders_by_target.get(match.id, {}).get(side)
-        if feeder is None:
-            plain = f" {_fit('TBD')}"
-            return [plain], len(plain)
-        return _render_match(feeder, feeders_by_target, teams_by_id, slots, winner_of, marker_fn)
-
-    top_lines, top_width = render_feeder("A")
-    bottom_lines, _ = render_feeder("B")
-
+) -> Rendered:
+    """A real (non-bye) match: its two sides joined by a connector to its winner, or TBD."""
     team_a, team_b = slots[match.id]
     marks = marker_fn(match, team_a, team_b)
+
+    def render_side(side: str, team_id: Optional[int]) -> Rendered:
+        feeder = feeders_by_target.get(match.id, {}).get(side)
+        if feeder is None or is_bye(feeder):
+            return _render_team(team_id, match, teams_by_id, marks)
+        return _render_match(feeder, feeders_by_target, teams_by_id, slots, winner_of, marker_fn)
+
     winner = winner_of(match.id)
     if winner is not None:
-        plain_own = f"{marks.get(winner, ' ')}{_fit(team_label(teams_by_id, winner))}"
-        own_colored = _colorize(plain_own, match.round, marks.get(winner, " "))
+        mark = marks.get(winner, " ")
+        plain_own = f"{mark}{_fit(team_label(teams_by_id, winner))}"
+        own = (_colorize(plain_own, match.played_round + 1, mark), len(plain_own))
     else:
         plain_own = f" {_fit('TBD')}"
-        own_colored = plain_own  # nothing decided yet -- no color
+        own = (plain_own, len(plain_own))  # nothing decided yet -- no color
 
-    lines = _merge(top_lines, top_width, bottom_lines, own_colored)
-    return lines, top_width + 2
+    return _join(render_side("A", team_a), render_side("B", team_b), own)
 
 
-def _merge(top_lines: list[str], width: int, bottom_lines: list[str], own_colored: str) -> list[str]:
-    # The bracket is a perfect binary tree, so both feeders are the same width.
-    result = []
-    for i, line in enumerate(top_lines):
-        result.append(line + ("─┐" if i == len(top_lines) - 1 else "  "))
-    result.append(" " * width + "├─" + own_colored)
-    for i, line in enumerate(bottom_lines):
-        result.append(line + ("─┘" if i == 0 else "  "))
-    return result
+def _join(top: Rendered, bottom: Rendered, own: tuple[str, int]) -> Rendered:
+    """Stack two subtrees with `own` between them, connected from the top subtree's last
+    line and the bottom one's first. Connecting from those outer lines, not from each
+    subtree's own winner line, lets winner names run into the empty space on their right,
+    so each round only adds the connector's width and the tree stays narrow enough for
+    Discord. The narrower side's line is extended with dashes so both connectors meet."""
+    top_lines, top_width = top
+    bottom_lines, bottom_width = bottom
+    width = max(top_width, bottom_width)
+
+    def extend(line: tuple[str, int], corner: str) -> tuple[str, int]:
+        text, w = line
+        return text + "─" * (width - w) + corner, width + 2
+
+    own_text, own_width = own
+    lines = top_lines[:-1] + [extend(top_lines[-1], "─┐")]
+    lines.append((" " * (width + 1) + "├─" + own_text, width + 3 + own_width))
+    lines += [extend(bottom_lines[0], "─┘")] + bottom_lines[1:]
+    return lines, width + 2
 
 
 def render_tree(
@@ -154,18 +158,22 @@ def render_tree(
     marker_fn: LineMarker,
 ) -> str:
     """Render the full connected bracket tree as a ```ansi fenced block, one
-    color per round. Round-1 byes still occupy their correct position in the
-    tree (needed so the connecting lines into round 2 are right) but render
-    as a single line, no fake "vs" pairing, and are also called out in a
-    summary line above the diagram so they're easy to spot at a glance.
+    color per round. A team with a bye is drawn as a single line joining the
+    match where they play their first game, with no fake "vs" pairing. Byes
+    that skip a round are also listed above the diagram so they're easy to
+    spot at a glance.
     """
+    # A bye straight into a team's first game (played round 0) skips nothing, so it isn't listed.
     byes = sorted(
-        (m for m in matches_by_id.values() if is_bye(m)), key=lambda m: m.slot_index
+        (m for m in matches_by_id.values() if is_bye(m) and m.played_round >= 1), key=lambda m: m.slot_index
     )
     bye_names = ", ".join(team_label(teams_by_id, bye_team_id(m)) for m in byes)
 
     root = final_match(matches_by_id)
-    tree_lines, _ = _render_match(root, feeders_by_target, teams_by_id, slots, winner_of, marker_fn)
+    if is_bye(root):
+        tree_lines, _ = _render_team(bye_team_id(root), root, teams_by_id, {})
+    else:
+        tree_lines, _ = _render_match(root, feeders_by_target, teams_by_id, slots, winner_of, marker_fn)
 
     # Tracing which two branches converge at the final through a deep tree is
     # hard even with connector lines, so call it out explicitly up top too.
@@ -186,6 +194,6 @@ def render_tree(
     if out_lines:
         out_lines.append("")
     out_lines.append("```ansi")
-    out_lines.extend(tree_lines)
+    out_lines.extend(text for text, _ in tree_lines)
     out_lines.append("```")
     return "\n".join(out_lines)

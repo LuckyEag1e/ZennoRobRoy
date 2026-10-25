@@ -60,9 +60,9 @@ def build_step_payload(session: PredictionSession) -> tuple[discord.Embed, disco
     a_label = team_label(session.teams_by_id, team_a)
     b_label = team_label(session.teams_by_id, team_b)
 
-    round_matches = [m for m in matches_in_round(session.matches_by_id, match.round) if not is_bye(m)]
+    round_matches = [m for m in matches_in_round(session.matches_by_id, match.played_round) if not is_bye(m)]
     embed = discord.Embed(
-        title=f"Round {match.round} — Match {round_matches.index(match) + 1} of {len(round_matches)}",
+        title=f"Round {match.played_round} — Match {round_matches.index(match) + 1} of {len(round_matches)}",
         description="Who do you predict will win this matchup?",
     )
     embed.add_field(name=a_label, value="​", inline=True)

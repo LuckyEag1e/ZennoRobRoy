@@ -5,7 +5,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from ascii_bracket import prediction_marker, real_result_marker, render_tree
-from bracket import Match, build_feeder_index, resolve_all_slots
+from bracket import Match, assign_played_rounds, build_feeder_index, resolve_all_slots
 
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
@@ -167,7 +167,27 @@ def test_render_tree_byes_shown_in_summary_and_as_single_line_in_tree():
     tree_body = text.split("```ansi")[1]
     cedar_line = _line_for(tree_body, "Cedar")
     assert "vs" not in _strip_ansi(cedar_line)
-    assert _is_bold(cedar_line)  # byes always auto-advance
+    assert _is_plain_colored(cedar_line)  # Cedar's first game hasn't been played yet
+
+
+def test_render_tree_round1_game_has_its_own_connector():
+    matches, teams = _4_team_bracket()
+    stripped = _strip_ansi(_render(matches, teams, results={1: 1}))
+    lines = stripped.splitlines()
+    alpha = next(i for i, line in enumerate(lines) if "Alpha" in line)
+    assert lines[alpha].endswith("─┐")
+    assert "├─+Alpha" in lines[alpha + 1]
+    assert lines[alpha + 2].startswith("-Beta")
+
+
+def test_render_tree_lists_only_byes_that_skip_a_game():
+    # Ash and Birch both get byes, then meet in their first game, so neither skips anything.
+    matches, teams = _8_team_bracket_with_byes()
+    matches[1] = Match(id=1, round=1, slot_index=0, team_a_id=1, team_b_id=None, feeds_into_match_id=5, feeds_into_side="A")
+    matches[2] = Match(id=2, round=1, slot_index=1, team_a_id=2, team_b_id=None, feeds_into_match_id=5, feeds_into_side="B")
+    assign_played_rounds(matches)
+    text = _render(matches, teams)
+    assert "Byes (round 1): Fir" in text
 
 
 def test_render_tree_round2_shows_bye_advanced_team_normally():

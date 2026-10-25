@@ -31,7 +31,7 @@ async def _record_and_announce(interaction: discord.Interaction, session: Tourna
             results_by_match = db.get_results(conn, session.tournament_id)
             opponent = next_opponent(match, session.feeders_by_target, results_by_match.get)
             advance_text = (
-                f"**{winner_label}** advances to Round {match.round + 1} "
+                f"**{winner_label}** advances to Round {session.matches_by_id[match.feeds_into_match_id].played_round} "
                 f"to face {team_label(session.teams_by_id, opponent)}."
             )
     finally:
@@ -40,7 +40,7 @@ async def _record_and_announce(interaction: discord.Interaction, session: Tourna
     await interaction.response.edit_message(content=f"✅ Result recorded. {advance_text}", view=None)
     if interaction.channel is not None:
         await interaction.channel.send(
-            f"📣 Round {match.round}: **{winner_label}** defeats **{loser_label}**. {advance_text}"
+            f"📣 Round {match.played_round}: **{winner_label}** defeats **{loser_label}**. {advance_text}"
         )
 
 
@@ -93,7 +93,7 @@ class ResultsCog(commands.Cog):
                 await _record_and_announce(winner_interaction, session, match, winner_id, loser_id)
 
             await pick_interaction.response.edit_message(
-                content=f"Round {match.round}: **{team_label(session.teams_by_id, team_a)}** vs "
+                content=f"Round {match.played_round}: **{team_label(session.teams_by_id, team_a)}** vs "
                         f"**{team_label(session.teams_by_id, team_b)}** — who won?",
                 view=WinnerPicker(team_a, team_b, session.teams_by_id, record),
             )
@@ -130,7 +130,7 @@ class ResultsCog(commands.Cog):
 
         async def show_pick_breakdown(pick_interaction: discord.Interaction, match: Match) -> None:
             team_a, team_b = slots[match.id]
-            counts = pick_distribution(matches_by_id, predictions_by_user, match.round, team_a, team_b)
+            counts = pick_distribution(matches_by_id, predictions_by_user, match.played_round, team_a, team_b)
             embed = render_match_stats_embed(tournament, match, team_a, team_b, counts, teams_by_id)
             await pick_interaction.response.edit_message(content=None, embed=embed, view=None)
 

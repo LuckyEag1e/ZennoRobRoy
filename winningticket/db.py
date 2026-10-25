@@ -5,32 +5,46 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-from bracket import Match, MatchSpec, build_feeder_index, final_match, stale_results
+from bracket import Match, MatchSpec, assign_played_rounds, build_feeder_index, final_match, stale_results
 
 DB_PATH = Path(__file__).parent / "data" / "tourney.db"
 
-# Tournament statuses, in lifecycle order.
-STATUSES = ("setup", "predictions_open", "in_progress", "completed")
+# Tournament statuses, in lifecycle order. A concluded tournament keeps all its data
+# for later use (such as seeding) but can no longer be looked up by name, so the
+# name is free for a new tournament.
+STATUSES = ("setup", "predictions_open", "in_progress", "completed", "concluded")
 _STATUS_SQL_LIST = ", ".join(f"'{status}'" for status in STATUSES)
 
 
 def is_next_status(current: str, new: str) -> bool:
-    """True if `new` directly follows `current` in the normal lifecycle (open, then lock)."""
+    """True if `new` directly follows `current` in the normal lifecycle (open, lock, then conclude)."""
     return STATUSES.index(new) == STATUSES.index(current) + 1
 
-SCHEMA = f"""
-PRAGMA foreign_keys = ON;
 
-CREATE TABLE IF NOT EXISTS tournaments (
+def _tournaments_table_sql(table_name: str) -> str:
+    return f"""
+CREATE TABLE IF NOT EXISTS {table_name} (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     guild_id    INTEGER NOT NULL,
     name        TEXT NOT NULL,
     status      TEXT NOT NULL CHECK (status IN ({_STATUS_SQL_LIST}))
                     DEFAULT 'setup',
     created_by  INTEGER NOT NULL,
-    created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
-    UNIQUE (guild_id, name)
+    created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );
+"""
+
+
+# Names only have to be unique among tournaments that haven't been concluded.
+_ACTIVE_NAME_INDEX_SQL = """
+CREATE UNIQUE INDEX IF NOT EXISTS idx_tournaments_active_name
+    ON tournaments(guild_id, name) WHERE status != 'concluded';
+"""
+
+SCHEMA = f"""
+PRAGMA foreign_keys = ON;
+{_tournaments_table_sql("tournaments")}
+{_ACTIVE_NAME_INDEX_SQL}
 
 CREATE TABLE IF NOT EXISTS teams (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -86,7 +100,30 @@ def get_connection(path: Path | None = None) -> sqlite3.Connection:
 
 def init_db(conn: sqlite3.Connection) -> None:
     conn.executescript(SCHEMA)
+    _migrate_to_concluded_status(conn)
     conn.commit()
+
+
+def _migrate_to_concluded_status(conn: sqlite3.Connection) -> None:
+    """Databases made before the concluded status have a tournaments table whose CHECK
+    rejects it and whose UNIQUE (guild_id, name) blocks reusing a concluded name. SQLite
+    can't alter either in place, so the table is rebuilt, following SQLite's documented
+    steps for changing a table that other tables reference."""
+    if conn.execute("PRAGMA user_version").fetchone()[0] >= 1:
+        return
+    conn.executescript(f"""
+PRAGMA foreign_keys = OFF;
+BEGIN;
+{_tournaments_table_sql("tournaments_new")}
+INSERT INTO tournaments_new (id, guild_id, name, status, created_by, created_at)
+    SELECT id, guild_id, name, status, created_by, created_at FROM tournaments;
+DROP TABLE tournaments;
+ALTER TABLE tournaments_new RENAME TO tournaments;
+{_ACTIVE_NAME_INDEX_SQL}
+PRAGMA user_version = 1;
+COMMIT;
+PRAGMA foreign_keys = ON;
+""")
 
 
 # -- tournaments -------------------------------------------------------------
@@ -102,7 +139,7 @@ def create_tournament(conn: sqlite3.Connection, guild_id: int, name: str, create
 
 def get_tournament_by_name(conn: sqlite3.Connection, guild_id: int, name: str) -> sqlite3.Row | None:
     return conn.execute(
-        "SELECT * FROM tournaments WHERE guild_id = ? AND name = ?",
+        "SELECT * FROM tournaments WHERE guild_id = ? AND name = ? AND status != 'concluded'",
         (guild_id, name),
     ).fetchone()
 
@@ -113,7 +150,7 @@ def get_tournament(conn: sqlite3.Connection, tournament_id: int) -> sqlite3.Row:
 
 def get_tournament_names(conn: sqlite3.Connection, guild_id: int) -> list[str]:
     rows = conn.execute(
-        "SELECT name FROM tournaments WHERE guild_id = ? ORDER BY created_at DESC",
+        "SELECT name FROM tournaments WHERE guild_id = ? AND status != 'concluded' ORDER BY created_at DESC",
         (guild_id,),
     ).fetchall()
     return [r["name"] for r in rows]
@@ -189,7 +226,7 @@ def link_feeders(conn: sqlite3.Connection, tournament_id: int, specs: list[Match
 
 def get_matches(conn: sqlite3.Connection, tournament_id: int) -> dict[int, Match]:
     rows = conn.execute("SELECT * FROM matches WHERE tournament_id = ?", (tournament_id,)).fetchall()
-    return {
+    matches_by_id = {
         r["id"]: Match(
             id=r["id"],
             round=r["round"],
@@ -201,6 +238,8 @@ def get_matches(conn: sqlite3.Connection, tournament_id: int) -> dict[int, Match
         )
         for r in rows
     }
+    assign_played_rounds(matches_by_id)
+    return matches_by_id
 
 
 def load_bracket(conn: sqlite3.Connection, tournament_id: int) -> tuple[dict[int, Match], dict, dict[int, sqlite3.Row]]:

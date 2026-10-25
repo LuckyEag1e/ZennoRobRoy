@@ -96,6 +96,18 @@ class TournamentCog(commands.Cog):
             f"🔒 Predictions are locked for **{name}**. Use `/match result` to record real outcomes."
         )
 
+    @group.command(name="conclude", description="Archive a finished tournament, keeping its results")
+    @app_commands.describe(name="Tournament name")
+    @app_commands.autocomplete(name=tournament_name_autocomplete)
+    @requires_manage_server
+    async def conclude(self, interaction: discord.Interaction, name: str) -> None:
+        if not await self._advance_status(interaction, name, "concluded"):
+            return
+        await interaction.response.send_message(
+            f"🏁 **{name}** is concluded. Its results are saved, but it no longer shows up in any "
+            f"command, and the name is free for a new tournament."
+        )
+
     @group.command(name="bracket", description="Show the current bracket")
     @app_commands.describe(name="Tournament name")
     @app_commands.autocomplete(name=tournament_name_autocomplete)

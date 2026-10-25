@@ -83,7 +83,7 @@ def render_match_stats_embed(
 ) -> discord.Embed:
     total = sum(counts.values())
     embed = discord.Embed(
-        title=f"Round {match.round} pick breakdown: {tournament_name}",
+        title=f"Round {match.played_round} pick breakdown: {tournament_name}",
         description=crowd_verdict(counts, team_a_id, team_b_id, teams_by_id),
     )
     for team_id in (team_a_id, team_b_id):
