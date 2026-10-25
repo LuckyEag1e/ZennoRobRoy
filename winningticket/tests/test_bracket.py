@@ -8,17 +8,25 @@ import pytest
 from bracket import (
     BracketError,
     Match,
+    Podium,
+    UserScore,
+    bracket_order,
     build_feeder_index,
     bye_team_id,
+    byes_in_round,
+    compute_leaderboard,
     final_match,
     generate_tree,
     is_bye,
     next_match_to_pick,
+    podium,
     resolvable_matches,
     resolve_all_slots,
     resolve_slot,
     stale_results,
+    top_places,
 )
+from helpers import matches_from_pairs, numbered
 
 
 def test_generate_tree_4_teams():
@@ -86,7 +94,7 @@ def _build_4_team_fixture():
     m101 = Match(id=101, round=1, slot_index=1, team_a_id=3, team_b_id=4,
                  feeds_into_match_id=200, feeds_into_side="B")
     m200 = Match(id=200, round=2, slot_index=0)
-    matches_by_id = {100: m100, 101: m101, 200: m200}
+    matches_by_id = numbered({100: m100, 101: m101, 200: m200})
     feeders = build_feeder_index(list(matches_by_id.values()))
     return matches_by_id, feeders
 
@@ -167,7 +175,7 @@ def _build_4_team_fixture_with_bye():
     m101 = Match(id=101, round=1, slot_index=1, team_a_id=3, team_b_id=None,
                  feeds_into_match_id=200, feeds_into_side="B")
     m200 = Match(id=200, round=2, slot_index=0)
-    matches_by_id = {100: m100, 101: m101, 200: m200}
+    matches_by_id = numbered({100: m100, 101: m101, 200: m200})
     feeders = build_feeder_index(list(matches_by_id.values()))
     return matches_by_id, feeders
 
@@ -239,3 +247,108 @@ def test_next_match_to_pick_follows_bracket_order_and_skips_byes():
     assert next_match_to_pick(matches_by_id, {}).id == 100
     assert next_match_to_pick(matches_by_id, {100: 1}).id == 200
     assert next_match_to_pick(matches_by_id, {100: 1, 200: 3}) is None
+
+
+def _match_between(matches_by_id, team_a, team_b):
+    feeders = build_feeder_index(list(matches_by_id.values()))
+    slots = resolve_all_slots(matches_by_id, lambda mid: None, feeders)
+    return next(m for m in matches_by_id.values() if set(slots[m.id]) == {team_a, team_b})
+
+
+def test_two_byes_meeting_is_a_round_1_game():
+    # 1 and 2 both have byes into a game against each other, so it's played alongside 3 vs 4.
+    matches_by_id = matches_from_pairs([(1, None), (2, None), (3, 4), (5, None)])
+    assert _match_between(matches_by_id, 1, 2).played_round == 1
+    assert _match_between(matches_by_id, 3, 4).played_round == 1
+    final = final_match(matches_by_id)
+    assert final.played_round == 3
+
+
+def test_byes_in_round_covers_round_1_byes_and_later_waits():
+    # 5 waits out round 1 for the 3/4 winner; the 1/2 winner then waits out round 2.
+    matches_by_id = matches_from_pairs([(1, None), (2, None), (3, 4), (5, None)])
+    [round_1_bye] = byes_in_round(matches_by_id, 1)
+    assert bye_team_id(round_1_bye) == 5
+    [round_2_bye] = byes_in_round(matches_by_id, 2)
+    assert round_2_bye is _match_between(matches_by_id, 1, 2)
+    assert byes_in_round(matches_by_id, 3) == []
+
+
+def test_played_rounds_survive_a_missing_feeder_link():
+    matches_by_id = matches_from_pairs([(1, 2), (3, 4)])
+    for match in matches_by_id.values():
+        if match.round == 1:
+            match.feeds_into_match_id = None
+    numbered(matches_by_id)
+    assert final_match(matches_by_id).played_round in (1, 2)
+    assert all(m.played_round is not None for m in matches_by_id.values())
+
+
+def test_next_match_to_pick_finishes_round_1_before_round_2():
+    matches_by_id = matches_from_pairs([(1, None), (2, None), (3, 4), (5, None)])
+    first = next_match_to_pick(matches_by_id, {})
+    second = next_match_to_pick(matches_by_id, {first.id: 1})
+    assert {first.played_round, second.played_round} == {1}
+    assert first.round == 2  # top of the bracket first, even though it's a later tree column
+
+
+def test_a_game_between_two_byes_scores_as_round_1():
+    matches_by_id = matches_from_pairs([(1, None), (2, None), (3, 4), (5, None)])
+    game = _match_between(matches_by_id, 1, 2)
+    [score] = compute_leaderboard(matches_by_id, {game.id: 1}, {7: {game.id: 1}})
+    assert score.points == 1
+
+
+def _play_out(matches_by_id, winner_of_pair):
+    """Results for every game, decided by `winner_of_pair(team_a, team_b)`."""
+    feeders = build_feeder_index(list(matches_by_id.values()))
+    results = {}
+    for match in sorted(matches_by_id.values(), key=bracket_order):
+        if not is_bye(match):
+            results[match.id] = winner_of_pair(*resolve_slot(match, matches_by_id, results.get, feeders))
+    return feeders, results
+
+
+def test_podium_has_both_semi_final_losers_in_third():
+    matches_by_id = matches_from_pairs([(1, 2), (3, 4), (5, 6), (7, 8)])
+    feeders, results = _play_out(matches_by_id, min)
+    assert podium(matches_by_id, feeders, results) == Podium(champion=1, runner_up=5, third_places=[3, 7])
+
+
+def test_podium_leaves_out_a_bye_into_the_final():
+    # 3 goes straight to the final, so only the other side's semi-final has a loser.
+    matches_by_id = matches_from_pairs([(1, 2), (3, None)])
+    feeders, results = _play_out(matches_by_id, min)
+    assert podium(matches_by_id, feeders, results) == Podium(champion=1, runner_up=3, third_places=[2])
+
+
+def test_podium_before_the_final_is_played():
+    matches_by_id = matches_from_pairs([(1, 2), (3, 4)])
+    feeders = build_feeder_index(list(matches_by_id.values()))
+    assert podium(matches_by_id, feeders, {}) == Podium(champion=None, runner_up=None, third_places=[])
+
+
+def test_podium_ignores_a_result_naming_a_team_not_in_the_final():
+    matches_by_id = matches_from_pairs([(1, 2), (3, 4)])
+    feeders, results = _play_out(matches_by_id, min)
+    results[final_match(matches_by_id).id] = 99
+    assert podium(matches_by_id, feeders, results).runner_up is None
+
+
+def _scores(points_by_user):
+    return [UserScore(user_id=u, points=p, correct_picks=0, possible_picks=0) for u, p in points_by_user]
+
+
+def test_top_places_share_a_place_on_tied_points():
+    scores = _scores([(1, 9), (2, 9), (3, 7), (4, 5), (5, 5)])
+    assert [(place, s.user_id) for place, s in top_places(scores)] == [(1, 1), (1, 2), (3, 3)]
+
+
+def test_top_places_includes_everyone_tied_for_the_last_place():
+    scores = _scores([(1, 9), (2, 7), (3, 5), (4, 5), (5, 1)])
+    assert [(place, s.user_id) for place, s in top_places(scores)] == [(1, 1), (2, 2), (3, 3), (3, 4)]
+
+
+def test_top_places_leaves_out_players_with_no_points():
+    assert [s.user_id for _, s in top_places(_scores([(1, 4), (2, 0), (3, 0)]))] == [1]
+    assert top_places(_scores([(1, 0), (2, 0)])) == []

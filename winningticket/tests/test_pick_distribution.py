@@ -4,6 +4,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from bracket import Match, pick_distribution
+from helpers import numbered
 
 
 def _bracket_4_teams():
@@ -12,7 +13,7 @@ def _bracket_4_teams():
     m2 = Match(id=2, round=1, slot_index=1, team_a_id=3, team_b_id=4,
                feeds_into_match_id=3, feeds_into_side="B")
     m3 = Match(id=3, round=2, slot_index=0)
-    return {1: m1, 2: m2, 3: m3}
+    return numbered({1: m1, 2: m2, 3: m3})
 
 
 def test_pick_distribution_round1_simple_majority():

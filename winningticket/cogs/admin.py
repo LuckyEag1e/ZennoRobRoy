@@ -16,7 +16,7 @@ from common import (
 )
 from labels import dropped_results_note, team_label
 
-STATUS_CHOICES = [app_commands.Choice(name=status, value=status) for status in db.STATUSES]
+STATUS_CHOICES = [app_commands.Choice(name=status, value=status) for status in db.FORCEABLE_STATUSES]
 
 
 async def team_name_autocomplete(interaction: discord.Interaction, current: str) -> list[app_commands.Choice[str]]:
@@ -156,7 +156,7 @@ class AdminCog(commands.Cog):
                     finally:
                         conn.close()
                     await confirm_interaction.response.edit_message(
-                        content=f"✅ Set Round {match.round} winner to **{winner_label}**.{dropped_results_note(dropped)}",
+                        content=f"✅ Set Round {match.played_round} winner to **{winner_label}**.{dropped_results_note(dropped)}",
                         view=None,
                     )
 
@@ -170,7 +170,7 @@ class AdminCog(commands.Cog):
                     await record(winner_interaction)
 
             await pick_interaction.response.edit_message(
-                content=f"Round {match.round}: **{team_label(session.teams_by_id, team_a)}** vs "
+                content=f"Round {match.played_round}: **{team_label(session.teams_by_id, team_a)}** vs "
                         f"**{team_label(session.teams_by_id, team_b)}** — force winner to:",
                 view=WinnerPicker(team_a, team_b, session.teams_by_id, choose),
             )

@@ -6,6 +6,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from ascii_bracket import prediction_marker, real_result_marker, render_tree
 from bracket import Match, build_feeder_index, resolve_all_slots
+from helpers import matches_from_pairs, numbered
 
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
@@ -54,7 +55,7 @@ def _4_team_bracket():
     m2 = Match(id=2, round=1, slot_index=1, team_a_id=3, team_b_id=4,
                feeds_into_match_id=3, feeds_into_side="B")
     m3 = Match(id=3, round=2, slot_index=0)
-    matches = {1: m1, 2: m2, 3: m3}
+    matches = numbered({1: m1, 2: m2, 3: m3})
     teams = {1: _team("Alpha"), 2: _team("Beta"), 3: _team("Gamma"), 4: _team("Delta")}
     return matches, teams
 
@@ -68,7 +69,7 @@ def _8_team_bracket_with_byes():
     m5 = Match(id=5, round=2, slot_index=0, feeds_into_match_id=7, feeds_into_side="A")
     m6 = Match(id=6, round=2, slot_index=1, feeds_into_match_id=7, feeds_into_side="B")
     m7 = Match(id=7, round=3, slot_index=0)
-    matches = {1: m1, 2: m2, 3: m3, 4: m4, 5: m5, 6: m6, 7: m7}
+    matches = numbered({1: m1, 2: m2, 3: m3, 4: m4, 5: m5, 6: m6, 7: m7})
     teams = {
         1: _team("Ash"), 2: _team("Birch"), 3: _team("Cedar"),
         4: _team("Dogwood"), 5: _team("Elm"), 6: _team("Fir"),
@@ -167,7 +168,64 @@ def test_render_tree_byes_shown_in_summary_and_as_single_line_in_tree():
     tree_body = text.split("```ansi")[1]
     cedar_line = _line_for(tree_body, "Cedar")
     assert "vs" not in _strip_ansi(cedar_line)
-    assert _is_bold(cedar_line)  # byes always auto-advance
+    assert _is_plain_colored(cedar_line)  # Cedar's first game hasn't been played yet
+
+
+def test_render_tree_connects_each_game_from_its_own_junction():
+    # Ash vs Birch, then the winner plays Cedar (a bye). Birch must only connect to Ash,
+    # and it's the Ash/Birch junction, not Birch's line, that leads on to Cedar's game.
+    matches, teams = _8_team_bracket_with_byes()
+    stripped = _strip_ansi(_render(matches, teams, results={1: 1}))
+    lines = [line.rstrip() for line in stripped.splitlines()]
+    ash = next(i for i, line in enumerate(lines) if "Ash" in line)
+    assert lines[ash].endswith("─┐")
+    assert "├─┐" in lines[ash + 1] and lines[ash + 1].endswith("+Ash")
+    assert lines[ash + 2].startswith("-Birch") and lines[ash + 2].endswith("┘ │")
+    assert lines[ash + 4].startswith(" Cedar") and lines[ash + 4].endswith("───┘ │")
+
+
+def test_render_tree_colours_both_sides_of_a_game_alike():
+    # Ash reaches round 2 by winning; Cedar reaches it with a bye. Both play the same game.
+    matches, teams = _8_team_bracket_with_byes()
+    text = _render(matches, teams, results={1: 1})
+    tree_body = text.split("```ansi")[1]
+    ash_winner_line = next(line for line in tree_body.splitlines() if "├" in line and "Ash" in _strip_ansi(line))
+    assert _color_code(ash_winner_line) == _color_code(_line_for(tree_body, "Cedar"))
+
+
+def test_render_tree_lists_a_game_winner_who_sits_out_a_round():
+    # Ash and Birch get byes and meet in round 1; Dogwood vs Elm's winner then plays Fir in
+    # round 2, so the Ash/Birch winner waits out round 2.
+    matches, teams = _8_team_bracket_with_byes()
+    matches[1] = Match(id=1, round=1, slot_index=0, team_a_id=1, team_b_id=None, feeds_into_match_id=5, feeds_into_side="A")
+    matches[2] = Match(id=2, round=1, slot_index=1, team_a_id=2, team_b_id=None, feeds_into_match_id=5, feeds_into_side="B")
+    numbered(matches)
+    assert "Byes (round 2): winner of Ash vs Birch" in _render(matches, teams)
+    assert "Byes (round 2): Ash" in _render(matches, teams, results={5: 1})
+
+
+def test_render_tree_lists_an_unknown_waiting_team_as_tbd():
+    # The top half needs three rounds to reach the final; the bottom half's four byes
+    # need two, so its winner waits out round 3 before anyone in it has played.
+    matches = matches_from_pairs([(1, 2), (3, 4), (5, 6), (7, 8), (9, None), (10, None), (11, None), (12, None)])
+    teams = {team_id: _team(f"T{team_id}") for team_id in range(1, 13)}
+    assert "Byes (round 3): TBD" in _render(matches, teams)
+
+
+def test_render_tree_winner_labels_have_no_trailing_padding():
+    matches, teams = _4_team_bracket()
+    text = _render(matches, teams, results={1: 1})
+    assert all(line == line.rstrip() for line in _strip_ansi(text).splitlines())
+
+
+def test_render_tree_lists_only_byes_that_skip_a_game():
+    # Ash and Birch both get byes, then meet in their first game, so neither skips anything.
+    matches, teams = _8_team_bracket_with_byes()
+    matches[1] = Match(id=1, round=1, slot_index=0, team_a_id=1, team_b_id=None, feeds_into_match_id=5, feeds_into_side="A")
+    matches[2] = Match(id=2, round=1, slot_index=1, team_a_id=2, team_b_id=None, feeds_into_match_id=5, feeds_into_side="B")
+    numbered(matches)
+    text = _render(matches, teams)
+    assert "Byes (round 1): Fir" in text
 
 
 def test_render_tree_round2_shows_bye_advanced_team_normally():

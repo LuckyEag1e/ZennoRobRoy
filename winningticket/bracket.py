@@ -38,6 +38,17 @@ class Match:
     team_b_id: Optional[int] = None
     feeds_into_match_id: Optional[int] = None
     feeds_into_side: Optional[str] = None  # 'A' or 'B'
+    # The round players see, which also sets the points. It differs from `round` (the tree
+    # column) when byes meet: their match sits in round 2 of the tree but is both teams'
+    # first game. Left unset until assign_played_rounds() numbers the whole tree.
+    played_round: Optional[int] = None
+
+
+@dataclass
+class Podium:
+    champion: Optional[int]
+    runner_up: Optional[int]
+    third_places: list[int]  # both semi-final losers: there's no third-place game
 
 
 @dataclass
@@ -83,13 +94,39 @@ def check_matchup_count(count: int) -> None:
         )
 
 
+def assign_played_rounds(matches_by_id: dict[int, Match], feeders_by_target: dict[int, dict[str, Match]]) -> None:
+    """Number each match by the round it's actually played in: one round after the later
+    of its two feeder games. A bye has no game, so it gets 0."""
+    # Feeders are always in an earlier tree column, so they're numbered first.
+    for match in sorted(matches_by_id.values(), key=lambda m: m.round):
+        if match.round == 1:
+            match.played_round = 0 if is_bye(match) else 1
+            continue
+        feeders = feeders_by_target.get(match.id, {})
+        match.played_round = 1 + max(
+            (feeder.played_round for feeder in feeders.values() if feeder is not None), default=0
+        )
+
+
+def byes_in_round(matches_by_id: dict[int, Match], round_num: int) -> list[Match]:
+    """Matches whose winner (or, for a round-1 bye, whose only team) sits out `round_num`
+    waiting for their next game, in bracket order."""
+    waiting = []
+    for match in matches_by_id.values():
+        next_match = matches_by_id.get(match.feeds_into_match_id)
+        if next_match is not None and match.played_round < round_num < next_match.played_round:
+            waiting.append(match)
+    return sorted(waiting, key=bracket_order)
+
+
 def rounds(matches_by_id: dict[int, Match]) -> list[int]:
-    return sorted({m.round for m in matches_by_id.values()})
+    return sorted({m.played_round for m in matches_by_id.values() if m.played_round >= 1})
 
 
 def bracket_order(match: Match) -> tuple[int, int]:
-    """Sort key: earlier rounds first, then top to bottom."""
-    return (match.round, match.slot_index)
+    """Sort key: earlier rounds first, then top to bottom. The second part is the match's
+    first round-1 row, which compares matches from different tree columns."""
+    return (match.played_round, match.slot_index << (match.round - 1))
 
 
 def final_match(matches_by_id: dict[int, Match]) -> Match:
@@ -107,7 +144,7 @@ def next_match_to_pick(matches_by_id: dict[int, Match], picks: dict[int, int]) -
 
 
 def matches_in_round(matches_by_id: dict[int, Match], round_num: int) -> list[Match]:
-    return sorted((m for m in matches_by_id.values() if m.round == round_num), key=bracket_order)
+    return sorted((m for m in matches_by_id.values() if m.played_round == round_num), key=bracket_order)
 
 
 def generate_tree(team_pairs: list[tuple[Optional[int], Optional[int]]]) -> list[MatchSpec]:
@@ -285,7 +322,7 @@ def compute_leaderboard(
                 continue
             possible_picks += 1
             if predicted_winner == actual_winner:
-                points += 2 ** (match.round - 1)
+                points += 2 ** (match.played_round - 1)
                 correct_picks += 1
         scores.append(
             UserScore(
@@ -312,7 +349,7 @@ def pick_distribution(
     users' predicted brackets can place a team in different match_ids once
     round >= 2. Returns {team_id: count}, including zero counts for both.
     """
-    round_match_ids = {m.id for m in matches_by_id.values() if m.round == round_num}
+    round_match_ids = {m.id for m in matches_by_id.values() if m.played_round == round_num}
     counts = {team_a_id: 0, team_b_id: 0}
     for preds in predictions_by_user.values():
         for match_id, predicted_winner in preds.items():
@@ -321,3 +358,43 @@ def pick_distribution(
             if predicted_winner in counts:
                 counts[predicted_winner] += 1
     return counts
+
+
+def podium(
+    matches_by_id: dict[int, Match],
+    feeders_by_target: dict[int, dict[str, Match]],
+    results_by_match: dict[int, int],
+) -> Podium:
+    """The final's winner and loser, and the losers of the games that fed into the final."""
+    slots = resolve_all_slots(matches_by_id, results_by_match.get, feeders_by_target)
+
+    def loser(match: Match) -> Optional[int]:
+        winner = results_by_match.get(match.id)
+        if winner is None:
+            return None
+        team_a, team_b = slots[match.id]
+        if winner == team_a:
+            return team_b
+        if winner == team_b:
+            return team_a
+        return None  # a result naming a team that isn't in this match
+
+    final = final_match(matches_by_id)
+    semi_finals = [m for m in feeders_by_target.get(final.id, {}).values() if m is not None and not is_bye(m)]
+    third_places = [team for team in map(loser, semi_finals) if team is not None]
+    return Podium(results_by_match.get(final.id), loser(final), third_places)
+
+
+def top_places(scores: list[UserScore], places: int = 3) -> list[tuple[int, UserScore]]:
+    """(place, score) for everyone placing in the top `places`. Tied points share a place,
+    and the next place is skipped for each extra player tied (1, 1, 3). Nobody places
+    with 0 points."""
+    placed = []
+    for i, score in enumerate(scores):  # already sorted by points, highest first
+        if score.points == 0:
+            break
+        place = i + 1 if i == 0 or score.points != scores[i - 1].points else placed[-1][0]
+        if place > places:
+            break
+        placed.append((place, score))
+    return placed

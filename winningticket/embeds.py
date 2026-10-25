@@ -7,8 +7,11 @@ import sqlite3
 import discord
 
 from ascii_bracket import prediction_marker, real_result_marker, render_tree
-from bracket import Match, UserScore
-from labels import crowd_verdict, pick_share, score_label, team_label
+from bracket import Match, Podium, UserScore
+from labels import crowd_verdict, join_within, pick_share, pickem_podium_lines, podium_lines, score_label, team_label
+
+# Discord rejects an embed field value longer than this.
+EMBED_FIELD_LIMIT = 1024
 
 
 def render_bracket_embed(
@@ -51,6 +54,19 @@ def render_leaderboard_embed(tournament_name: str, scores: list[UserScore]) -> d
     return embed
 
 
+def render_final_results_embed(
+    tournament_name: str, result: Podium, teams_by_id: dict[int, sqlite3.Row], scores: list[UserScore],
+) -> discord.Embed:
+    embed = discord.Embed(title=f"🏆 {tournament_name}: final results")
+    embed.add_field(name="Podium", value="\n".join(podium_lines(result, teams_by_id)), inline=False)
+    pickem = pickem_podium_lines(scores, lambda user_id: f"<@{user_id}>")
+    embed.add_field(name="Pick'em leaders", value=join_within(pickem, EMBED_FIELD_LIMIT), inline=False)
+    if scores:
+        player_word = "player" if len(scores) == 1 else "players"
+        embed.set_footer(text=f"{len(scores)} {player_word} made predictions. Thanks for playing!")
+    return embed
+
+
 def render_my_picks_embed(
     tournament_name: str,
     user: discord.abc.User,
@@ -83,7 +99,7 @@ def render_match_stats_embed(
 ) -> discord.Embed:
     total = sum(counts.values())
     embed = discord.Embed(
-        title=f"Round {match.round} pick breakdown: {tournament_name}",
+        title=f"Round {match.played_round} pick breakdown: {tournament_name}",
         description=crowd_verdict(counts, team_a_id, team_b_id, teams_by_id),
     )
     for team_id in (team_a_id, team_b_id):

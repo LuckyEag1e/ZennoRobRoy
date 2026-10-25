@@ -38,6 +38,7 @@ bye (they skip round 1 and advance straight to round 2). Byes never appear in `/
 `/match result`, or `/match stats` -- they're invisible to players and auto-resolve with
 no admin action needed. They still show up in `/tournament bracket` and `/mypicks`,
 labeled `(bye)`, so the bracket shape stays clear. Both sides can't be blank in the same row.
+Two byes in neighbouring rows meet in their first game, so that game counts as round 1.
 
 ```csv
 team_a,team_b
@@ -57,6 +58,9 @@ Admin:
 - `/tournament open name:<name>` — let members start `/predict`
 - `/tournament lock name:<name>` — stop prediction submissions, start recording real results
 - `/match result tournament:<name>` — pick a ready match and record who really won
+- `/tournament conclude name:<name>` — archive a completed tournament and post its podium
+  and top pick'em scorers. Its results stay in the database (for future seeding), but it
+  disappears from every command and its name can be reused.
 - `/admin ...` — troubleshooting/correction commands (force status, force/overwrite a
   result, clear a result, edit a team's name/seed, clear a user's predictions, delete
   a tournament). All require the Manage Server permission.
@@ -79,7 +83,7 @@ python cli.py
 ```
 
 Commands mirror the slash commands: `create <name> <csv>`, `open <name>`, `predict <name>`,
-`lock <name>`, `matchresult <name>`, `matchstats <name>`, `mypicks <name>`, `bracket <name>`,
+`lock <name>`, `conclude <name>`, `matchresult <name>`, `matchstats <name>`, `mypicks <name>`, `bracket <name>`,
 `leaderboard <name>`, `tournaments`, and the admin set: `admin_setstatus`, `admin_delete`,
 `admin_editteam`, `admin_setresult`, `admin_clearresult`, `admin_clearpredictions`.
 Use `as <user_id> <name>` to switch which simulated user you're acting as (so you can

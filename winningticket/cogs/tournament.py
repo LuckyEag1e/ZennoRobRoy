@@ -1,14 +1,16 @@
 from __future__ import annotations
 
+import sqlite3
+
 import discord
 from discord import app_commands
 from discord.ext import commands
 
 import db
-from bracket import compute_leaderboard, resolve_all_slots
+from bracket import resolve_all_slots
 from common import requires_manage_server, resolve_emoji, resolve_tournament, tournament_name_autocomplete
 from csv_import import CsvValidationError, import_tournament, parse_csv
-from embeds import render_bracket_embed, render_leaderboard_embed
+from embeds import render_bracket_embed, render_final_results_embed, render_leaderboard_embed
 
 
 class TournamentCog(commands.Cog):
@@ -20,20 +22,29 @@ class TournamentCog(commands.Cog):
     )
 
     @staticmethod
-    async def _advance_status(interaction: discord.Interaction, name: str, new_status: str) -> bool:
+    async def _resolve_for_next_status(interaction: discord.Interaction, conn: sqlite3.Connection,
+                                       name: str, new_status: str) -> sqlite3.Row | None:
+        """Fetch a tournament that's at the step just before `new_status`, or reply with an
+        error and return None."""
+        tournament = await resolve_tournament(interaction, conn, name)
+        if tournament is None:
+            return None
+        if not db.is_next_status(tournament["status"], new_status):
+            await interaction.response.send_message(
+                f"**{name}** is `{tournament['status']}`, so it can't move to `{new_status}` from here. "
+                f"Use `/admin setstatus` to force a status.",
+                ephemeral=True,
+            )
+            return None
+        return tournament
+
+    async def _advance_status(self, interaction: discord.Interaction, name: str, new_status: str) -> bool:
         """Move a tournament one step along its lifecycle. Replies with an error and
         returns False if it isn't at the step just before `new_status`."""
         conn = db.get_connection()
         try:
-            tournament = await resolve_tournament(interaction, conn, name)
+            tournament = await self._resolve_for_next_status(interaction, conn, name, new_status)
             if tournament is None:
-                return False
-            if not db.is_next_status(tournament["status"], new_status):
-                await interaction.response.send_message(
-                    f"**{name}** is `{tournament['status']}`, so it can't move to `{new_status}` from here. "
-                    f"Use `/admin setstatus` to force a status.",
-                    ephemeral=True,
-                )
                 return False
             db.set_tournament_status(conn, tournament["id"], new_status)
             return True
@@ -96,6 +107,34 @@ class TournamentCog(commands.Cog):
             f"🔒 Predictions are locked for **{name}**. Use `/match result` to record real outcomes."
         )
 
+    @group.command(name="conclude", description="Archive a finished tournament, keeping its results")
+    @app_commands.describe(name="Tournament name")
+    @app_commands.autocomplete(name=tournament_name_autocomplete)
+    @requires_manage_server
+    async def conclude(self, interaction: discord.Interaction, name: str) -> None:
+        conn = db.get_connection()
+        try:
+            tournament = await self._resolve_for_next_status(interaction, conn, name, "concluded")
+            if tournament is None:
+                return
+            result, teams_by_id, scores = db.load_final_results(conn, tournament["id"])
+            if result.champion is None:
+                await interaction.response.send_message(
+                    f"**{name}**'s final has no result yet, so it can't be concluded. "
+                    f"Record it with `/match result` first.",
+                    ephemeral=True,
+                )
+                return
+            # Post before archiving: once concluded, nothing can find the tournament to post again.
+            await interaction.response.send_message(embed=render_final_results_embed(name, result, teams_by_id, scores))
+            db.set_tournament_status(conn, tournament["id"], "concluded")
+        finally:
+            conn.close()
+        await interaction.followup.send(
+            f"**{name}** is concluded. Its results are saved, and the name is free for a new tournament.",
+            ephemeral=True,
+        )
+
     @group.command(name="bracket", description="Show the current bracket")
     @app_commands.describe(name="Tournament name")
     @app_commands.autocomplete(name=tournament_name_autocomplete)
@@ -124,11 +163,7 @@ class TournamentCog(commands.Cog):
             tournament = await resolve_tournament(interaction, conn, name)
             if tournament is None:
                 return
-            matches_by_id = db.get_matches(conn, tournament["id"])
-            results_by_match = db.get_results(conn, tournament["id"])
-            predictions_by_user = db.get_all_predictions(conn, tournament["id"])
-            scores = compute_leaderboard(matches_by_id, results_by_match, predictions_by_user)
-            embed = render_leaderboard_embed(name, scores)
+            embed = render_leaderboard_embed(name, db.load_scores(conn, tournament["id"]))
             await interaction.response.send_message(embed=embed)
         finally:
             conn.close()

@@ -2,24 +2,31 @@
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import Callable, Optional
 
-from bracket import Match, UserScore, bye_team_id, is_bye, matches_in_round, rounds
+from bracket import Match, Podium, UserScore, byes_in_round, effective_winner, matches_in_round, rounds, top_places
+
+MEDALS = {1: "🥇", 2: "🥈", 3: "🥉"}
 
 
-def team_label(teams_by_id: dict, team_id: Optional[int]) -> str:
+def team_name(teams_by_id: dict, team_id: Optional[int]) -> str:
     if team_id is None:
         return "TBD"
     team = teams_by_id.get(team_id)
-    if team is None:
-        return "Unknown"
-    seed = team["seed"]
-    return f"({seed}) {team['name']}" if seed is not None else team["name"]
+    return team["name"] if team is not None else "Unknown"
+
+
+def team_label(teams_by_id: dict, team_id: Optional[int]) -> str:
+    """The team's name, prefixed with its seed when it has one."""
+    team = teams_by_id.get(team_id) if team_id is not None else None
+    if team is None or team["seed"] is None:
+        return team_name(teams_by_id, team_id)
+    return f"({team['seed']}) {team['name']}"
 
 
 def matchup_label(match: Match, slots: dict, teams_by_id: dict) -> str:
     team_a, team_b = slots[match.id]
-    return f"R{match.round}: {team_label(teams_by_id, team_a)} vs {team_label(teams_by_id, team_b)}"
+    return f"R{match.played_round}: {team_label(teams_by_id, team_a)} vs {team_label(teams_by_id, team_b)}"
 
 
 def score_label(score: UserScore) -> str:
@@ -48,12 +55,41 @@ def dropped_results_note(dropped: list[int]) -> str:
 
 
 def pick_review_lines(matches_by_id: dict[int, Match], picks: dict[int, int], teams_by_id: dict) -> list[str]:
-    """One line per match, in bracket order, showing the user's pick (or the bye)."""
+    """One line per game showing the user's pick, then one per team sitting that round out, round by round."""
     lines = []
     for round_num in rounds(matches_by_id):
         for match in matches_in_round(matches_by_id, round_num):
-            if is_bye(match):
-                lines.append(f"Round {round_num}: {team_label(teams_by_id, bye_team_id(match))} (bye)")
-            else:
-                lines.append(f"Round {round_num}: {team_label(teams_by_id, picks.get(match.id))}")
+            lines.append(f"Round {round_num}: {team_label(teams_by_id, picks.get(match.id))}")
+        for match in byes_in_round(matches_by_id, round_num):
+            lines.append(f"Round {round_num}: {team_label(teams_by_id, effective_winner(match, picks.get))} (bye)")
     return lines
+
+
+def podium_lines(result: Podium, teams_by_id: dict) -> list[str]:
+    """Names only: once the tournament is over, seeds don't say anything about the result."""
+    lines = [f"{MEDALS[1]} {team_name(teams_by_id, result.champion)}",
+             f"{MEDALS[2]} {team_name(teams_by_id, result.runner_up)}"]
+    if result.third_places:
+        lines.append(f"{MEDALS[3]} " + " & ".join(team_name(teams_by_id, t) for t in result.third_places))
+    return lines
+
+
+def pickem_podium_lines(scores: list[UserScore], player_label: Callable[[int], str]) -> list[str]:
+    """The top three pick'em scorers, with `player_label` naming each by user id."""
+    if not scores:
+        return ["Nobody made predictions."]
+    placed = top_places(scores)
+    if not placed:
+        return ["Nobody scored any points."]
+    return [f"{MEDALS[place]} {player_label(s.user_id)} — {score_label(s)}" for place, s in placed]
+
+
+def join_within(lines: list[str], limit: int) -> str:
+    """Join lines with newlines, dropping lines from the end, with a note saying how many,
+    so the result fits in `limit` characters."""
+    for shown in range(len(lines), 0, -1):
+        hidden = len(lines) - shown
+        text = "\n".join(lines[:shown] + ([f"…and {hidden} more"] if hidden else []))
+        if len(text) <= limit:
+            return text
+    return f"…and {len(lines)} more"

@@ -34,6 +34,8 @@ from labels import (
     matchup_label,
     pick_review_lines,
     pick_share,
+    pickem_podium_lines,
+    podium_lines,
     score_label,
     team_label,
 )
@@ -126,6 +128,23 @@ class WinningTicketCLI(cmd.Cmd):
         if self._advance_status(arg.strip(), "in_progress"):
             print(f"'{arg.strip()}' locked. Use 'matchresult' to record real outcomes.")
 
+    def do_conclude(self, arg: str) -> None:
+        "Archive a finished tournament and show its final results: conclude <name>"
+        name = arg.strip()
+        tournament = self._require_next_status(name, "concluded")
+        if tournament is None:
+            return
+        result, teams_by_id, scores = db.load_final_results(self.conn, tournament["id"])
+        if result.champion is None:
+            print(f"'{name}' has no result for its final yet, so it can't be concluded.")
+            return
+        print(f"Final results: {name}\n")
+        print("\n".join(podium_lines(result, teams_by_id)))
+        print("\nPick'em leaders")
+        print("\n".join(pickem_podium_lines(scores, lambda user_id: f"user {user_id}")))
+        db.set_tournament_status(self.conn, tournament["id"], "concluded")
+        print(f"\n'{name}' concluded. Its results are saved, and the name is free for a new tournament.")
+
     def do_bracket(self, arg: str) -> None:
         "Show the real bracket's current progress: bracket <name>"
         tournament = self._require_tournament(arg.strip())
@@ -144,10 +163,7 @@ class WinningTicketCLI(cmd.Cmd):
         tournament = self._require_tournament(arg.strip())
         if tournament is None:
             return
-        matches_by_id = db.get_matches(self.conn, tournament["id"])
-        results_by_match = db.get_results(self.conn, tournament["id"])
-        predictions_by_user = db.get_all_predictions(self.conn, tournament["id"])
-        scores = compute_leaderboard(matches_by_id, results_by_match, predictions_by_user)
+        scores = db.load_scores(self.conn, tournament["id"])
         if not scores:
             print("No predictions submitted yet.")
             return
@@ -244,7 +260,7 @@ class WinningTicketCLI(cmd.Cmd):
             return
         team_a, team_b = slots[match.id]
         predictions_by_user = db.get_all_predictions(self.conn, tournament["id"])
-        counts = pick_distribution(matches_by_id, predictions_by_user, match.round, team_a, team_b)
+        counts = pick_distribution(matches_by_id, predictions_by_user, match.played_round, team_a, team_b)
         total = sum(counts.values())
         for team_id in (team_a, team_b):
             print(f"{team_label(teams_by_id, team_id)}: {pick_share(counts[team_id], total)}")
@@ -256,11 +272,11 @@ class WinningTicketCLI(cmd.Cmd):
         "Force a tournament's status: admin_setstatus <name> <setup|predictions_open|in_progress|completed>"
         parts = shlex.split(arg)
         if len(parts) != 2:
-            print(f"usage: admin_setstatus <name> <{'|'.join(db.STATUSES)}>")
+            print(f"usage: admin_setstatus <name> <{'|'.join(db.FORCEABLE_STATUSES)}>")
             return
         name, status = parts
-        if status not in db.STATUSES:
-            print(f"status must be one of: {', '.join(db.STATUSES)}")
+        if status not in db.FORCEABLE_STATUSES:
+            print(f"status must be one of: {', '.join(db.FORCEABLE_STATUSES)} (use 'conclude' to conclude)")
             return
         tournament = self._require_tournament(name)
         if tournament is None:
@@ -370,14 +386,21 @@ class WinningTicketCLI(cmd.Cmd):
 
     # -- shared helpers ---------------------------------------------------------
 
-    def _advance_status(self, name: str, new_status: str) -> bool:
-        """Move a tournament one step along its lifecycle, refusing to skip or go back."""
+    def _require_next_status(self, name: str, new_status: str):
+        """The tournament, if it's at the step just before `new_status`; otherwise None."""
         tournament = self._require_tournament(name)
         if tournament is None:
-            return False
+            return None
         if not db.is_next_status(tournament["status"], new_status):
             print(f"'{name}' is {tournament['status']}, so it can't move to {new_status} from here. "
                   f"Use admin_setstatus to force a status.")
+            return None
+        return tournament
+
+    def _advance_status(self, name: str, new_status: str) -> bool:
+        """Move a tournament one step along its lifecycle, refusing to skip or go back."""
+        tournament = self._require_next_status(name, new_status)
+        if tournament is None:
             return False
         db.set_tournament_status(self.conn, tournament["id"], new_status)
         return True
@@ -453,7 +476,7 @@ class WinningTicketCLI(cmd.Cmd):
         opponent = next_opponent(match, feeders, db.get_results(self.conn, tournament["id"]).get)
         print(
             f"Recorded: {winner_label} defeats {loser_label}. "
-            f"Advances to Round {match.round + 1} vs {team_label(teams_by_id, opponent)}."
+            f"Advances to Round {matches_by_id[match.feeds_into_match_id].played_round} vs {team_label(teams_by_id, opponent)}."
             f"{dropped_results_note(dropped)}"
         )
 
