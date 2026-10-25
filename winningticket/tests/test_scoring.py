@@ -4,6 +4,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from bracket import Match, compute_leaderboard
+from helpers import numbered
 
 
 def _bracket_4_teams():
@@ -13,7 +14,7 @@ def _bracket_4_teams():
     m2 = Match(id=2, round=1, slot_index=1, team_a_id=3, team_b_id=4,
                feeds_into_match_id=3, feeds_into_side="B")
     m3 = Match(id=3, round=2, slot_index=0)
-    return {1: m1, 2: m2, 3: m3}
+    return numbered({1: m1, 2: m2, 3: m3})
 
 
 def test_scoring_basic_round1_and_round2_points():
@@ -75,7 +76,7 @@ def test_scoring_bye_match_never_scored_even_if_somehow_predicted():
     m2 = Match(id=2, round=1, slot_index=1, team_a_id=3, team_b_id=None,
                feeds_into_match_id=3, feeds_into_side="B")
     m3 = Match(id=3, round=2, slot_index=0)
-    matches = {1: m1, 2: m2, 3: m3}
+    matches = numbered({1: m1, 2: m2, 3: m3})
 
     results = {1: 1, 3: 1}  # m2 (the bye) never appears in match_results
     preds = {42: {1: 1, 2: 3, 3: 1}}  # user "predicted" the bye anyway
@@ -110,6 +111,8 @@ def test_leaderboard_16_team_bracket_full_run():
             team_a_id=team_a_id, team_b_id=team_b_id,
             feeds_into_match_id=feeds_into_match_id, feeds_into_side=spec.feeds_into_side,
         )
+
+    numbered(matches)
 
     # team ids 0,2,4,...,14 always win (highest seed always wins, no upsets in reality)
     from bracket import build_feeder_index, resolve_slot

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from bracket import Match, UserScore, bye_team_id, is_bye, matches_in_round, rounds
+from bracket import Match, UserScore, byes_in_round, effective_winner, matches_in_round, rounds
 
 
 def team_label(teams_by_id: dict, team_id: Optional[int]) -> str:
@@ -48,12 +48,11 @@ def dropped_results_note(dropped: list[int]) -> str:
 
 
 def pick_review_lines(matches_by_id: dict[int, Match], picks: dict[int, int], teams_by_id: dict) -> list[str]:
-    """One line per match, in bracket order, showing the user's pick (or the bye)."""
+    """One line per game showing the user's pick, then one per team sitting that round out, round by round."""
     lines = []
     for round_num in rounds(matches_by_id):
         for match in matches_in_round(matches_by_id, round_num):
-            if is_bye(match):
-                lines.append(f"Round {round_num}: {team_label(teams_by_id, bye_team_id(match))} (bye)")
-            else:
-                lines.append(f"Round {round_num}: {team_label(teams_by_id, picks.get(match.id))}")
+            lines.append(f"Round {round_num}: {team_label(teams_by_id, picks.get(match.id))}")
+        for match in byes_in_round(matches_by_id, round_num):
+            lines.append(f"Round {round_num}: {team_label(teams_by_id, effective_winner(match, picks.get))} (bye)")
     return lines

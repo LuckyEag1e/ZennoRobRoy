@@ -8,9 +8,9 @@ import pytest
 from bracket import (
     BracketError,
     Match,
-    assign_played_rounds,
     build_feeder_index,
     bye_team_id,
+    byes_in_round,
     compute_leaderboard,
     final_match,
     generate_tree,
@@ -21,6 +21,7 @@ from bracket import (
     resolve_slot,
     stale_results,
 )
+from helpers import numbered
 
 
 def test_generate_tree_4_teams():
@@ -88,7 +89,7 @@ def _build_4_team_fixture():
     m101 = Match(id=101, round=1, slot_index=1, team_a_id=3, team_b_id=4,
                  feeds_into_match_id=200, feeds_into_side="B")
     m200 = Match(id=200, round=2, slot_index=0)
-    matches_by_id = {100: m100, 101: m101, 200: m200}
+    matches_by_id = numbered({100: m100, 101: m101, 200: m200})
     feeders = build_feeder_index(list(matches_by_id.values()))
     return matches_by_id, feeders
 
@@ -169,7 +170,7 @@ def _build_4_team_fixture_with_bye():
     m101 = Match(id=101, round=1, slot_index=1, team_a_id=3, team_b_id=None,
                  feeds_into_match_id=200, feeds_into_side="B")
     m200 = Match(id=200, round=2, slot_index=0)
-    matches_by_id = {100: m100, 101: m101, 200: m200}
+    matches_by_id = numbered({100: m100, 101: m101, 200: m200})
     feeders = build_feeder_index(list(matches_by_id.values()))
     return matches_by_id, feeders
 
@@ -255,8 +256,7 @@ def _matches_from_pairs(team_pairs):
         )
         for i, s in enumerate(specs)
     }
-    assign_played_rounds(matches_by_id)
-    return matches_by_id
+    return numbered(matches_by_id)
 
 
 def _match_between(matches_by_id, team_a, team_b):
@@ -274,10 +274,24 @@ def test_two_byes_meeting_is_a_round_1_game():
     assert final.played_round == 3
 
 
-def test_only_a_bye_that_skips_a_game_keeps_a_played_round():
+def test_byes_in_round_covers_round_1_byes_and_later_waits():
+    # 5 waits out round 1 for the 3/4 winner; the 1/2 winner then waits out round 2.
     matches_by_id = _matches_from_pairs([(1, None), (2, None), (3, 4), (5, None)])
-    byes = {bye_team_id(m): m.played_round for m in matches_by_id.values() if is_bye(m)}
-    assert byes == {1: 0, 2: 0, 5: 1}
+    [round_1_bye] = byes_in_round(matches_by_id, 1)
+    assert bye_team_id(round_1_bye) == 5
+    [round_2_bye] = byes_in_round(matches_by_id, 2)
+    assert round_2_bye is _match_between(matches_by_id, 1, 2)
+    assert byes_in_round(matches_by_id, 3) == []
+
+
+def test_played_rounds_survive_a_missing_feeder_link():
+    matches_by_id = _matches_from_pairs([(1, 2), (3, 4)])
+    for match in matches_by_id.values():
+        if match.round == 1:
+            match.feeds_into_match_id = None
+    numbered(matches_by_id)
+    assert final_match(matches_by_id).played_round in (1, 2)
+    assert all(m.played_round is not None for m in matches_by_id.values())
 
 
 def test_next_match_to_pick_finishes_round_1_before_round_2():

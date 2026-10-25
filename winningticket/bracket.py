@@ -40,12 +40,8 @@ class Match:
     feeds_into_side: Optional[str] = None  # 'A' or 'B'
     # The round players see, which also sets the points. It differs from `round` (the tree
     # column) when byes meet: their match sits in round 2 of the tree but is both teams'
-    # first game. assign_played_rounds() sets it from the whole tree.
+    # first game. Left unset until assign_played_rounds() numbers the whole tree.
     played_round: Optional[int] = None
-
-    def __post_init__(self) -> None:
-        if self.played_round is None:
-            self.played_round = self.round
 
 
 @dataclass
@@ -91,24 +87,29 @@ def check_matchup_count(count: int) -> None:
         )
 
 
-def assign_played_rounds(matches_by_id: dict[int, Match]) -> None:
-    """Number each match by the round it's actually played in. A real game comes one round
-    after the later of its two feeder games. A bye takes the round before its team's first
-    game, so a bye into a first game gets round 0 and isn't shown as a bye at all."""
-    feeders_by_target = build_feeder_index(list(matches_by_id.values()))
-
-    def assign(match: Match) -> int:
+def assign_played_rounds(matches_by_id: dict[int, Match], feeders_by_target: dict[int, dict[str, Match]]) -> None:
+    """Number each match by the round it's actually played in: one round after the later
+    of its two feeder games. A bye has no game, so it gets 0."""
+    # Feeders are always in an earlier tree column, so they're numbered first.
+    for match in sorted(matches_by_id.values(), key=lambda m: m.round):
         if match.round == 1:
             match.played_round = 0 if is_bye(match) else 1
-        else:
-            feeders = feeders_by_target[match.id]
-            match.played_round = 1 + max(assign(feeders["A"]), assign(feeders["B"]))
-        return match.played_round
+            continue
+        feeders = feeders_by_target.get(match.id, {})
+        match.played_round = 1 + max(
+            (feeder.played_round for feeder in feeders.values() if feeder is not None), default=0
+        )
 
-    assign(final_match(matches_by_id))
+
+def byes_in_round(matches_by_id: dict[int, Match], round_num: int) -> list[Match]:
+    """Matches whose winner (or, for a round-1 bye, whose only team) sits out `round_num`
+    waiting for their next game, in bracket order."""
+    waiting = []
     for match in matches_by_id.values():
-        if is_bye(match) and match.feeds_into_match_id is not None:
-            match.played_round = matches_by_id[match.feeds_into_match_id].played_round - 1
+        next_match = matches_by_id.get(match.feeds_into_match_id)
+        if next_match is not None and match.played_round < round_num < next_match.played_round:
+            waiting.append(match)
+    return sorted(waiting, key=bracket_order)
 
 
 def rounds(matches_by_id: dict[int, Match]) -> list[int]:

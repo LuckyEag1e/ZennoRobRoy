@@ -261,11 +261,11 @@ class WinningTicketCLI(cmd.Cmd):
         "Force a tournament's status: admin_setstatus <name> <setup|predictions_open|in_progress|completed>"
         parts = shlex.split(arg)
         if len(parts) != 2:
-            print(f"usage: admin_setstatus <name> <{'|'.join(db.STATUSES)}>")
+            print(f"usage: admin_setstatus <name> <{'|'.join(db.FORCEABLE_STATUSES)}>")
             return
         name, status = parts
-        if status not in db.STATUSES:
-            print(f"status must be one of: {', '.join(db.STATUSES)}")
+        if status not in db.FORCEABLE_STATUSES:
+            print(f"status must be one of: {', '.join(db.FORCEABLE_STATUSES)} (use 'conclude' to conclude)")
             return
         tournament = self._require_tournament(name)
         if tournament is None:

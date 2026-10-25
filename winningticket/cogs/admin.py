@@ -16,7 +16,7 @@ from common import (
 )
 from labels import dropped_results_note, team_label
 
-STATUS_CHOICES = [app_commands.Choice(name=status, value=status) for status in db.STATUSES]
+STATUS_CHOICES = [app_commands.Choice(name=status, value=status) for status in db.FORCEABLE_STATUSES]
 
 
 async def team_name_autocomplete(interaction: discord.Interaction, current: str) -> list[app_commands.Choice[str]]:

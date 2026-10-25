@@ -13,6 +13,9 @@ DB_PATH = Path(__file__).parent / "data" / "tourney.db"
 # for later use (such as seeding) but can no longer be looked up by name, so the
 # name is free for a new tournament.
 STATUSES = ("setup", "predictions_open", "in_progress", "completed", "concluded")
+# Concluding can't be undone from Discord, so admins can't force it; /tournament
+# conclude only allows it once a tournament is completed.
+FORCEABLE_STATUSES = tuple(status for status in STATUSES if status != "concluded")
 _STATUS_SQL_LIST = ", ".join(f"'{status}'" for status in STATUSES)
 
 
@@ -98,9 +101,17 @@ def get_connection(path: Path | None = None) -> sqlite3.Connection:
     return conn
 
 
+# Bump when an older database needs migrating, and add the migration to init_db().
+SCHEMA_VERSION = 1
+
+
 def init_db(conn: sqlite3.Connection) -> None:
+    is_new = conn.execute("SELECT 1 FROM sqlite_master WHERE name = 'tournaments'").fetchone() is None
     conn.executescript(SCHEMA)
-    _migrate_to_concluded_status(conn)
+    if is_new:
+        conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+    else:
+        _migrate_to_concluded_status(conn)
     conn.commit()
 
 
@@ -117,6 +128,10 @@ BEGIN;
 {_tournaments_table_sql("tournaments_new")}
 INSERT INTO tournaments_new (id, guild_id, name, status, created_by, created_at)
     SELECT id, guild_id, name, status, created_by, created_at FROM tournaments;
+-- Keep the id counter, so ids of deleted tournaments aren't handed out again.
+DELETE FROM sqlite_sequence WHERE name = 'tournaments_new';
+INSERT INTO sqlite_sequence (name, seq)
+    SELECT 'tournaments_new', seq FROM sqlite_sequence WHERE name = 'tournaments';
 DROP TABLE tournaments;
 ALTER TABLE tournaments_new RENAME TO tournaments;
 {_ACTIVE_NAME_INDEX_SQL}
@@ -225,6 +240,11 @@ def link_feeders(conn: sqlite3.Connection, tournament_id: int, specs: list[Match
 
 
 def get_matches(conn: sqlite3.Connection, tournament_id: int) -> dict[int, Match]:
+    return _load_matches(conn, tournament_id)[0]
+
+
+def _load_matches(conn: sqlite3.Connection, tournament_id: int) -> tuple[dict[int, Match], dict]:
+    """A tournament's matches, numbered by played round, and the feeder index used to number them."""
     rows = conn.execute("SELECT * FROM matches WHERE tournament_id = ?", (tournament_id,)).fetchall()
     matches_by_id = {
         r["id"]: Match(
@@ -238,14 +258,15 @@ def get_matches(conn: sqlite3.Connection, tournament_id: int) -> dict[int, Match
         )
         for r in rows
     }
-    assign_played_rounds(matches_by_id)
-    return matches_by_id
+    feeders_by_target = build_feeder_index(list(matches_by_id.values()))
+    assign_played_rounds(matches_by_id, feeders_by_target)
+    return matches_by_id, feeders_by_target
 
 
 def load_bracket(conn: sqlite3.Connection, tournament_id: int) -> tuple[dict[int, Match], dict, dict[int, sqlite3.Row]]:
     """Everything needed to walk a tournament's tree: (matches_by_id, feeders_by_target, teams_by_id)."""
-    matches_by_id = get_matches(conn, tournament_id)
-    return matches_by_id, build_feeder_index(list(matches_by_id.values())), get_teams(conn, tournament_id)
+    matches_by_id, feeders_by_target = _load_matches(conn, tournament_id)
+    return matches_by_id, feeders_by_target, get_teams(conn, tournament_id)
 
 
 # -- results ------------------------------------------------------------------

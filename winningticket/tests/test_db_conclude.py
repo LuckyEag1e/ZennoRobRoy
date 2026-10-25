@@ -79,6 +79,26 @@ def test_active_names_must_still_be_unique(conn):
         db.create_tournament(conn, 1, "Cup", 1)
 
 
+def test_admins_cant_force_concluded():
+    assert "concluded" not in db.FORCEABLE_STATUSES
+
+
+def test_new_database_starts_at_the_current_schema_version(conn):
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == db.SCHEMA_VERSION
+
+
+def test_migration_keeps_the_id_counter(tmp_path):
+    conn = db.get_connection(tmp_path / "old.db")
+    conn.executescript(OLD_TOURNAMENTS_TABLE + db.SCHEMA)
+    db.create_tournament(conn, 1, "First", 1)
+    deleted_id = db.create_tournament(conn, 1, "Second", 1)
+    db.delete_tournament(conn, deleted_id)
+
+    db.init_db(conn)
+    assert db.create_tournament(conn, 1, "Third", 1) > deleted_id
+    conn.close()
+
+
 def test_old_database_is_migrated_without_losing_data(tmp_path):
     path = tmp_path / "old.db"
     conn = db.get_connection(path)
