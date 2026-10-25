@@ -373,7 +373,11 @@ def podium(
         if winner is None:
             return None
         team_a, team_b = slots[match.id]
-        return team_b if winner == team_a else team_a
+        if winner == team_a:
+            return team_b
+        if winner == team_b:
+            return team_a
+        return None  # a result naming a team that isn't in this match
 
     final = final_match(matches_by_id)
     semi_finals = [m for m in feeders_by_target.get(final.id, {}).values() if m is not None and not is_bye(m)]
@@ -383,9 +387,12 @@ def podium(
 
 def top_places(scores: list[UserScore], places: int = 3) -> list[tuple[int, UserScore]]:
     """(place, score) for everyone placing in the top `places`. Tied points share a place,
-    and the next place is skipped for each extra player tied (1, 1, 3)."""
+    and the next place is skipped for each extra player tied (1, 1, 3). Nobody places
+    with 0 points."""
     placed = []
     for i, score in enumerate(scores):  # already sorted by points, highest first
+        if score.points == 0:
+            break
         place = i + 1 if i == 0 or score.points != scores[i - 1].points else placed[-1][0]
         if place > places:
             break

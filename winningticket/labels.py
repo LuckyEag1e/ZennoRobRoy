@@ -76,4 +76,20 @@ def podium_lines(result: Podium, teams_by_id: dict) -> list[str]:
 
 def pickem_podium_lines(scores: list[UserScore], player_label: Callable[[int], str]) -> list[str]:
     """The top three pick'em scorers, with `player_label` naming each by user id."""
-    return [f"{MEDALS[place]} {player_label(s.user_id)} — {score_label(s)}" for place, s in top_places(scores)]
+    if not scores:
+        return ["Nobody made predictions."]
+    placed = top_places(scores)
+    if not placed:
+        return ["Nobody scored any points."]
+    return [f"{MEDALS[place]} {player_label(s.user_id)} — {score_label(s)}" for place, s in placed]
+
+
+def join_within(lines: list[str], limit: int) -> str:
+    """Join lines with newlines, dropping lines from the end, with a note saying how many,
+    so the result fits in `limit` characters."""
+    for shown in range(len(lines), 0, -1):
+        hidden = len(lines) - shown
+        text = "\n".join(lines[:shown] + ([f"…and {hidden} more"] if hidden else []))
+        if len(text) <= limit:
+            return text
+    return f"…and {len(lines)} more"

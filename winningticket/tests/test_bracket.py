@@ -9,6 +9,7 @@ from bracket import (
     BracketError,
     Match,
     Podium,
+    UserScore,
     bracket_order,
     build_feeder_index,
     bye_team_id,
@@ -23,6 +24,7 @@ from bracket import (
     resolve_all_slots,
     resolve_slot,
     stale_results,
+    top_places,
 )
 from helpers import matches_from_pairs, numbered
 
@@ -324,3 +326,29 @@ def test_podium_before_the_final_is_played():
     matches_by_id = matches_from_pairs([(1, 2), (3, 4)])
     feeders = build_feeder_index(list(matches_by_id.values()))
     assert podium(matches_by_id, feeders, {}) == Podium(champion=None, runner_up=None, third_places=[])
+
+
+def test_podium_ignores_a_result_naming_a_team_not_in_the_final():
+    matches_by_id = matches_from_pairs([(1, 2), (3, 4)])
+    feeders, results = _play_out(matches_by_id, min)
+    results[final_match(matches_by_id).id] = 99
+    assert podium(matches_by_id, feeders, results).runner_up is None
+
+
+def _scores(points_by_user):
+    return [UserScore(user_id=u, points=p, correct_picks=0, possible_picks=0) for u, p in points_by_user]
+
+
+def test_top_places_share_a_place_on_tied_points():
+    scores = _scores([(1, 9), (2, 9), (3, 7), (4, 5), (5, 5)])
+    assert [(place, s.user_id) for place, s in top_places(scores)] == [(1, 1), (1, 2), (3, 3)]
+
+
+def test_top_places_includes_everyone_tied_for_the_last_place():
+    scores = _scores([(1, 9), (2, 7), (3, 5), (4, 5), (5, 1)])
+    assert [(place, s.user_id) for place, s in top_places(scores)] == [(1, 1), (2, 2), (3, 3), (3, 4)]
+
+
+def test_top_places_leaves_out_players_with_no_points():
+    assert [s.user_id for _, s in top_places(_scores([(1, 4), (2, 0), (3, 0)]))] == [1]
+    assert top_places(_scores([(1, 0), (2, 0)])) == []

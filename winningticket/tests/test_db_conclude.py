@@ -119,3 +119,14 @@ def test_old_database_is_migrated_without_losing_data(tmp_path):
     db.delete_tournament(conn, tournament_id)
     assert db.get_teams(conn, tournament_id) == {}
     conn.close()
+
+
+def test_final_results_name_the_podium_and_score_the_players(conn):
+    tournament_id = _completed_tournament(conn)
+    db.upsert_predictions(conn, tournament_id, 7, db.get_results(conn, tournament_id))
+    result, teams_by_id, scores = db.load_final_results(conn, tournament_id)
+    name = {team_id: row["name"] for team_id, row in teams_by_id.items()}
+    assert (name[result.champion], name[result.runner_up]) == ("A", "C")
+    assert sorted(name[t] for t in result.third_places) == ["B", "D"]
+    assert [(s.user_id, s.points) for s in scores] == [(7, 4)]
+    assert db.load_scores(conn, tournament_id) == scores

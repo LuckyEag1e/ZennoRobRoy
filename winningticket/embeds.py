@@ -8,7 +8,10 @@ import discord
 
 from ascii_bracket import prediction_marker, real_result_marker, render_tree
 from bracket import Match, Podium, UserScore
-from labels import crowd_verdict, pick_share, pickem_podium_lines, podium_lines, score_label, team_label
+from labels import crowd_verdict, join_within, pick_share, pickem_podium_lines, podium_lines, score_label, team_label
+
+# Discord rejects an embed field value longer than this.
+EMBED_FIELD_LIMIT = 1024
 
 
 def render_bracket_embed(
@@ -56,8 +59,8 @@ def render_final_results_embed(
 ) -> discord.Embed:
     embed = discord.Embed(title=f"🏆 {tournament_name}: final results")
     embed.add_field(name="Podium", value="\n".join(podium_lines(result, teams_by_id)), inline=False)
-    pickem = pickem_podium_lines(scores, lambda user_id: f"<@{user_id}>") or ["Nobody made predictions."]
-    embed.add_field(name="Pick'em leaders", value="\n".join(pickem), inline=False)
+    pickem = pickem_podium_lines(scores, lambda user_id: f"<@{user_id}>")
+    embed.add_field(name="Pick'em leaders", value=join_within(pickem, EMBED_FIELD_LIMIT), inline=False)
     if scores:
         player_word = "player" if len(scores) == 1 else "players"
         embed.set_footer(text=f"{len(scores)} {player_word} made predictions. Thanks for playing!")

@@ -177,19 +177,3 @@ def test_leaderboard_16_team_bracket_full_run():
     # user B should score 0 -- every pick is the wrong team
     assert scores_by_user[2].points == 0
     assert scores_by_user[2].correct_picks == 0
-
-
-def test_top_places_share_a_place_on_tied_points():
-    from bracket import UserScore, top_places
-
-    scores = [UserScore(user_id=u, points=p, correct_picks=0, possible_picks=0)
-              for u, p in [(1, 9), (2, 9), (3, 7), (4, 5), (5, 5)]]
-    assert [(place, s.user_id) for place, s in top_places(scores)] == [(1, 1), (1, 2), (3, 3)]
-
-
-def test_top_places_includes_everyone_tied_for_the_last_place():
-    from bracket import UserScore, top_places
-
-    scores = [UserScore(user_id=u, points=p, correct_picks=0, possible_picks=0)
-              for u, p in [(1, 9), (2, 7), (3, 5), (4, 5), (5, 1)]]
-    assert [(place, s.user_id) for place, s in top_places(scores)] == [(1, 1), (2, 2), (3, 3), (3, 4)]

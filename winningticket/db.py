@@ -5,7 +5,18 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-from bracket import Match, MatchSpec, assign_played_rounds, build_feeder_index, final_match, stale_results
+from bracket import (
+    Match,
+    MatchSpec,
+    Podium,
+    UserScore,
+    assign_played_rounds,
+    build_feeder_index,
+    compute_leaderboard,
+    final_match,
+    podium,
+    stale_results,
+)
 
 DB_PATH = Path(__file__).parent / "data" / "tourney.db"
 
@@ -268,6 +279,21 @@ def load_bracket(conn: sqlite3.Connection, tournament_id: int) -> tuple[dict[int
     matches_by_id, feeders_by_target = _load_matches(conn, tournament_id)
     return matches_by_id, feeders_by_target, get_teams(conn, tournament_id)
 
+
+
+def load_scores(conn: sqlite3.Connection, tournament_id: int) -> list[UserScore]:
+    """Every predicting player's score so far, best first."""
+    return compute_leaderboard(
+        get_matches(conn, tournament_id), get_results(conn, tournament_id), get_all_predictions(conn, tournament_id)
+    )
+
+
+def load_final_results(conn: sqlite3.Connection, tournament_id: int) -> tuple[Podium, dict[int, sqlite3.Row], list[UserScore]]:
+    """What a finished tournament's results post needs: (podium, teams_by_id, scores)."""
+    matches_by_id, feeders_by_target, teams_by_id = load_bracket(conn, tournament_id)
+    results_by_match = get_results(conn, tournament_id)
+    scores = compute_leaderboard(matches_by_id, results_by_match, get_all_predictions(conn, tournament_id))
+    return podium(matches_by_id, feeders_by_target, results_by_match), teams_by_id, scores
 
 # -- results ------------------------------------------------------------------
 
