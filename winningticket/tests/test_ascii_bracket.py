@@ -6,7 +6,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from ascii_bracket import prediction_marker, real_result_marker, render_tree
 from bracket import Match, build_feeder_index, resolve_all_slots
-from helpers import numbered
+from helpers import matches_from_pairs, numbered
 
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
@@ -202,6 +202,20 @@ def test_render_tree_lists_a_game_winner_who_sits_out_a_round():
     numbered(matches)
     assert "Byes (round 2): winner of Ash vs Birch" in _render(matches, teams)
     assert "Byes (round 2): Ash" in _render(matches, teams, results={5: 1})
+
+
+def test_render_tree_lists_an_unknown_waiting_team_as_tbd():
+    # The top half needs three rounds to reach the final; the bottom half's four byes
+    # need two, so its winner waits out round 3 before anyone in it has played.
+    matches = matches_from_pairs([(1, 2), (3, 4), (5, 6), (7, 8), (9, None), (10, None), (11, None), (12, None)])
+    teams = {team_id: _team(f"T{team_id}") for team_id in range(1, 13)}
+    assert "Byes (round 3): TBD" in _render(matches, teams)
+
+
+def test_render_tree_winner_labels_have_no_trailing_padding():
+    matches, teams = _4_team_bracket()
+    text = _render(matches, teams, results={1: 1})
+    assert all(line == line.rstrip() for line in _strip_ansi(text).splitlines())
 
 
 def test_render_tree_lists_only_byes_that_skip_a_game():

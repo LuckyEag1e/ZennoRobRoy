@@ -135,13 +135,14 @@ def _render_match(
 
     winner = winner_of(match.id)
     if winner is None:
-        label = f" {_fit('TBD')}"  # nothing decided yet -- no color
+        label = " TBD"  # nothing decided yet -- no color
     else:
         # Coloured by the round the winner plays next, like the teams in that game.
         next_match = matches_by_id.get(match.feeds_into_match_id)
         color_round = next_match.played_round if next_match is not None else match.played_round + 1
         mark = marks.get(winner, " ")
-        label = _colorize(f"{mark}{_fit(team_label(teams_by_id, winner))}", color_round, mark)
+        # Labels end their line, so they're truncated like team names but not padded.
+        label = _colorize(f"{mark}{_fit(team_label(teams_by_id, winner)).rstrip()}", color_round, mark)
 
     return _join(render_side("A", team_a), render_side("B", team_b), label)
 
@@ -172,7 +173,7 @@ def _join(top: Rendered, bottom: Rendered, label: str) -> Rendered:
 
 
 def _bye_summary(matches_by_id: dict, teams_by_id: dict, slots: dict, winner_of: WinnerLookup) -> list[str]:
-    """One line per round that has byes, naming whoever sits it out when that's known."""
+    """One line per round that has byes, naming whoever sits it out, or TBD until that's known."""
     lines = []
     for round_num in rounds(matches_by_id):
         names = []
@@ -183,6 +184,8 @@ def _bye_summary(matches_by_id: dict, teams_by_id: dict, slots: dict, winner_of:
                 names.append(team_label(teams_by_id, team))
             elif team_a is not None and team_b is not None:
                 names.append(f"winner of {team_label(teams_by_id, team_a)} vs {team_label(teams_by_id, team_b)}")
+            else:
+                names.append("TBD")
         if names:
             lines.append(f"Byes (round {round_num}): {', '.join(names)}")
     return lines

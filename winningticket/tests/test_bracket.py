@@ -21,7 +21,7 @@ from bracket import (
     resolve_slot,
     stale_results,
 )
-from helpers import numbered
+from helpers import matches_from_pairs, numbered
 
 
 def test_generate_tree_4_teams():
@@ -244,21 +244,6 @@ def test_next_match_to_pick_follows_bracket_order_and_skips_byes():
     assert next_match_to_pick(matches_by_id, {100: 1, 200: 3}) is None
 
 
-def _matches_from_pairs(team_pairs):
-    """Matches as the DB would load them: ids are spec positions, played rounds assigned."""
-    specs = generate_tree(team_pairs)
-    id_of = {(s.round, s.slot_index): i for i, s in enumerate(specs)}
-    matches_by_id = {
-        i: Match(
-            id=i, round=s.round, slot_index=s.slot_index, team_a_id=s.team_a, team_b_id=s.team_b,
-            feeds_into_match_id=id_of.get((s.feeds_into_round, s.feeds_into_slot_index)),
-            feeds_into_side=s.feeds_into_side,
-        )
-        for i, s in enumerate(specs)
-    }
-    return numbered(matches_by_id)
-
-
 def _match_between(matches_by_id, team_a, team_b):
     feeders = build_feeder_index(list(matches_by_id.values()))
     slots = resolve_all_slots(matches_by_id, lambda mid: None, feeders)
@@ -267,7 +252,7 @@ def _match_between(matches_by_id, team_a, team_b):
 
 def test_two_byes_meeting_is_a_round_1_game():
     # 1 and 2 both have byes into a game against each other, so it's played alongside 3 vs 4.
-    matches_by_id = _matches_from_pairs([(1, None), (2, None), (3, 4), (5, None)])
+    matches_by_id = matches_from_pairs([(1, None), (2, None), (3, 4), (5, None)])
     assert _match_between(matches_by_id, 1, 2).played_round == 1
     assert _match_between(matches_by_id, 3, 4).played_round == 1
     final = final_match(matches_by_id)
@@ -276,7 +261,7 @@ def test_two_byes_meeting_is_a_round_1_game():
 
 def test_byes_in_round_covers_round_1_byes_and_later_waits():
     # 5 waits out round 1 for the 3/4 winner; the 1/2 winner then waits out round 2.
-    matches_by_id = _matches_from_pairs([(1, None), (2, None), (3, 4), (5, None)])
+    matches_by_id = matches_from_pairs([(1, None), (2, None), (3, 4), (5, None)])
     [round_1_bye] = byes_in_round(matches_by_id, 1)
     assert bye_team_id(round_1_bye) == 5
     [round_2_bye] = byes_in_round(matches_by_id, 2)
@@ -285,7 +270,7 @@ def test_byes_in_round_covers_round_1_byes_and_later_waits():
 
 
 def test_played_rounds_survive_a_missing_feeder_link():
-    matches_by_id = _matches_from_pairs([(1, 2), (3, 4)])
+    matches_by_id = matches_from_pairs([(1, 2), (3, 4)])
     for match in matches_by_id.values():
         if match.round == 1:
             match.feeds_into_match_id = None
@@ -295,7 +280,7 @@ def test_played_rounds_survive_a_missing_feeder_link():
 
 
 def test_next_match_to_pick_finishes_round_1_before_round_2():
-    matches_by_id = _matches_from_pairs([(1, None), (2, None), (3, 4), (5, None)])
+    matches_by_id = matches_from_pairs([(1, None), (2, None), (3, 4), (5, None)])
     first = next_match_to_pick(matches_by_id, {})
     second = next_match_to_pick(matches_by_id, {first.id: 1})
     assert {first.played_round, second.played_round} == {1}
@@ -303,7 +288,7 @@ def test_next_match_to_pick_finishes_round_1_before_round_2():
 
 
 def test_a_game_between_two_byes_scores_as_round_1():
-    matches_by_id = _matches_from_pairs([(1, None), (2, None), (3, 4), (5, None)])
+    matches_by_id = matches_from_pairs([(1, None), (2, None), (3, 4), (5, None)])
     game = _match_between(matches_by_id, 1, 2)
     [score] = compute_leaderboard(matches_by_id, {game.id: 1}, {7: {game.id: 1}})
     assert score.points == 1
