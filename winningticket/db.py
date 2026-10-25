@@ -280,7 +280,6 @@ def load_bracket(conn: sqlite3.Connection, tournament_id: int) -> tuple[dict[int
     return matches_by_id, feeders_by_target, get_teams(conn, tournament_id)
 
 
-
 def load_scores(conn: sqlite3.Connection, tournament_id: int) -> list[UserScore]:
     """Every predicting player's score so far, best first."""
     return compute_leaderboard(
@@ -294,6 +293,7 @@ def load_final_results(conn: sqlite3.Connection, tournament_id: int) -> tuple[Po
     results_by_match = get_results(conn, tournament_id)
     scores = compute_leaderboard(matches_by_id, results_by_match, get_all_predictions(conn, tournament_id))
     return podium(matches_by_id, feeders_by_target, results_by_match), teams_by_id, scores
+
 
 # -- results ------------------------------------------------------------------
 
