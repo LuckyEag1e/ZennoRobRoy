@@ -20,7 +20,7 @@ const DARK_THEME = {
   yellow: COLOR_YELLOW,
 };
 
-// Light pink/crimson palette for TOKAI TEIO on /stats_simple. Each color can be overridden from .env
+// Light pink/crimson palette for club 1 on /stats_simple. Each color can be overridden from .env
 // (MEMBERS_COLOR_*); anything unset or not a valid #rrggbb hex falls back to the
 // default here. Status colors are darker than the dark theme's so they stay
 // readable on the pale background.
