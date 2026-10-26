@@ -31,8 +31,11 @@ from bracket import (
     rounds,
 )
 from labels import (
+    CURRENT_FEATURES,
+    PLANNED_FEATURES,
     crowd_verdict,
     dropped_results_note,
+    feedback_page,
     matchup_label,
     pick_review_lines,
     pick_share,
@@ -44,6 +47,8 @@ from labels import (
 
 CLI_DB_PATH = Path(__file__).parent / "data" / "cli.db"
 GUILD_ID = 1  # single pretend guild for local testing
+# What a banned user can still do: switch user, look around the CLI, and leave.
+ALLOWED_WHEN_BANNED = {"as", "whoami", "help", "exit", "quit", "EOF"}
 
 
 class WinningTicketCLI(cmd.Cmd):
@@ -60,6 +65,13 @@ class WinningTicketCLI(cmd.Cmd):
         self.user_id = 1
         self.user_name = "tester"
         self._update_prompt()
+
+    def onecmd(self, line: str) -> bool:
+        command = self.parseline(line)[0]
+        if command and command not in ALLOWED_WHEN_BANNED and db.is_banned(self.conn, GUILD_ID, self.user_id):
+            print("An admin has blocked you from using WinningTicket. Use 'as' to switch user.")
+            return False
+        return super().onecmd(line)
 
     def _update_prompt(self) -> None:
         self.prompt = f"(tourney:{self.user_name}) "
@@ -489,6 +501,80 @@ class WinningTicketCLI(cmd.Cmd):
             print("Cleared.")
         else:
             print("Cancelled.")
+
+    def do_admin_feedback(self, arg: str) -> None:
+        "Read anonymous feedback, newest first: admin_feedback [page]"
+        try:
+            page = int(arg.strip() or 1)
+        except ValueError:
+            print("page must be an integer")
+            return
+        entries, page, page_count = feedback_page(db.get_feedback(self.conn, GUILD_ID), page)
+        if not entries:
+            print("No feedback yet.")
+            return
+        for entry in entries:
+            print(f"#{entry['id']} ({entry['created_on']}): {entry['message']}")
+        print(f"Page {page} of {page_count}.")
+
+    def do_admin_deletefeedback(self, arg: str) -> None:
+        "Remove handled feedback: admin_deletefeedback <number>"
+        try:
+            number = int(arg.strip())
+        except ValueError:
+            print("usage: admin_deletefeedback <number>")
+            return
+        deleted = db.delete_feedback(self.conn, GUILD_ID, number)
+        print(f"Deleted feedback #{number}." if deleted else f"There's no feedback #{number}.")
+
+    def do_admin_ban(self, arg: str) -> None:
+        "Block a user from the bot: admin_ban <user_id> [reason]"
+        parts = arg.split(maxsplit=1)
+        try:
+            user_id = int(parts[0])
+        except (IndexError, ValueError):
+            print("usage: admin_ban <user_id> [reason]")
+            return
+        db.ban_user(self.conn, GUILD_ID, user_id, self.user_id, parts[1] if len(parts) > 1 else None)
+        print(f"User {user_id} is banned.")
+
+    def do_admin_unban(self, arg: str) -> None:
+        "Let a banned user use the bot again: admin_unban <user_id>"
+        try:
+            user_id = int(arg.strip())
+        except ValueError:
+            print("usage: admin_unban <user_id>")
+            return
+        print(f"User {user_id} is unbanned." if db.unban_user(self.conn, GUILD_ID, user_id) else f"User {user_id} isn't banned.")
+
+    def do_admin_bans(self, arg: str) -> None:
+        "List banned users."
+        bans = db.get_bans(self.conn, GUILD_ID)
+        if not bans:
+            print("Nobody is banned.")
+        for ban in bans:
+            reason = f": {ban['reason']}" if ban["reason"] else ""
+            print(f"user {ban['user_id']} (banned {ban['banned_at'][:10]} by user {ban['banned_by']}){reason}")
+
+    # -- everyone else ----------------------------------------------------------
+
+    def do_features(self, arg: str) -> None:
+        "What the bot can be used for, and what's coming."
+        print("What it does:")
+        for line in CURRENT_FEATURES:
+            print(f"  - {line.replace('**', '')}")
+        print("Coming soon:")
+        for line in PLANNED_FEATURES:
+            print(f"  - {line.replace('**', '')}")
+
+    def do_feedback(self, arg: str) -> None:
+        "Send anonymous feedback: feedback <message>"
+        message = arg.strip()
+        if not message:
+            print("usage: feedback <message>")
+            return
+        db.add_feedback(self.conn, GUILD_ID, message)
+        print("Thanks! Your feedback was sent anonymously.")
 
     # -- shared helpers ---------------------------------------------------------
 

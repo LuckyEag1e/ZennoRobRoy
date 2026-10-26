@@ -5,6 +5,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from common import requires_manage_server
+from labels import CURRENT_FEATURES, PLANNED_FEATURES
 
 
 def _command_list_embed(title: str, sections: list[tuple[str, str]]) -> discord.Embed:
@@ -30,6 +31,8 @@ class HelpCog(commands.Cog):
             ("/tournament bracket name:<name>", "See the real tournament bracket's progress."),
             ("/tournament leaderboard name:<name>", "See the standings."),
             ("/match stats tournament:<name>", "See what % of the pool picked each side of a matchup."),
+            ("/features", "What the bot can be used for, and what's coming."),
+            ("/feedback", "Send the organizers anonymous feedback."),
         ])
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
@@ -91,7 +94,19 @@ class HelpCog(commands.Cog):
             ("/admin editteam tournament:<name> team:<name>", "Fix a team's name or seed after import."),
             ("/admin clearpredictions tournament:<name> user:<member>", "Wipe one user's saved predictions."),
             ("/admin deletetournament tournament:<name> confirm_name:<name>", "Permanently delete a tournament and all its data."),
+            ("/admin feedback [page:<n>]", "Read anonymous feedback, newest first. `/admin deletefeedback number:<n>` removes one."),
+            ("/admin ban user:<member> [reason:<text>]", "Block a member from using the bot. `/admin unban` undoes it, and `/admin bans` lists everyone banned."),
         ])
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @app_commands.command(name="features", description="What WinningTicket can be used for, and what's coming")
+    @app_commands.guild_only()
+    async def features(self, interaction: discord.Interaction) -> None:
+        embed = _command_list_embed("WinningTicket", [
+            ("What it does", "\n".join(f"• {line}" for line in CURRENT_FEATURES)),
+            ("Coming soon", "\n".join(f"• {line}" for line in PLANNED_FEATURES)),
+        ])
+        embed.set_footer(text="See /help players for the commands.")
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
 

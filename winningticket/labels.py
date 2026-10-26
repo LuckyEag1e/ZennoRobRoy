@@ -93,3 +93,36 @@ def join_within(lines: list[str], limit: int) -> str:
         if len(text) <= limit:
             return text
     return f"…and {len(lines)} more"
+
+
+# What /features (and the CLI's 'features') says the bot is for. Move a line from planned
+# to current once it ships.
+CURRENT_FEATURES = [
+    "**Bracket prediction pool:** predict every match before a tournament starts. Correct "
+    "picks score more in later rounds, and a live leaderboard tracks everyone.",
+    "**Sign-ups:** players register themselves, and the bracket is drawn automatically when "
+    "sign-ups close. Organizers can still build a bracket from a CSV instead.",
+    "**Live results:** organizers record results as games finish, the bot announces who "
+    "advances, and anyone can check the bracket or see how the pool picked each matchup.",
+    "**Final results:** concluding a tournament posts the podium and the top predictors, "
+    "and keeps the results for the future.",
+    "**Anonymous feedback** for the organizers.",
+]
+PLANNED_FEATURES = [
+    "**Automatic seeding** from each player's past results.",
+    "**Self-reported results:** both players confirm a match result, and organizers only "
+    "step in when they disagree.",
+    "**More formats:** double elimination and round robin.",
+    "**Team tournaments** with two or more players per entrant.",
+]
+
+FEEDBACK_PAGE_SIZE = 5
+
+
+def feedback_page(entries: list, page: int) -> tuple[list, int, int]:
+    """(entries on the page, the page shown, how many pages there are). Pages count from 1,
+    and a page number out of range shows the nearest real page."""
+    page_count = max(1, -(-len(entries) // FEEDBACK_PAGE_SIZE))
+    page = min(max(page, 1), page_count)
+    start = (page - 1) * FEEDBACK_PAGE_SIZE
+    return entries[start:start + FEEDBACK_PAGE_SIZE], page, page_count

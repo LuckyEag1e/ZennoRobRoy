@@ -26,8 +26,28 @@ INITIAL_COGS = (
     "cogs.predictions",
     "cogs.results",
     "cogs.admin",
+    "cogs.feedback",
     "cogs.help",
 )
+
+
+class WinningTicketTree(app_commands.CommandTree):
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        """Turn away members an admin has banned, before any command or autocomplete runs."""
+        if interaction.guild_id is None:
+            return True
+        conn = db.get_connection()
+        try:
+            banned = db.is_banned(conn, interaction.guild_id, interaction.user.id)
+        finally:
+            conn.close()
+        if not banned:
+            return True
+        if interaction.type == discord.InteractionType.application_command:
+            await interaction.response.send_message(
+                "An admin has blocked you from using WinningTicket in this server.", ephemeral=True
+            )
+        return False
 
 
 class WinningTicketBot(commands.Bot):
@@ -36,6 +56,7 @@ class WinningTicketBot(commands.Bot):
             command_prefix=commands.when_mentioned,
             intents=discord.Intents.default(),
             connector=connector,
+            tree_cls=WinningTicketTree,
         )
 
     async def setup_hook(self) -> None:
@@ -62,6 +83,12 @@ class WinningTicketBot(commands.Bot):
         if isinstance(error, app_commands.MissingPermissions):
             await interaction.response.send_message(
                 "You need the Manage Server permission to use this command.", ephemeral=True
+            )
+            return
+        if isinstance(error, app_commands.CommandOnCooldown):
+            minutes = max(1, round(error.retry_after / 60))
+            await interaction.response.send_message(
+                f"You can use this again in about {minutes} minute{'s' if minutes != 1 else ''}.", ephemeral=True
             )
             return
         command = interaction.command.qualified_name if interaction.command else "?"

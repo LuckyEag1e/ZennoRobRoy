@@ -128,6 +128,24 @@ CREATE TABLE IF NOT EXISTS predictions (
 CREATE INDEX IF NOT EXISTS idx_predictions_user ON predictions(tournament_id, user_id);
 CREATE INDEX IF NOT EXISTS idx_predictions_match ON predictions(match_id);
 
+-- Users an admin has blocked from using the bot in a server.
+CREATE TABLE IF NOT EXISTS bans (
+    guild_id    INTEGER NOT NULL,
+    user_id     INTEGER NOT NULL,
+    reason      TEXT,
+    banned_by   INTEGER NOT NULL,
+    banned_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    PRIMARY KEY (guild_id, user_id)
+);
+
+-- Anonymous feedback. There's deliberately no user column, and only the date is kept,
+-- so a message can't be matched to whoever was active at that moment.
+CREATE TABLE IF NOT EXISTS feedback (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    guild_id    INTEGER NOT NULL,
+    message     TEXT NOT NULL,
+    created_on  TEXT NOT NULL DEFAULT (date('now'))
+);
 """
 
 
@@ -515,3 +533,51 @@ def clear_user_predictions(conn: sqlite3.Connection, tournament_id: int, user_id
         (tournament_id, user_id),
     )
     conn.commit()
+
+
+# -- moderation -----------------------------------------------------------------
+
+def ban_user(conn: sqlite3.Connection, guild_id: int, user_id: int, banned_by: int, reason: str | None) -> None:
+    """Block a user from the bot in a server. Banning someone already banned updates the reason."""
+    conn.execute(
+        """INSERT INTO bans (guild_id, user_id, reason, banned_by) VALUES (?, ?, ?, ?)
+           ON CONFLICT(guild_id, user_id) DO UPDATE SET
+               reason = excluded.reason, banned_by = excluded.banned_by,
+               banned_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')""",
+        (guild_id, user_id, reason, banned_by),
+    )
+    conn.commit()
+
+
+def unban_user(conn: sqlite3.Connection, guild_id: int, user_id: int) -> bool:
+    """Returns False if the user wasn't banned."""
+    cur = conn.execute("DELETE FROM bans WHERE guild_id = ? AND user_id = ?", (guild_id, user_id))
+    conn.commit()
+    return cur.rowcount > 0
+
+
+def is_banned(conn: sqlite3.Connection, guild_id: int, user_id: int) -> bool:
+    return conn.execute(
+        "SELECT 1 FROM bans WHERE guild_id = ? AND user_id = ?", (guild_id, user_id)
+    ).fetchone() is not None
+
+
+def get_bans(conn: sqlite3.Connection, guild_id: int) -> list[sqlite3.Row]:
+    return conn.execute("SELECT * FROM bans WHERE guild_id = ? ORDER BY banned_at", (guild_id,)).fetchall()
+
+
+def add_feedback(conn: sqlite3.Connection, guild_id: int, message: str) -> None:
+    conn.execute("INSERT INTO feedback (guild_id, message) VALUES (?, ?)", (guild_id, message))
+    conn.commit()
+
+
+def get_feedback(conn: sqlite3.Connection, guild_id: int) -> list[sqlite3.Row]:
+    """A server's feedback, newest first."""
+    return conn.execute("SELECT * FROM feedback WHERE guild_id = ? ORDER BY id DESC", (guild_id,)).fetchall()
+
+
+def delete_feedback(conn: sqlite3.Connection, guild_id: int, feedback_id: int) -> bool:
+    """Returns False if there's no such feedback in this server."""
+    cur = conn.execute("DELETE FROM feedback WHERE guild_id = ? AND id = ?", (guild_id, feedback_id))
+    conn.commit()
+    return cur.rowcount > 0

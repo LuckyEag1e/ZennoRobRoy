@@ -70,8 +70,15 @@ Admin:
 - `/admin ...` — troubleshooting/correction commands (force status, force/overwrite a
   result, clear a result, edit a team's name/seed, clear a user's predictions, delete
   a tournament). All require the Manage Server permission.
+- `/admin feedback [page:<n>]`: read the anonymous feedback members have sent, and
+  `/admin deletefeedback number:<n>` to remove it once handled.
+- `/admin ban user:<member> [reason:<text>]`: block a member from every bot command
+  (`/admin unban` undoes it, `/admin bans` lists them). Members with Manage Server can't
+  be banned.
 
 Everyone:
+- `/features`: a short summary of what the bot does and what's planned
+- `/feedback`: send the organizers anonymous feedback (once every 5 minutes)
 - `/register tournament:<name>` / `/unregister tournament:<name>`: sign up for, or withdraw
   from, a tournament that's taking entrants
 - `/registration entrants name:<name>`: see who has signed up
@@ -95,8 +102,9 @@ Commands mirror the slash commands: `create <name> <csv>`, `regopen <name>`, `re
 `unregister <name>`, `entrants <name>`, `regadd <name> <entrant> [user_id]`, `regremove <name> <entrant>`,
 `regclose <name>`, `open <name>`, `predict <name>`,
 `lock <name>`, `conclude <name>`, `matchresult <name>`, `matchstats <name>`, `mypicks <name>`, `bracket <name>`,
-`leaderboard <name>`, `tournaments`, and the admin set: `admin_setstatus`, `admin_delete`,
-`admin_editteam`, `admin_setresult`, `admin_clearresult`, `admin_clearpredictions`.
+`leaderboard <name>`, `tournaments`, `features`, `feedback <message>`, and the admin set: `admin_setstatus`, `admin_delete`,
+`admin_editteam`, `admin_setresult`, `admin_clearresult`, `admin_clearpredictions`, `admin_feedback`,
+`admin_deletefeedback`, `admin_ban`, `admin_unban`, `admin_bans`.
 Use `as <user_id> <name>` to switch which simulated user you're acting as (so you can
 submit multiple different predictions and see the leaderboard play out). Commands that
 take more than one argument (like `create`) need quotes around a multi-word name;
