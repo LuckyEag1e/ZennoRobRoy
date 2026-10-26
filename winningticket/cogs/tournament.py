@@ -7,10 +7,15 @@ from discord import app_commands
 from discord.ext import commands
 
 import db
-from bracket import resolve_all_slots
-from common import requires_manage_server, resolve_emoji, resolve_tournament, tournament_name_autocomplete
+from common import (
+    load_bracket_embed,
+    requires_manage_server,
+    resolve_emoji,
+    resolve_tournament,
+    tournament_name_autocomplete,
+)
 from csv_import import CsvValidationError, import_tournament, parse_csv
-from embeds import render_bracket_embed, render_final_results_embed, render_leaderboard_embed
+from embeds import render_final_results_embed, render_leaderboard_embed
 
 
 class TournamentCog(commands.Cog):
@@ -77,9 +82,10 @@ class TournamentCog(commands.Cog):
                 await interaction.response.send_message(f"CSV error: {e}", ephemeral=True)
                 return
 
-            await interaction.response.send_message(
-                f"Created tournament **{name}** with {len(rows)} round-1 matchups. "
-                f"Run `/tournament open name:{name}` when you're ready for predictions to begin."
+            # Announcements are public, so the organizer's next step goes to them privately.
+            await interaction.response.send_message(f"Created tournament **{name}** with {len(rows)} round-1 matchups.")
+            await interaction.followup.send(
+                f"Run `/tournament open name:{name}` when you're ready for predictions to begin.", ephemeral=True
             )
         finally:
             conn.close()
@@ -103,9 +109,8 @@ class TournamentCog(commands.Cog):
     async def lock(self, interaction: discord.Interaction, name: str) -> None:
         if not await self._advance_status(interaction, name, "in_progress"):
             return
-        await interaction.response.send_message(
-            f"🔒 Predictions are locked for **{name}**. Use `/match result` to record real outcomes."
-        )
+        await interaction.response.send_message(f"🔒 Predictions are locked for **{name}**.")
+        await interaction.followup.send("Use `/match result` to record real outcomes.", ephemeral=True)
 
     @group.command(name="conclude", description="Archive a finished tournament, keeping its results")
     @app_commands.describe(name="Tournament name")
@@ -144,13 +149,7 @@ class TournamentCog(commands.Cog):
             tournament = await resolve_tournament(interaction, conn, name)
             if tournament is None:
                 return
-            matches_by_id, feeders, teams_by_id = db.load_bracket(conn, tournament["id"])
-            results_by_match = db.get_results(conn, tournament["id"])
-            slots = resolve_all_slots(matches_by_id, results_by_match.get, feeders)
-            embed = render_bracket_embed(
-                name, tournament["status"], matches_by_id, feeders, slots, results_by_match, teams_by_id
-            )
-            await interaction.response.send_message(embed=embed)
+            await interaction.response.send_message(embed=load_bracket_embed(conn, tournament))
         finally:
             conn.close()
 

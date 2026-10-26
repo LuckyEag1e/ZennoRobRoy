@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+from datetime import datetime, timezone
 from pathlib import Path
 
 from bracket import (
@@ -20,14 +21,26 @@ from bracket import (
 
 DB_PATH = Path(__file__).parent / "data" / "tourney.db"
 
-# Tournament statuses, in lifecycle order. A concluded tournament keeps all its data
-# for later use (such as seeding) but can no longer be looked up by name, so the
-# name is free for a new tournament.
-STATUSES = ("setup", "predictions_open", "in_progress", "completed", "concluded")
+# Tournament statuses, in lifecycle order. A tournament made from a CSV starts at setup;
+# one that takes sign-ups starts at registration and has no matches until it closes.
+# A concluded tournament keeps all its data for later use (such as seeding) but can no
+# longer be looked up by name, so the name is free for a new tournament.
+STATUSES = ("registration", "setup", "predictions_open", "in_progress", "completed", "concluded")
 # Concluding can't be undone from Discord, so admins can't force it; /tournament
-# conclude only allows it once a tournament is completed.
-FORCEABLE_STATUSES = tuple(status for status in STATUSES if status != "concluded")
+# conclude only allows it once a tournament is completed. Registration can't be forced
+# either way: going back to it would leave a bracket behind, and leaving it any other
+# way than closing registration would leave a tournament with no bracket.
+FORCEABLE_STATUSES = tuple(status for status in STATUSES if status not in ("registration", "concluded"))
 _STATUS_SQL_LIST = ", ".join(f"'{status}'" for status in STATUSES)
+
+
+def to_db_time(moment: datetime) -> str:
+    """A time in the format SQLite's strftime writes for created_at, so the two compare as text."""
+    return moment.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+
+
+def from_db_time(text: str) -> datetime:
+    return datetime.fromisoformat(text.replace("Z", "+00:00"))
 
 
 def is_next_status(current: str, new: str) -> bool:
@@ -44,7 +57,12 @@ CREATE TABLE IF NOT EXISTS {table_name} (
     status      TEXT NOT NULL CHECK (status IN ({_STATUS_SQL_LIST}))
                     DEFAULT 'setup',
     created_by  INTEGER NOT NULL,
-    created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+    created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    -- Where registration was opened, so announcements made without a command land there.
+    channel_id  INTEGER,
+    registration_closes_at TEXT,
+    -- The sign-ups announcement, edited once sign-ups close so its countdown stops.
+    announcement_message_id INTEGER
 );
 """
 
@@ -67,6 +85,15 @@ CREATE TABLE IF NOT EXISTS teams (
     seed            INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_teams_tournament ON teams(tournament_id);
+
+-- The Discord users behind a team. Teams imported from a CSV have none.
+CREATE TABLE IF NOT EXISTS team_members (
+    team_id         INTEGER NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+    tournament_id   INTEGER NOT NULL REFERENCES tournaments(id) ON DELETE CASCADE,
+    user_id         INTEGER NOT NULL,
+    UNIQUE (tournament_id, user_id)
+);
+CREATE INDEX IF NOT EXISTS idx_team_members_team ON team_members(team_id);
 
 CREATE TABLE IF NOT EXISTS matches (
     id                  INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -100,6 +127,25 @@ CREATE TABLE IF NOT EXISTS predictions (
 );
 CREATE INDEX IF NOT EXISTS idx_predictions_user ON predictions(tournament_id, user_id);
 CREATE INDEX IF NOT EXISTS idx_predictions_match ON predictions(match_id);
+
+-- Users an admin has blocked from using the bot in a server.
+CREATE TABLE IF NOT EXISTS bans (
+    guild_id    INTEGER NOT NULL,
+    user_id     INTEGER NOT NULL,
+    reason      TEXT,
+    banned_by   INTEGER NOT NULL,
+    banned_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    PRIMARY KEY (guild_id, user_id)
+);
+
+-- Anonymous feedback. There's deliberately no user column, and only the date is kept,
+-- so a message can't be matched to whoever was active at that moment.
+CREATE TABLE IF NOT EXISTS feedback (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    guild_id    INTEGER NOT NULL,
+    message     TEXT NOT NULL,
+    created_on  TEXT NOT NULL DEFAULT (date('now'))
+);
 """
 
 
@@ -113,7 +159,7 @@ def get_connection(path: Path | None = None) -> sqlite3.Connection:
 
 
 # Bump when an older database needs migrating, and add the migration to init_db().
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 3
 
 
 def init_db(conn: sqlite3.Connection) -> None:
@@ -122,34 +168,42 @@ def init_db(conn: sqlite3.Connection) -> None:
     if is_new:
         conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
     else:
-        _migrate_to_concluded_status(conn)
+        _rebuild_tournaments_table(conn)
     conn.commit()
 
 
-def _migrate_to_concluded_status(conn: sqlite3.Connection) -> None:
-    """Databases made before the concluded status have a tournaments table whose CHECK
-    rejects it and whose UNIQUE (guild_id, name) blocks reusing a concluded name. SQLite
-    can't alter either in place, so the table is rebuilt, following SQLite's documented
-    steps for changing a table that other tables reference."""
-    if conn.execute("PRAGMA user_version").fetchone()[0] >= 1:
+def _rebuild_tournaments_table(conn: sqlite3.Connection) -> None:
+    """Older databases have a tournaments table whose CHECK rejects newer statuses, and
+    before version 1 a UNIQUE (guild_id, name) that blocks reusing a concluded name.
+    SQLite can't alter either in place, so the table is rebuilt, following SQLite's
+    documented steps for changing a table that other tables reference. Columns the old
+    table already has are copied across; newer ones start empty."""
+    if conn.execute("PRAGMA user_version").fetchone()[0] >= SCHEMA_VERSION:
         return
-    conn.executescript(f"""
-PRAGMA foreign_keys = OFF;
-BEGIN;
-{_tournaments_table_sql("tournaments_new")}
-INSERT INTO tournaments_new (id, guild_id, name, status, created_by, created_at)
-    SELECT id, guild_id, name, status, created_by, created_at FROM tournaments;
--- Keep the id counter, so ids of deleted tournaments aren't handed out again.
-DELETE FROM sqlite_sequence WHERE name = 'tournaments_new';
-INSERT INTO sqlite_sequence (name, seq)
-    SELECT 'tournaments_new', seq FROM sqlite_sequence WHERE name = 'tournaments';
-DROP TABLE tournaments;
-ALTER TABLE tournaments_new RENAME TO tournaments;
-{_ACTIVE_NAME_INDEX_SQL}
-PRAGMA user_version = 1;
-COMMIT;
-PRAGMA foreign_keys = ON;
-""")
+    conn.commit()
+    conn.execute("PRAGMA foreign_keys = OFF")  # has no effect inside a transaction
+    try:
+        conn.execute("BEGIN")
+        conn.execute(_tournaments_table_sql("tournaments_new"))
+        old_columns = {row["name"] for row in conn.execute("PRAGMA table_info(tournaments)")}
+        columns = ", ".join(
+            row["name"] for row in conn.execute("PRAGMA table_info(tournaments_new)") if row["name"] in old_columns
+        )
+        conn.execute(f"INSERT INTO tournaments_new ({columns}) SELECT {columns} FROM tournaments")
+        # Keep the id counter, so ids of deleted tournaments aren't handed out again.
+        conn.execute("DELETE FROM sqlite_sequence WHERE name = 'tournaments_new'")
+        conn.execute("""INSERT INTO sqlite_sequence (name, seq)
+                        SELECT 'tournaments_new', seq FROM sqlite_sequence WHERE name = 'tournaments'""")
+        conn.execute("DROP TABLE tournaments")
+        conn.execute("ALTER TABLE tournaments_new RENAME TO tournaments")
+        conn.execute(_ACTIVE_NAME_INDEX_SQL)
+        conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+        conn.execute("COMMIT")
+    except BaseException:
+        conn.rollback()
+        raise
+    finally:
+        conn.execute("PRAGMA foreign_keys = ON")
 
 
 # -- tournaments -------------------------------------------------------------
@@ -163,6 +217,27 @@ def create_tournament(conn: sqlite3.Connection, guild_id: int, name: str, create
     return cur.lastrowid
 
 
+def open_registration(conn: sqlite3.Connection, guild_id: int, name: str, created_by: int,
+                      channel_id: int | None, closes_at: str | None) -> int:
+    """Create a tournament that takes sign-ups. `closes_at` is a UTC time in the same
+    format as created_at, or None to close it by hand."""
+    cur = conn.execute(
+        """INSERT INTO tournaments (guild_id, name, created_by, status, channel_id, registration_closes_at)
+           VALUES (?, ?, ?, 'registration', ?, ?)""",
+        (guild_id, name, created_by, channel_id, closes_at),
+    )
+    conn.commit()
+    return cur.lastrowid
+
+
+def get_tournaments_due_to_close(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    """Tournaments still in registration whose closing time has passed."""
+    return conn.execute(
+        """SELECT * FROM tournaments WHERE status = 'registration'
+           AND registration_closes_at <= strftime('%Y-%m-%dT%H:%M:%fZ','now')"""
+    ).fetchall()
+
+
 def get_tournament_by_name(conn: sqlite3.Connection, guild_id: int, name: str) -> sqlite3.Row | None:
     return conn.execute(
         "SELECT * FROM tournaments WHERE guild_id = ? AND name = ? AND status != 'concluded'",
@@ -174,16 +249,38 @@ def get_tournament(conn: sqlite3.Connection, tournament_id: int) -> sqlite3.Row:
     return conn.execute("SELECT * FROM tournaments WHERE id = ?", (tournament_id,)).fetchone()
 
 
-def get_tournament_names(conn: sqlite3.Connection, guild_id: int) -> list[str]:
+def get_tournament_names(conn: sqlite3.Connection, guild_id: int, status: str | None = None) -> list[str]:
+    """Names of tournaments that haven't been concluded, newest first, optionally only those at `status`."""
     rows = conn.execute(
-        "SELECT name FROM tournaments WHERE guild_id = ? AND status != 'concluded' ORDER BY created_at DESC",
-        (guild_id,),
+        """SELECT name FROM tournaments WHERE guild_id = ? AND status != 'concluded'
+           AND (? IS NULL OR status = ?) ORDER BY created_at DESC""",
+        (guild_id, status, status),
     ).fetchall()
     return [r["name"] for r in rows]
 
 
 def set_tournament_status(conn: sqlite3.Connection, tournament_id: int, status: str) -> None:
     conn.execute("UPDATE tournaments SET status = ? WHERE id = ?", (status, tournament_id))
+    conn.commit()
+
+
+def set_announcement_message(conn: sqlite3.Connection, tournament_id: int, message_id: int) -> None:
+    conn.execute("UPDATE tournaments SET announcement_message_id = ? WHERE id = ?", (message_id, tournament_id))
+    conn.commit()
+
+
+def claim_registration_close(conn: sqlite3.Connection, tournament_id: int) -> bool:
+    """Move a tournament from registration to setup without committing, so it lands
+    together with the bracket. False if it had already left registration. The status
+    check and the change are one statement, so two closes can't both claim it."""
+    cur = conn.execute(
+        "UPDATE tournaments SET status = 'setup' WHERE id = ? AND status = 'registration'", (tournament_id,)
+    )
+    return cur.rowcount > 0
+
+
+def clear_registration_deadline(conn: sqlite3.Connection, tournament_id: int) -> None:
+    conn.execute("UPDATE tournaments SET registration_closes_at = NULL WHERE id = ?", (tournament_id,))
     conn.commit()
 
 
@@ -206,6 +303,63 @@ def insert_team(conn: sqlite3.Connection, tournament_id: int, name: str, seed: i
 def get_teams(conn: sqlite3.Connection, tournament_id: int) -> dict[int, sqlite3.Row]:
     rows = conn.execute("SELECT * FROM teams WHERE tournament_id = ?", (tournament_id,)).fetchall()
     return {r["id"]: r for r in rows}
+
+
+def register_entrant(conn: sqlite3.Connection, tournament_id: int, name: str,
+                     user_id: int | None) -> tuple[int, str]:
+    """Sign up a one-person team and return its (team id, name). With no `user_id` it's
+    just a name, with no Discord account behind it. A name already taken in this
+    tournament gets a number added, so admin commands that find teams by name still work."""
+    taken = {team["name"] for team in get_teams(conn, tournament_id).values()}
+    unique_name = name
+    number = 2
+    while unique_name in taken:
+        unique_name = f"{name} ({number})"
+        number += 1
+    with conn:
+        team_id = conn.execute(
+            "INSERT INTO teams (tournament_id, name, seed) VALUES (?, ?, NULL)", (tournament_id, unique_name)
+        ).lastrowid
+        if user_id is not None:
+            conn.execute(
+                "INSERT INTO team_members (team_id, tournament_id, user_id) VALUES (?, ?, ?)",
+                (team_id, tournament_id, user_id),
+            )
+    return team_id, unique_name
+
+
+def unregister_entrant(conn: sqlite3.Connection, tournament_id: int, user_id: int) -> bool:
+    """Withdraw a user's team. Returns False if they weren't registered."""
+    with conn:
+        cur = conn.execute(
+            """DELETE FROM teams WHERE id = (
+                   SELECT team_id FROM team_members WHERE tournament_id = ? AND user_id = ?)""",
+            (tournament_id, user_id),
+        )
+    return cur.rowcount > 0
+
+
+def get_entrant_team_id(conn: sqlite3.Connection, tournament_id: int, user_id: int) -> int | None:
+    row = conn.execute(
+        "SELECT team_id FROM team_members WHERE tournament_id = ? AND user_id = ?", (tournament_id, user_id)
+    ).fetchone()
+    return row["team_id"] if row is not None else None
+
+
+def get_entrants(conn: sqlite3.Connection, tournament_id: int) -> list[sqlite3.Row]:
+    """The tournament's teams with their members' user ids, in sign-up order. A team with
+    no Discord account behind it has one row, with user_id None."""
+    return conn.execute(
+        """SELECT t.id AS team_id, t.name, tm.user_id FROM teams t
+           LEFT JOIN team_members tm ON tm.team_id = t.id
+           WHERE t.tournament_id = ? ORDER BY t.id""",
+        (tournament_id,),
+    ).fetchall()
+
+
+def delete_team(conn: sqlite3.Connection, team_id: int) -> None:
+    conn.execute("DELETE FROM teams WHERE id = ?", (team_id,))
+    conn.commit()
 
 
 def get_team_by_name(conn: sqlite3.Connection, tournament_id: int, name: str) -> sqlite3.Row | None:
@@ -247,7 +401,6 @@ def link_feeders(conn: sqlite3.Connection, tournament_id: int, specs: list[Match
             "UPDATE matches SET feeds_into_match_id = ?, feeds_into_side = ? WHERE id = ?",
             (target_id, spec.feeds_into_side, this_id),
         )
-    conn.commit()
 
 
 def get_matches(conn: sqlite3.Connection, tournament_id: int) -> dict[int, Match]:
@@ -390,3 +543,51 @@ def clear_user_predictions(conn: sqlite3.Connection, tournament_id: int, user_id
         (tournament_id, user_id),
     )
     conn.commit()
+
+
+# -- moderation -----------------------------------------------------------------
+
+def ban_user(conn: sqlite3.Connection, guild_id: int, user_id: int, banned_by: int, reason: str | None) -> None:
+    """Block a user from the bot in a server. Banning someone already banned updates the reason."""
+    conn.execute(
+        """INSERT INTO bans (guild_id, user_id, reason, banned_by) VALUES (?, ?, ?, ?)
+           ON CONFLICT(guild_id, user_id) DO UPDATE SET
+               reason = excluded.reason, banned_by = excluded.banned_by,
+               banned_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')""",
+        (guild_id, user_id, reason, banned_by),
+    )
+    conn.commit()
+
+
+def unban_user(conn: sqlite3.Connection, guild_id: int, user_id: int) -> bool:
+    """Returns False if the user wasn't banned."""
+    cur = conn.execute("DELETE FROM bans WHERE guild_id = ? AND user_id = ?", (guild_id, user_id))
+    conn.commit()
+    return cur.rowcount > 0
+
+
+def is_banned(conn: sqlite3.Connection, guild_id: int, user_id: int) -> bool:
+    return conn.execute(
+        "SELECT 1 FROM bans WHERE guild_id = ? AND user_id = ?", (guild_id, user_id)
+    ).fetchone() is not None
+
+
+def get_bans(conn: sqlite3.Connection, guild_id: int) -> list[sqlite3.Row]:
+    return conn.execute("SELECT * FROM bans WHERE guild_id = ? ORDER BY banned_at", (guild_id,)).fetchall()
+
+
+def add_feedback(conn: sqlite3.Connection, guild_id: int, message: str) -> None:
+    conn.execute("INSERT INTO feedback (guild_id, message) VALUES (?, ?)", (guild_id, message))
+    conn.commit()
+
+
+def get_feedback(conn: sqlite3.Connection, guild_id: int) -> list[sqlite3.Row]:
+    """A server's feedback, newest first."""
+    return conn.execute("SELECT * FROM feedback WHERE guild_id = ? ORDER BY id DESC", (guild_id,)).fetchall()
+
+
+def delete_feedback(conn: sqlite3.Connection, guild_id: int, feedback_id: int) -> bool:
+    """Returns False if there's no such feedback in this server."""
+    cur = conn.execute("DELETE FROM feedback WHERE guild_id = ? AND id = ?", (guild_id, feedback_id))
+    conn.commit()
+    return cur.rowcount > 0

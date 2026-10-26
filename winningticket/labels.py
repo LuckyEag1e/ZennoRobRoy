@@ -84,6 +84,25 @@ def pickem_podium_lines(scores: list[UserScore], player_label: Callable[[int], s
     return [f"{MEDALS[place]} {player_label(s.user_id)} — {score_label(s)}" for place, s in placed]
 
 
+def entrant_lines(entrants: list, player_label: Callable[[int], str]) -> list[str]:
+    """A numbered sign-up list, with `player_label` naming each entrant's user by id."""
+    lines = []
+    for number, entrant in enumerate(entrants, start=1):
+        account = "no Discord account" if entrant["user_id"] is None else player_label(entrant["user_id"])
+        lines.append(f"{number}. {entrant['name']} ({account})")
+    return lines
+
+
+def ban_lines(bans: list, player_label: Callable[[int], str]) -> list[str]:
+    """One line per banned user, with `player_label` naming users by id."""
+    lines = []
+    for ban in bans:
+        # banned_at is stored as ISO text, so its first ten characters are the date.
+        line = f"{player_label(ban['user_id'])} (banned {ban['banned_at'][:10]} by {player_label(ban['banned_by'])})"
+        lines.append(line + (f": {ban['reason']}" if ban["reason"] else ""))
+    return lines
+
+
 def join_within(lines: list[str], limit: int) -> str:
     """Join lines with newlines, dropping lines from the end, with a note saying how many,
     so the result fits in `limit` characters."""
@@ -93,3 +112,36 @@ def join_within(lines: list[str], limit: int) -> str:
         if len(text) <= limit:
             return text
     return f"…and {len(lines)} more"
+
+
+# What /features (and the CLI's 'features') says the bot is for. Move a line from planned
+# to current once it ships.
+CURRENT_FEATURES = [
+    "**Bracket prediction pool:** predict every match before a tournament starts. Correct "
+    "picks score more in later rounds, and a live leaderboard tracks everyone.",
+    "**Sign-ups:** players register themselves, and the bracket is drawn automatically when "
+    "sign-ups close. Organizers can still build a bracket from a CSV instead.",
+    "**Live results:** organizers record results as games finish, the bot announces who "
+    "advances, and anyone can check the bracket or see how the pool picked each matchup.",
+    "**Final results:** concluding a tournament posts the podium and the top predictors, "
+    "and keeps the results for the future.",
+    "**Anonymous feedback** for the organizers.",
+]
+PLANNED_FEATURES = [
+    "**Automatic seeding** from each player's past results.",
+    "**Self-reported results:** both players confirm a match result, and organizers only "
+    "step in when they disagree.",
+    "**More formats:** double elimination and round robin.",
+    "**Team tournaments** with two or more players per entrant.",
+]
+
+FEEDBACK_PAGE_SIZE = 5
+
+
+def feedback_page(entries: list, page: int) -> tuple[list, int, int]:
+    """(entries on the page, the page shown, how many pages there are). Pages count from 1,
+    and a page number out of range shows the nearest real page."""
+    page_count = max(1, -(-len(entries) // FEEDBACK_PAGE_SIZE))
+    page = min(max(page, 1), page_count)
+    start = (page - 1) * FEEDBACK_PAGE_SIZE
+    return entries[start:start + FEEDBACK_PAGE_SIZE], page, page_count

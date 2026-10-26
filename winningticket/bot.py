@@ -22,11 +22,32 @@ log = logging.getLogger("winningticket")
 
 INITIAL_COGS = (
     "cogs.tournament",
+    "cogs.registration",
     "cogs.predictions",
     "cogs.results",
     "cogs.admin",
+    "cogs.feedback",
     "cogs.help",
 )
+
+
+class WinningTicketTree(app_commands.CommandTree):
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        """Turn away members an admin has banned, before any command or autocomplete runs."""
+        if interaction.guild_id is None:
+            return True
+        conn = db.get_connection()
+        try:
+            banned = db.is_banned(conn, interaction.guild_id, interaction.user.id)
+        finally:
+            conn.close()
+        if not banned:
+            return True
+        if interaction.type == discord.InteractionType.application_command:
+            await interaction.response.send_message(
+                "An admin has blocked you from using WinningTicket in this server.", ephemeral=True
+            )
+        return False
 
 
 class WinningTicketBot(commands.Bot):
@@ -35,6 +56,7 @@ class WinningTicketBot(commands.Bot):
             command_prefix=commands.when_mentioned,
             intents=discord.Intents.default(),
             connector=connector,
+            tree_cls=WinningTicketTree,
         )
 
     async def setup_hook(self) -> None:

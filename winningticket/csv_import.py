@@ -7,7 +7,8 @@ import io
 import sqlite3
 
 import db
-from bracket import BracketError, check_matchup_count, generate_tree
+from bracket import BracketError, check_matchup_count
+from tournament_builder import build_matches
 
 
 class CsvValidationError(ValueError):
@@ -99,21 +100,10 @@ def import_tournament(conn: sqlite3.Connection, guild_id: int, name: str,
         team_pairs.append((team_a_id, team_b_id))
 
     try:
-        specs = generate_tree(team_pairs)
+        build_matches(conn, tournament_id, team_pairs)
     except BracketError as e:
         db.delete_tournament(conn, tournament_id)
         raise CsvValidationError(str(e))
-
-    match_ids_by_round_slot: dict[tuple[int, int], int] = {}
-    for spec in specs:
-        if spec.round == 1:
-            team_a_id, team_b_id = team_pairs[spec.slot_index]
-        else:
-            team_a_id, team_b_id = None, None
-        match_id = db.insert_match_spec(conn, tournament_id, spec, team_a_id, team_b_id)
-        match_ids_by_round_slot[(spec.round, spec.slot_index)] = match_id
     conn.commit()
-
-    db.link_feeders(conn, tournament_id, specs, match_ids_by_round_slot)
 
     return tournament_id

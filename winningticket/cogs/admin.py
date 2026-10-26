@@ -7,35 +7,18 @@ from discord.ext import commands
 import db
 from bracket import Match, bracket_order, matches_with_both_teams, resolve_all_slots
 from common import (
-    MAX_SELECT_OPTIONS,
     MatchPicker,
     TournamentSession,
     WinnerPicker,
+    edit_signups_message,
     resolve_tournament,
+    team_name_autocomplete,
     tournament_name_autocomplete,
 )
-from labels import dropped_results_note, team_label
+from embeds import EMBED_DESCRIPTION_LIMIT, mention
+from labels import ban_lines, dropped_results_note, feedback_page, join_within, team_label
 
 STATUS_CHOICES = [app_commands.Choice(name=status, value=status) for status in db.FORCEABLE_STATUSES]
-
-
-async def team_name_autocomplete(interaction: discord.Interaction, current: str) -> list[app_commands.Choice[str]]:
-    tournament_name = getattr(interaction.namespace, "tournament", None)
-    if not tournament_name:
-        return []
-    conn = db.get_connection()
-    try:
-        tournament_row = db.get_tournament_by_name(conn, interaction.guild_id, tournament_name)
-        if tournament_row is None:
-            return []
-        teams_by_id = db.get_teams(conn, tournament_row["id"])
-    finally:
-        conn.close()
-    return [
-        app_commands.Choice(name=team["name"], value=team["name"])
-        for team in teams_by_id.values()
-        if current.lower() in team["name"].lower()
-    ][:MAX_SELECT_OPTIONS]
 
 
 class ConfirmView(discord.ui.View):
@@ -93,13 +76,15 @@ class AdminCog(commands.Cog):
             return
         conn = db.get_connection()
         try:
-            tournament_row = await resolve_tournament(interaction, conn, tournament)
+            tournament_row = await resolve_tournament(interaction, conn, tournament, needs_bracket=False)
             if tournament_row is None:
                 return
             db.delete_tournament(conn, tournament_row["id"])
         finally:
             conn.close()
         await interaction.response.send_message(f"🗑️ Deleted tournament **{tournament}** and all its data.", ephemeral=True)
+        if tournament_row["status"] == "registration":
+            await edit_signups_message(self.bot, tournament_row, f"📝 Sign-ups for **{tournament}** were cancelled.")
 
     @group.command(name="editteam", description="Fix a team's name or seed")
     @app_commands.describe(tournament="Tournament name", team="Team to edit", new_name="New name (optional)", new_seed="New seed (optional)")
@@ -108,7 +93,7 @@ class AdminCog(commands.Cog):
                          new_name: str | None = None, new_seed: int | None = None) -> None:
         conn = db.get_connection()
         try:
-            tournament_row = await resolve_tournament(interaction, conn, tournament)
+            tournament_row = await resolve_tournament(interaction, conn, tournament, needs_bracket=False)
             if tournament_row is None:
                 return
             team_row = db.get_team_by_name(conn, tournament_row["id"], team)
@@ -228,7 +213,7 @@ class AdminCog(commands.Cog):
     async def clearpredictions(self, interaction: discord.Interaction, tournament: str, user: discord.Member) -> None:
         conn = db.get_connection()
         try:
-            tournament_row = await resolve_tournament(interaction, conn, tournament)
+            tournament_row = await resolve_tournament(interaction, conn, tournament, needs_bracket=False)
             if tournament_row is None:
                 return
             existing = db.get_user_predictions(conn, tournament_row["id"], user.id)
@@ -254,6 +239,76 @@ class AdminCog(commands.Cog):
             f"Clear {user.display_name}'s {len(existing)} saved picks for **{tournament}**?",
             view=view, ephemeral=True,
         )
+
+    @group.command(name="feedback", description="Read the anonymous feedback members have sent, newest first")
+    @app_commands.describe(page="Page to show (5 per page)")
+    async def feedback(self, interaction: discord.Interaction, page: app_commands.Range[int, 1] = 1) -> None:
+        conn = db.get_connection()
+        try:
+            entries, page, page_count = feedback_page(db.get_feedback(conn, interaction.guild_id), page)
+        finally:
+            conn.close()
+        embed = discord.Embed(title="Anonymous feedback")
+        if not entries:
+            embed.description = "No feedback yet."
+        for entry in entries:
+            embed.add_field(name=f"#{entry['id']} · {entry['created_on']}", value=entry["message"], inline=False)
+        embed.set_footer(text=f"Page {page} of {page_count}. Remove handled feedback with /admin deletefeedback.")
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @group.command(name="deletefeedback", description="Remove a piece of feedback once it's been dealt with")
+    @app_commands.describe(number="The feedback's # number, from /admin feedback")
+    async def deletefeedback(self, interaction: discord.Interaction, number: int) -> None:
+        conn = db.get_connection()
+        try:
+            deleted = db.delete_feedback(conn, interaction.guild_id, number)
+        finally:
+            conn.close()
+        message = f"Deleted feedback #{number}." if deleted else f"There's no feedback #{number}."
+        await interaction.response.send_message(message, ephemeral=True)
+
+    @group.command(name="ban", description="Block a member from using the bot in this server")
+    @app_commands.describe(user="Member to block", reason="Why (only admins see this)")
+    async def ban(self, interaction: discord.Interaction, user: discord.Member, reason: str | None = None) -> None:
+        # Otherwise one admin could lock another out of /admin unban. This assumes only
+        # Manage Server members can use /admin, as its default_permissions say. A server that
+        # opens /admin to others with permission overrides can still undo a ban as long as
+        # someone with Manage Server is around.
+        if user.guild_permissions.manage_guild:
+            await interaction.response.send_message(
+                "Members with the Manage Server permission can't be banned from the bot.", ephemeral=True
+            )
+            return
+        conn = db.get_connection()
+        try:
+            db.ban_user(conn, interaction.guild_id, user.id, interaction.user.id, reason)
+        finally:
+            conn.close()
+        await interaction.response.send_message(
+            f"🚫 {user.mention} can no longer use the bot in this server. Undo with `/admin unban`.", ephemeral=True
+        )
+
+    @group.command(name="unban", description="Let a banned member use the bot again")
+    @app_commands.describe(user="Member to unblock")
+    async def unban(self, interaction: discord.Interaction, user: discord.User) -> None:
+        conn = db.get_connection()
+        try:
+            unbanned = db.unban_user(conn, interaction.guild_id, user.id)
+        finally:
+            conn.close()
+        message = f"{user.mention} can use the bot again." if unbanned else f"{user.mention} isn't banned."
+        await interaction.response.send_message(message, ephemeral=True)
+
+    @group.command(name="bans", description="List members banned from using the bot")
+    async def bans(self, interaction: discord.Interaction) -> None:
+        conn = db.get_connection()
+        try:
+            bans = db.get_bans(conn, interaction.guild_id)
+        finally:
+            conn.close()
+        embed = discord.Embed(title="Banned from the bot")
+        embed.description = join_within(ban_lines(bans, mention), EMBED_DESCRIPTION_LIMIT) if bans else "Nobody is banned."
+        await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
 async def setup(bot: commands.Bot) -> None:
