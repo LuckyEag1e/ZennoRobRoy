@@ -7,35 +7,16 @@ from discord.ext import commands
 import db
 from bracket import Match, bracket_order, matches_with_both_teams, resolve_all_slots
 from common import (
-    MAX_SELECT_OPTIONS,
     MatchPicker,
     TournamentSession,
     WinnerPicker,
     resolve_tournament,
+    team_name_autocomplete,
     tournament_name_autocomplete,
 )
 from labels import dropped_results_note, team_label
 
 STATUS_CHOICES = [app_commands.Choice(name=status, value=status) for status in db.FORCEABLE_STATUSES]
-
-
-async def team_name_autocomplete(interaction: discord.Interaction, current: str) -> list[app_commands.Choice[str]]:
-    tournament_name = getattr(interaction.namespace, "tournament", None)
-    if not tournament_name:
-        return []
-    conn = db.get_connection()
-    try:
-        tournament_row = db.get_tournament_by_name(conn, interaction.guild_id, tournament_name)
-        if tournament_row is None:
-            return []
-        teams_by_id = db.get_teams(conn, tournament_row["id"])
-    finally:
-        conn.close()
-    return [
-        app_commands.Choice(name=team["name"], value=team["name"])
-        for team in teams_by_id.values()
-        if current.lower() in team["name"].lower()
-    ][:MAX_SELECT_OPTIONS]
 
 
 class ConfirmView(discord.ui.View):
@@ -76,6 +57,13 @@ class AdminCog(commands.Cog):
         try:
             tournament_row = await resolve_tournament(interaction, conn, tournament)
             if tournament_row is None:
+                return
+            if tournament_row["status"] == "registration":
+                await interaction.response.send_message(
+                    f"**{tournament}** has no bracket until registration closes. "
+                    f"Use `/registration close name:{tournament}` first.",
+                    ephemeral=True,
+                )
                 return
             db.set_tournament_status(conn, tournament_row["id"], status)
         finally:

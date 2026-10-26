@@ -10,8 +10,9 @@ from ascii_bracket import prediction_marker, real_result_marker, render_tree
 from bracket import Match, Podium, UserScore
 from labels import crowd_verdict, join_within, pick_share, pickem_podium_lines, podium_lines, score_label, team_label
 
-# Discord rejects an embed field value longer than this.
+# Discord rejects an embed field value or description longer than these.
 EMBED_FIELD_LIMIT = 1024
+EMBED_DESCRIPTION_LIMIT = 4096
 
 
 def render_bracket_embed(

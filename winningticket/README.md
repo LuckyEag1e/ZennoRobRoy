@@ -54,6 +54,12 @@ out, e.g. `create Demo example_bracket.csv` in the local CLI below.
 ## Usage
 
 Admin:
+- `/registration open name:<name> [closes_in_hours:<hours>]`: take sign-ups instead of
+  uploading a CSV. Members enter with `/register`. Sign-ups close after `closes_in_hours`
+  (or with `/registration close name:<name>`), and then the entrants are drawn into a
+  bracket at random, with byes filling it out to a power of two.
+- `/registration add tournament:<name> [user:<member>] [name:<text>]`: sign up a member
+  for them, or an entrant with no Discord account. `/registration remove` withdraws anyone.
 - `/tournament create name:<name> csv_file:<attach bracket.csv>`
 - `/tournament open name:<name>` — let members start `/predict`
 - `/tournament lock name:<name>` — stop prediction submissions, start recording real results
@@ -66,6 +72,9 @@ Admin:
   a tournament). All require the Manage Server permission.
 
 Everyone:
+- `/register tournament:<name>` / `/unregister tournament:<name>`: sign up for, or withdraw
+  from, a tournament that's taking entrants
+- `/registration entrants name:<name>`: see who has signed up
 - `/predict tournament:<name>` — click through and fill out your bracket (round 2+
   options are built from your own picks, just like ESPN/Yahoo bracket pools)
 - `/mypicks tournament:<name>` — see your saved bracket and current score
@@ -82,7 +91,9 @@ database), so you can test full tournament flows without a bot token or server:
 python cli.py
 ```
 
-Commands mirror the slash commands: `create <name> <csv>`, `open <name>`, `predict <name>`,
+Commands mirror the slash commands: `create <name> <csv>`, `regopen <name>`, `register <name>`,
+`unregister <name>`, `entrants <name>`, `regadd <name> <entrant> [user_id]`, `regremove <name> <entrant>`,
+`regclose <name>`, `open <name>`, `predict <name>`,
 `lock <name>`, `conclude <name>`, `matchresult <name>`, `matchstats <name>`, `mypicks <name>`, `bracket <name>`,
 `leaderboard <name>`, `tournaments`, and the admin set: `admin_setstatus`, `admin_delete`,
 `admin_editteam`, `admin_setresult`, `admin_clearresult`, `admin_clearpredictions`.

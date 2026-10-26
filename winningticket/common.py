@@ -10,7 +10,8 @@ import discord
 from discord import app_commands
 
 import db
-from bracket import Match
+from bracket import Match, resolve_all_slots
+from embeds import render_bracket_embed
 from labels import matchup_label, team_label
 
 # Discord's limit on options in one select menu.
@@ -49,12 +50,11 @@ async def resolve_tournament(
     return tournament
 
 
-async def tournament_name_autocomplete(
-    interaction: discord.Interaction, current: str
-) -> list[app_commands.Choice[str]]:
+def _tournament_choices(interaction: discord.Interaction, current: str,
+                        status: str | None = None) -> list[app_commands.Choice[str]]:
     conn = db.get_connection()
     try:
-        names = db.get_tournament_names(conn, interaction.guild_id)
+        names = db.get_tournament_names(conn, interaction.guild_id, status)
     finally:
         conn.close()
     return [
@@ -62,6 +62,49 @@ async def tournament_name_autocomplete(
         for n in names
         if current.lower() in n.lower()
     ][:MAX_SELECT_OPTIONS]
+
+
+async def tournament_name_autocomplete(
+    interaction: discord.Interaction, current: str
+) -> list[app_commands.Choice[str]]:
+    return _tournament_choices(interaction, current)
+
+
+async def registration_name_autocomplete(
+    interaction: discord.Interaction, current: str
+) -> list[app_commands.Choice[str]]:
+    """Only tournaments still taking sign-ups."""
+    return _tournament_choices(interaction, current, "registration")
+
+
+async def team_name_autocomplete(interaction: discord.Interaction, current: str) -> list[app_commands.Choice[str]]:
+    """Teams in the tournament picked in the same command's `tournament` option."""
+    tournament_name = getattr(interaction.namespace, "tournament", None)
+    if not tournament_name:
+        return []
+    conn = db.get_connection()
+    try:
+        tournament_row = db.get_tournament_by_name(conn, interaction.guild_id, tournament_name)
+        if tournament_row is None:
+            return []
+        teams_by_id = db.get_teams(conn, tournament_row["id"])
+    finally:
+        conn.close()
+    return [
+        app_commands.Choice(name=team["name"], value=team["name"])
+        for team in teams_by_id.values()
+        if current.lower() in team["name"].lower()
+    ][:MAX_SELECT_OPTIONS]
+
+
+def load_bracket_embed(conn: sqlite3.Connection, tournament: sqlite3.Row) -> discord.Embed:
+    """The tournament's real bracket as it stands, with every result recorded so far."""
+    matches_by_id, feeders, teams_by_id = db.load_bracket(conn, tournament["id"])
+    results_by_match = db.get_results(conn, tournament["id"])
+    slots = resolve_all_slots(matches_by_id, results_by_match.get, feeders)
+    return render_bracket_embed(
+        tournament["name"], tournament["status"], matches_by_id, feeders, slots, results_by_match, teams_by_id
+    )
 
 
 MatchCallback = Callable[[discord.Interaction, Match], Awaitable[None]]

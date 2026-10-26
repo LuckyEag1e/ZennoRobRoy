@@ -7,10 +7,15 @@ from discord import app_commands
 from discord.ext import commands
 
 import db
-from bracket import resolve_all_slots
-from common import requires_manage_server, resolve_emoji, resolve_tournament, tournament_name_autocomplete
+from common import (
+    load_bracket_embed,
+    requires_manage_server,
+    resolve_emoji,
+    resolve_tournament,
+    tournament_name_autocomplete,
+)
 from csv_import import CsvValidationError, import_tournament, parse_csv
-from embeds import render_bracket_embed, render_final_results_embed, render_leaderboard_embed
+from embeds import render_final_results_embed, render_leaderboard_embed
 
 
 class TournamentCog(commands.Cog):
@@ -28,6 +33,12 @@ class TournamentCog(commands.Cog):
         error and return None."""
         tournament = await resolve_tournament(interaction, conn, name)
         if tournament is None:
+            return None
+        if tournament["status"] == "registration":
+            await interaction.response.send_message(
+                f"**{name}** is still taking sign-ups. Close them with `/registration close name:{name}` first.",
+                ephemeral=True,
+            )
             return None
         if not db.is_next_status(tournament["status"], new_status):
             await interaction.response.send_message(
@@ -144,13 +155,14 @@ class TournamentCog(commands.Cog):
             tournament = await resolve_tournament(interaction, conn, name)
             if tournament is None:
                 return
-            matches_by_id, feeders, teams_by_id = db.load_bracket(conn, tournament["id"])
-            results_by_match = db.get_results(conn, tournament["id"])
-            slots = resolve_all_slots(matches_by_id, results_by_match.get, feeders)
-            embed = render_bracket_embed(
-                name, tournament["status"], matches_by_id, feeders, slots, results_by_match, teams_by_id
-            )
-            await interaction.response.send_message(embed=embed)
+            if tournament["status"] == "registration":
+                await interaction.response.send_message(
+                    f"**{name}** is still taking sign-ups, so it has no bracket yet. "
+                    f"See who's in with `/registration entrants name:{name}`.",
+                    ephemeral=True,
+                )
+                return
+            await interaction.response.send_message(embed=load_bracket_embed(conn, tournament))
         finally:
             conn.close()
 
