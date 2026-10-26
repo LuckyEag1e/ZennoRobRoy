@@ -8,7 +8,7 @@ from discord.ext import commands
 
 import db
 from bracket import Match, compute_leaderboard, is_bye, matches_in_round, next_match_to_pick, resolve_all_slots, resolve_slot
-from common import resolve_tournament, tournament_name_autocomplete
+from common import BotView, resolve_tournament, tournament_name_autocomplete
 from embeds import render_my_picks_embed
 from labels import pick_review_lines, team_label
 
@@ -88,7 +88,7 @@ def build_confirm_payload(session: PredictionSession) -> tuple[discord.Embed, di
     return embed, view
 
 
-class BracketPredictView(discord.ui.View):
+class BracketPredictView(BotView):
     def __init__(self, session: PredictionSession) -> None:
         super().__init__(timeout=SESSION_TIMEOUT_SECONDS)
         self.session = session

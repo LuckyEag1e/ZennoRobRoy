@@ -7,6 +7,7 @@ from discord.ext import commands
 import db
 from bracket import Match, bracket_order, matches_with_both_teams, resolve_all_slots
 from common import (
+    BotView,
     MatchPicker,
     TournamentSession,
     WinnerPicker,
@@ -21,7 +22,7 @@ from labels import ban_lines, dropped_results_note, feedback_page, join_within, 
 STATUS_CHOICES = [app_commands.Choice(name=status, value=status) for status in db.FORCEABLE_STATUSES]
 
 
-class ConfirmView(discord.ui.View):
+class ConfirmView(BotView):
     def __init__(self, on_confirm, timeout: int = 120) -> None:
         super().__init__(timeout=timeout)
         self._on_confirm = on_confirm
@@ -102,6 +103,11 @@ class AdminCog(commands.Cog):
                 return
             if new_name is None and new_seed is None:
                 await interaction.response.send_message("Provide new_name and/or new_seed.", ephemeral=True)
+                return
+            if new_name is not None and db.team_name_taken(conn, tournament_row["id"], new_name, team_row["id"]):
+                await interaction.response.send_message(
+                    f"**{tournament}** already has a team named '{new_name}'.", ephemeral=True
+                )
                 return
             db.update_team(conn, team_row["id"], new_name, new_seed, seed_given=new_seed is not None)
         finally:

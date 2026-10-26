@@ -224,11 +224,16 @@ class WinningTicketCLI(cmd.Cmd):
             return
         closes_at = None
         if hours.strip():
+            low, high = tournament_builder.MIN_CLOSES_IN_HOURS, tournament_builder.MAX_CLOSES_IN_HOURS
             try:
-                closes_at = datetime.now(timezone.utc) + timedelta(hours=float(hours))
+                closes_in = float(hours)
             except ValueError:
-                print("--closes-in must be a number of hours, like 0.01 for about 36 seconds")
+                closes_in = None
+            # Written so a NaN fails it too.
+            if closes_in is None or not low <= closes_in <= high:
+                print(f"--closes-in must be a number of hours from {low} to {high:g}")
                 return
+            closes_at = datetime.now(timezone.utc) + timedelta(hours=closes_in)
         if db.get_tournament_by_name(self.conn, GUILD_ID, name) is not None:
             print(f"A tournament named '{name}' already exists.")
             return
@@ -475,6 +480,9 @@ class WinningTicketCLI(cmd.Cmd):
         team_row = db.get_team_by_name(self.conn, tournament["id"], team)
         if team_row is None:
             print(f"No team named '{team}' in '{name}'.")
+            return
+        if new_name is not None and db.team_name_taken(self.conn, tournament["id"], new_name, team_row["id"]):
+            print(f"'{name}' already has a team named '{new_name}'.")
             return
         db.update_team(self.conn, team_row["id"], new_name, new_seed, seed_given)
         print("Updated.")

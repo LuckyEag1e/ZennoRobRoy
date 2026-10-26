@@ -146,11 +146,42 @@ def load_bracket_embed(conn: sqlite3.Connection, tournament: sqlite3.Row) -> dis
     )
 
 
+async def turn_away_if_banned(interaction: discord.Interaction) -> bool:
+    """True if an admin has banned this member, after telling them so where Discord
+    allows a reply (it doesn't for autocomplete)."""
+    if interaction.guild_id is None:
+        return False
+    conn = db.get_connection()
+    try:
+        banned = db.is_banned(conn, interaction.guild_id, interaction.user.id)
+    finally:
+        conn.close()
+    if banned and interaction.type != discord.InteractionType.autocomplete:
+        await interaction.response.send_message(
+            "An admin has blocked you from using WinningTicket in this server.", ephemeral=True
+        )
+    return banned
+
+
+class BotView(discord.ui.View):
+    """Base for every view the bot sends, so a member banned while one is open can't keep using it."""
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        return not await turn_away_if_banned(interaction)
+
+
+class BotModal(discord.ui.Modal):
+    """Base for every form the bot opens, so a member banned while one is open can't send it."""
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        return not await turn_away_if_banned(interaction)
+
+
 MatchCallback = Callable[[discord.Interaction, Match], Awaitable[None]]
 WinnerCallback = Callable[[discord.Interaction, int, int], Awaitable[None]]
 
 
-class MatchPicker(discord.ui.View):
+class MatchPicker(BotView):
     """A select menu of matches that pages through them, since Discord caps a menu at 25
     options and a large bracket has more matches than that."""
 
@@ -202,7 +233,7 @@ class MatchPicker(discord.ui.View):
         await self.on_pick(interaction, match)
 
 
-class WinnerPicker(discord.ui.View):
+class WinnerPicker(BotView):
     """One button per team in a match; calls on_pick(interaction, winner_id, loser_id)."""
 
     def __init__(self, team_a: int, team_b: int, teams_by_id: dict, on_pick: WinnerCallback,

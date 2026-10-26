@@ -7,6 +7,7 @@ from discord import app_commands
 from discord.ext import commands
 
 import db
+from common import BotModal
 
 # Long enough for a real message, short enough that each one fits an embed field when read back.
 FEEDBACK_MAX_LENGTH = 1000
@@ -39,7 +40,7 @@ class FeedbackCooldown:
         self.last_sent[(interaction.guild_id, interaction.user.id)] = now
 
 
-class FeedbackModal(discord.ui.Modal, title="Anonymous feedback"):
+class FeedbackModal(BotModal, title="Anonymous feedback"):
     feedback_text = discord.ui.TextInput(
         label="Your feedback",
         style=discord.TextStyle.paragraph,

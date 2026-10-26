@@ -368,6 +368,13 @@ def get_team_by_name(conn: sqlite3.Connection, tournament_id: int, name: str) ->
     ).fetchone()
 
 
+def team_name_taken(conn: sqlite3.Connection, tournament_id: int, name: str, team_id: int) -> bool:
+    """True if a team other than `team_id` in this tournament is already called `name`.
+    Admin commands find teams by name, so two with one name would be ambiguous."""
+    other = get_team_by_name(conn, tournament_id, name)
+    return other is not None and other["id"] != team_id
+
+
 def update_team(conn: sqlite3.Connection, team_id: int, name: str | None, seed: int | None, seed_given: bool) -> None:
     if name is not None and seed_given:
         conn.execute("UPDATE teams SET name = ?, seed = ? WHERE id = ?", (name, seed, team_id))

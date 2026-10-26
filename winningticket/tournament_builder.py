@@ -11,6 +11,11 @@ from bracket import BracketError, generate_tree
 from seeding import seeded_pairs
 
 
+# How far ahead a sign-up deadline can be set, in hours.
+MIN_CLOSES_IN_HOURS = 0.01
+MAX_CLOSES_IN_HOURS = 1440.0
+
+
 class RegistrationClosedError(Exception):
     """Raised when closing a tournament that has already left registration."""
 

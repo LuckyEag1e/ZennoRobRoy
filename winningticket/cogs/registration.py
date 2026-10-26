@@ -23,24 +23,36 @@ from common import (
 )
 from embeds import EMBED_DESCRIPTION_LIMIT, mention
 from labels import entrant_lines, join_within
-from tournament_builder import RegistrationClosedError, close_overdue_registration, close_registration
+from tournament_builder import (
+    MAX_CLOSES_IN_HOURS,
+    MIN_CLOSES_IN_HOURS,
+    RegistrationClosedError,
+    close_overdue_registration,
+    close_registration,
+)
 
 log = logging.getLogger("winningticket")
 
 
 def _close_and_describe(conn: sqlite3.Connection, tournament: sqlite3.Row,
                         close: Callable[[sqlite3.Connection, int], int] = close_registration,
-                        ) -> tuple[str, discord.Embed | None]:
-    """Close registration with `close` and return the announcement and the new bracket.
-    If too few signed up, the tournament stays open, and the message says why with no
-    bracket. The announcement is for everyone, so it doesn't mention organizer commands."""
+                        ) -> tuple[bool, str, discord.Embed | None]:
+    """Close registration with `close` and return (closed, announcement, bracket). If too
+    few signed up, the tournament stays open and the announcement says why. The
+    announcement is for everyone, so it doesn't mention organizer commands."""
     name = tournament["name"]
     try:
         count = close(conn, tournament["id"])
     except BracketError as e:
-        return f"Registration for **{name}** couldn't close: {e}", None
+        return False, f"Registration for **{name}** couldn't close: {e}", None
     content = f"Registration for **{name}** is closed, and {count} entrants were drawn into the bracket."
-    return content, load_bracket_embed(conn, db.get_tournament(conn, tournament["id"]))
+    try:
+        embed = load_bracket_embed(conn, db.get_tournament(conn, tournament["id"]))
+    except Exception:
+        # The close is already saved, so still announce it; /tournament bracket shows the draw.
+        log.exception("Couldn't draw the bracket for tournament %s", tournament["id"])
+        embed = None
+    return True, content, embed
 
 
 async def _require_registration(interaction: discord.Interaction, tournament: sqlite3.Row) -> bool:
@@ -87,10 +99,10 @@ class RegistrationCog(commands.Cog):
 
     async def _close_when_due(self, conn: sqlite3.Connection, tournament: sqlite3.Row) -> None:
         try:
-            content, embed = _close_and_describe(conn, tournament, close_overdue_registration)
+            closed, content, embed = _close_and_describe(conn, tournament, close_overdue_registration)
         except RegistrationClosedError:
             return  # an organizer closed it by hand since the list of due tournaments was fetched
-        if embed is None:
+        if not closed:
             content += " Sign-ups stay open until an organizer closes them."
         updated = db.get_tournament(conn, tournament["id"])
         await edit_signups_message(self.bot, updated, signups_message(updated))
@@ -117,7 +129,8 @@ class RegistrationCog(commands.Cog):
     )
     @requires_manage_server
     async def open_signups(self, interaction: discord.Interaction, name: str,
-                   closes_in_hours: app_commands.Range[float, 0.01, 1440.0] | None = None) -> None:
+                   closes_in_hours: app_commands.Range[float, MIN_CLOSES_IN_HOURS, MAX_CLOSES_IN_HOURS] | None = None,
+                   ) -> None:
         closes_at = None
         if closes_in_hours is not None:
             closes_at = datetime.now(timezone.utc) + timedelta(hours=closes_in_hours)
@@ -149,11 +162,11 @@ class RegistrationCog(commands.Cog):
             if tournament is None or not await _require_registration(interaction, tournament):
                 return
             try:
-                content, embed = _close_and_describe(conn, tournament)
+                closed, content, embed = _close_and_describe(conn, tournament)
             except RegistrationClosedError:
                 await interaction.response.send_message(f"Sign-ups for **{name}** have already closed.", ephemeral=True)
                 return
-            if embed is None:
+            if not closed:
                 await interaction.response.send_message(content, ephemeral=True)
                 return
             await interaction.response.send_message(content, embed=embed)
