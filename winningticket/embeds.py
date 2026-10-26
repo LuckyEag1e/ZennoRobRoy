@@ -55,7 +55,7 @@ def render_leaderboard_embed(tournament_name: str, scores: list[UserScore]) -> d
     lines = []
     for place, s in ranked_places(scores):
         lines.append(f"**{place}.** {mention(s.user_id)} — {score_label(s)}")
-    embed.description += "\n".join(lines)
+    embed.description += join_within(lines, EMBED_DESCRIPTION_LIMIT - len(embed.description))
     return embed
 
 
