@@ -43,10 +43,6 @@ def _close_and_describe(conn: sqlite3.Connection, tournament: sqlite3.Row,
     return content, load_bracket_embed(conn, db.get_tournament(conn, tournament["id"]))
 
 
-def _open_predictions_hint(name: str) -> str:
-    return f"Run `/tournament open name:{name}` when you're ready for predictions to begin."
-
-
 async def _require_registration(interaction: discord.Interaction, tournament: sqlite3.Row) -> bool:
     """True if the tournament is taking sign-ups; otherwise says so and returns False."""
     if tournament["status"] == "registration":
@@ -90,34 +86,19 @@ class RegistrationCog(commands.Cog):
             log.exception("Couldn't check for registrations to close")
 
     async def _close_when_due(self, conn: sqlite3.Connection, tournament: sqlite3.Row) -> None:
-        name = tournament["name"]
         try:
             content, embed = _close_and_describe(conn, tournament, close_overdue_registration)
         except RegistrationClosedError:
             return  # an organizer closed it by hand since the list of due tournaments was fetched
         if embed is None:
             content += " Sign-ups stay open until an organizer closes them."
-            next_step = (f"Sign-ups for **{name}** couldn't close automatically because too few signed up. "
-                         f"Close them with `/registration close name:{name}` once more have.")
-        else:
-            next_step = f"Sign-ups for **{name}** closed automatically. {_open_predictions_hint(name)}"
         updated = db.get_tournament(conn, tournament["id"])
         await edit_signups_message(self.bot, updated, signups_message(updated))
         await self._announce(tournament["channel_id"], content, embed)
-        await self._message_organizer(tournament["created_by"], next_step)
 
     @close_due_registrations.before_loop
     async def _wait_until_ready(self) -> None:
         await self.bot.wait_until_ready()
-
-    async def _message_organizer(self, user_id: int, content: str) -> None:
-        """Privately tell an organizer about something that happened without them, since
-        public announcements don't mention organizer commands."""
-        try:
-            user = self.bot.get_user(user_id) or await self.bot.fetch_user(user_id)
-            await user.send(content)
-        except discord.HTTPException:
-            log.warning("Couldn't message organizer %s", user_id)
 
     async def _announce(self, channel_id: int | None, content: str, embed: discord.Embed | None) -> None:
         channel = self.bot.get_channel(channel_id) if channel_id is not None else None
@@ -176,7 +157,9 @@ class RegistrationCog(commands.Cog):
                 await interaction.response.send_message(content, ephemeral=True)
                 return
             await interaction.response.send_message(content, embed=embed)
-            await interaction.followup.send(_open_predictions_hint(name), ephemeral=True)
+            await interaction.followup.send(
+                f"Run `/tournament open name:{name}` when you're ready for predictions to begin.", ephemeral=True
+            )
             updated = db.get_tournament(conn, tournament["id"])
             await edit_signups_message(self.bot, updated, signups_message(updated))
         finally:
