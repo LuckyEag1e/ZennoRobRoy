@@ -31,9 +31,9 @@ class Competence:
 
 
 DILIGENT = Competence("diligent", typo=0.0, off_script=0.02, double_click=0.0, abandon=0.0, curiosity=0.3,
-                      skips_predicting=0.0, pokes_admin=0.0, feedback=0.02, guess_noise=100)
+                      skips_predicting=0.0, pokes_admin=0.0, feedback=0.02, guess_noise=200)
 CASUAL = Competence("casual", typo=0.05, off_script=0.1, double_click=0.05, abandon=0.15, curiosity=0.5,
-                    skips_predicting=0.2, pokes_admin=0.02, feedback=0.05, guess_noise=250)
+                    skips_predicting=0.2, pokes_admin=0.02, feedback=0.05, guess_noise=350)
 CHAOTIC = Competence("chaotic", typo=0.3, off_script=0.4, double_click=0.3, abandon=0.3, curiosity=0.8,
                      skips_predicting=0.1, pokes_admin=0.25, feedback=0.3, guess_noise=600)
 
@@ -88,7 +88,17 @@ class Player:
             await run.sim.run(self.user, "register", tournament=await run.tournament_name(self, "register"))
 
     async def _look_around(self, run: TournamentRun) -> None:
-        choice = run.rng.choice(["bracket", "leaderboard", "mypicks", "stats", "entrants", "features", "help"])
+        """Checks something that makes sense at this stage of the tournament."""
+        status = run.status()
+        if status == "registration":
+            options = ["entrants", "features", "help"]
+        elif status == "predictions_open":
+            options = ["entrants", "bracket", "stats", "features"] + (["mypicks"] if run.has_predicted(self) else [])
+        elif status in ("in_progress", "completed"):
+            options = ["bracket", "leaderboard", "stats"] + (["mypicks"] if run.has_predicted(self) else [])
+        else:
+            options = ["leaderboard"]  # after it's over, people still look for the standings
+        choice = run.rng.choice(options)
         if choice == "bracket":
             await run.sim.run(self.user, "tournament bracket", name=await run.tournament_name(self, "tournament bracket", "name"))
         elif choice == "leaderboard":

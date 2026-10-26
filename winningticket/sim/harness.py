@@ -51,6 +51,7 @@ class Simulation:
     # The tournament's status, kept current by the scenario, and how often each command ran in each.
     stage: str = "-"
     coverage: Counter = field(default_factory=Counter)
+    _first_new_message: int = 0
     _actor: str = ""
     _action: str = ""
 
@@ -209,7 +210,7 @@ class Simulation:
             self._note(_summary(interaction.message))
         elif interaction.response.kind == "modal":
             self._note("(a form opens)")
-        self._after_step()
+        self._after_step(shown=interaction.sent)
 
     @staticmethod
     async def _run_item(view: discord.ui.View, item: discord.ui.Item, interaction: FakeInteraction) -> None:
@@ -225,6 +226,7 @@ class Simulation:
         self.step += 1
         self._actor = user.display_name if user is not None else "(bot)"
         self._action = action
+        self._first_new_message = len(self.channel.messages)
         self.transcript.append(f"{self.step:4} {self._actor}: {action}")
 
     def _note(self, text: str) -> None:
@@ -240,7 +242,11 @@ class Simulation:
         for problem in checks.organizer_commands_named(message, self.organizer_commands):
             self._problem(f"{problem}: {_summary(message)}")
 
-    def _after_step(self) -> None:
+    def _after_step(self, shown: Optional[FakeMessage] = None) -> None:
+        # Anything else the step posted, like a result announcement or a follow-up.
+        for message in self.channel.messages[self._first_new_message:]:
+            if message is not shown:
+                self._note(_summary(message))
         for user in self.bot.users.values():
             while user.dms:
                 self._problem(f"the bot DMed {user.display_name}: {user.dms.pop(0)!r}")
