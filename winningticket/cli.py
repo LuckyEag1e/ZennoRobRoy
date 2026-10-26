@@ -33,8 +33,10 @@ from bracket import (
 from labels import (
     CURRENT_FEATURES,
     PLANNED_FEATURES,
+    ban_lines,
     crowd_verdict,
     dropped_results_note,
+    entrant_lines,
     feedback_page,
     matchup_label,
     pick_review_lines,
@@ -49,6 +51,11 @@ CLI_DB_PATH = Path(__file__).parent / "data" / "cli.db"
 GUILD_ID = 1  # single pretend guild for local testing
 # What a banned user can still do: switch user, look around the CLI, and leave.
 ALLOWED_WHEN_BANNED = {"as", "whoami", "help", "exit", "quit", "EOF"}
+
+
+def user_label(user_id: int) -> str:
+    """How the CLI names a Discord user, standing in for a mention."""
+    return f"user {user_id}"
 
 
 class WinningTicketCLI(cmd.Cmd):
@@ -155,17 +162,14 @@ class WinningTicketCLI(cmd.Cmd):
         print(f"Final results: {name}\n")
         print("\n".join(podium_lines(result, teams_by_id)))
         print("\nPick'em leaders")
-        print("\n".join(pickem_podium_lines(scores, lambda user_id: f"user {user_id}")))
+        print("\n".join(pickem_podium_lines(scores, user_label)))
         db.set_tournament_status(self.conn, tournament["id"], "concluded")
         print(f"\n'{name}' concluded. Its results are saved, and the name is free for a new tournament.")
 
     def do_bracket(self, arg: str) -> None:
         "Show the real bracket's current progress: bracket <name>"
-        tournament = self._require_tournament(arg.strip())
+        tournament = self._require_tournament(arg.strip(), needs_bracket=True)
         if tournament is None:
-            return
-        if tournament["status"] == "registration":
-            print(f"'{tournament['name']}' is still taking sign-ups, so it has no bracket yet. Try 'entrants'.")
             return
         matches_by_id, feeders, teams_by_id = db.load_bracket(self.conn, tournament["id"])
         results_by_match = db.get_results(self.conn, tournament["id"])
@@ -177,7 +181,7 @@ class WinningTicketCLI(cmd.Cmd):
 
     def do_leaderboard(self, arg: str) -> None:
         "Show the current standings: leaderboard <name>"
-        tournament = self._require_tournament(arg.strip())
+        tournament = self._require_tournament(arg.strip(), needs_bracket=True)
         if tournament is None:
             return
         scores = db.load_scores(self.conn, tournament["id"])
@@ -232,9 +236,8 @@ class WinningTicketCLI(cmd.Cmd):
         entrants = db.get_entrants(self.conn, tournament["id"])
         if not entrants:
             print("Nobody has signed up yet.")
-        for i, entrant in enumerate(entrants, start=1):
-            account = "no Discord account" if entrant["user_id"] is None else f"user {entrant['user_id']}"
-            print(f"{i}. {entrant['name']} ({account})")
+        for line in entrant_lines(entrants, user_label):
+            print(line)
 
     def do_regadd(self, arg: str) -> None:
         "Sign up someone else, or an entrant with no account if no user_id: regadd <name> <entrant> [user_id]"
@@ -255,8 +258,8 @@ class WinningTicketCLI(cmd.Cmd):
             if db.get_entrant_team_id(self.conn, tournament["id"], user_id) is not None:
                 print(f"User {user_id} is already signed up.")
                 return
-        db.register_entrant(self.conn, tournament["id"], parts[1], user_id)
-        print(f"Signed up {parts[1]} ({len(db.get_entrants(self.conn, tournament['id']))} entered so far).")
+        _, entrant_name = db.register_entrant(self.conn, tournament["id"], parts[1], user_id)
+        print(f"Signed up {entrant_name} ({len(db.get_entrants(self.conn, tournament['id']))} entered so far).")
 
     def do_regremove(self, arg: str) -> None:
         "Withdraw any entrant by name: regremove <name> <entrant>"
@@ -292,7 +295,7 @@ class WinningTicketCLI(cmd.Cmd):
     def do_predict(self, arg: str) -> None:
         "Fill out your bracket prediction round by round: predict <name>"
         name = arg.strip()
-        tournament = self._require_tournament(name)
+        tournament = self._require_tournament(name, needs_bracket=True)
         if tournament is None:
             return
         if tournament["status"] != "predictions_open":
@@ -328,7 +331,7 @@ class WinningTicketCLI(cmd.Cmd):
 
     def do_mypicks(self, arg: str) -> None:
         "Show your saved predictions and current score: mypicks <name>"
-        tournament = self._require_tournament(arg.strip())
+        tournament = self._require_tournament(arg.strip(), needs_bracket=True)
         if tournament is None:
             return
         picks = db.get_user_predictions(self.conn, tournament["id"], self.user_id)
@@ -350,7 +353,7 @@ class WinningTicketCLI(cmd.Cmd):
 
     def do_matchresult(self, arg: str) -> None:
         "Record a real match result: matchresult <name>"
-        tournament = self._require_tournament(arg.strip())
+        tournament = self._require_tournament(arg.strip(), needs_bracket=True)
         if tournament is None:
             return
         if tournament["status"] != "in_progress":
@@ -360,7 +363,7 @@ class WinningTicketCLI(cmd.Cmd):
 
     def do_matchstats(self, arg: str) -> None:
         "See the pool's pick breakdown for a matchup: matchstats <name>"
-        tournament = self._require_tournament(arg.strip())
+        tournament = self._require_tournament(arg.strip(), needs_bracket=True)
         if tournament is None:
             return
         matches_by_id, feeders, teams_by_id = db.load_bracket(self.conn, tournament["id"])
@@ -393,11 +396,8 @@ class WinningTicketCLI(cmd.Cmd):
         if status not in db.FORCEABLE_STATUSES:
             print(f"status must be one of: {', '.join(db.FORCEABLE_STATUSES)} (use 'conclude' to conclude)")
             return
-        tournament = self._require_tournament(name)
+        tournament = self._require_tournament(name, needs_bracket=True)
         if tournament is None:
-            return
-        if tournament["status"] == "registration":
-            print(f"'{name}' has no bracket until registration closes. Use 'regclose' first.")
             return
         db.set_tournament_status(self.conn, tournament["id"], status)
         print(f"Status set to {status}.")
@@ -451,14 +451,14 @@ class WinningTicketCLI(cmd.Cmd):
 
     def do_admin_setresult(self, arg: str) -> None:
         "Force/overwrite any known matchup's result: admin_setresult <name>"
-        tournament = self._require_tournament(arg.strip())
+        tournament = self._require_tournament(arg.strip(), needs_bracket=True)
         if tournament is None:
             return
         self._pick_and_record_result(tournament, allow_overwrite=True)
 
     def do_admin_clearresult(self, arg: str) -> None:
         "Delete a recorded match result: admin_clearresult <name>"
-        tournament = self._require_tournament(arg.strip())
+        tournament = self._require_tournament(arg.strip(), needs_bracket=True)
         if tournament is None:
             return
         matches_by_id, feeders, teams_by_id = db.load_bracket(self.conn, tournament["id"])
@@ -552,9 +552,8 @@ class WinningTicketCLI(cmd.Cmd):
         bans = db.get_bans(self.conn, GUILD_ID)
         if not bans:
             print("Nobody is banned.")
-        for ban in bans:
-            reason = f": {ban['reason']}" if ban["reason"] else ""
-            print(f"user {ban['user_id']} (banned {ban['banned_at'][:10]} by user {ban['banned_by']}){reason}")
+        for line in ban_lines(bans, user_label):
+            print(line)
 
     # -- everyone else ----------------------------------------------------------
 
@@ -580,11 +579,8 @@ class WinningTicketCLI(cmd.Cmd):
 
     def _require_next_status(self, name: str, new_status: str):
         """The tournament, if it's at the step just before `new_status`; otherwise None."""
-        tournament = self._require_tournament(name)
+        tournament = self._require_tournament(name, needs_bracket=True)
         if tournament is None:
-            return None
-        if tournament["status"] == "registration":
-            print(f"'{name}' is still taking sign-ups. Close them with 'regclose' first.")
             return None
         if not db.is_next_status(tournament["status"], new_status):
             print(f"'{name}' is {tournament['status']}, so it can't move to {new_status} from here. "
@@ -610,13 +606,19 @@ class WinningTicketCLI(cmd.Cmd):
             return None
         return tournament
 
-    def _require_tournament(self, name: str):
+    def _require_tournament(self, name: str, needs_bracket: bool = False):
+        """The tournament, or None after saying why not. With `needs_bracket`, one still
+        taking sign-ups doesn't count, since its bracket isn't drawn until they close."""
         if not name:
             print("Tournament name required.")
             return None
         tournament = db.get_tournament_by_name(self.conn, GUILD_ID, name)
         if tournament is None:
             print(f"No tournament named '{name}'. Use 'tournaments' to list them.")
+            return None
+        if needs_bracket and tournament["status"] == "registration":
+            print(f"'{name}' is still taking sign-ups, so it has no bracket yet. "
+                  f"'entrants' shows who's in, and 'regclose' draws the bracket.")
             return None
         return tournament
 

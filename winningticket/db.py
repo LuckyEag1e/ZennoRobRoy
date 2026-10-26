@@ -295,10 +295,11 @@ def get_teams(conn: sqlite3.Connection, tournament_id: int) -> dict[int, sqlite3
     return {r["id"]: r for r in rows}
 
 
-def register_entrant(conn: sqlite3.Connection, tournament_id: int, name: str, user_id: int | None) -> int:
-    """Sign up a one-person team. With no `user_id` it's just a name, with no Discord
-    account behind it. A name already taken in this tournament gets a number added, so
-    admin commands that find teams by name still work."""
+def register_entrant(conn: sqlite3.Connection, tournament_id: int, name: str,
+                     user_id: int | None) -> tuple[int, str]:
+    """Sign up a one-person team and return its (team id, name). With no `user_id` it's
+    just a name, with no Discord account behind it. A name already taken in this
+    tournament gets a number added, so admin commands that find teams by name still work."""
     taken = {team["name"] for team in get_teams(conn, tournament_id).values()}
     unique_name = name
     number = 2
@@ -314,7 +315,7 @@ def register_entrant(conn: sqlite3.Connection, tournament_id: int, name: str, us
                 "INSERT INTO team_members (team_id, tournament_id, user_id) VALUES (?, ?, ?)",
                 (team_id, tournament_id, user_id),
             )
-    return team_id
+    return team_id, unique_name
 
 
 def unregister_entrant(conn: sqlite3.Connection, tournament_id: int, user_id: int) -> bool:
@@ -390,7 +391,6 @@ def link_feeders(conn: sqlite3.Connection, tournament_id: int, specs: list[Match
             "UPDATE matches SET feeds_into_match_id = ?, feeds_into_side = ? WHERE id = ?",
             (target_id, spec.feeds_into_side, this_id),
         )
-    conn.commit()
 
 
 def get_matches(conn: sqlite3.Connection, tournament_id: int) -> dict[int, Match]:

@@ -31,14 +31,8 @@ class TournamentCog(commands.Cog):
                                        name: str, new_status: str) -> sqlite3.Row | None:
         """Fetch a tournament that's at the step just before `new_status`, or reply with an
         error and return None."""
-        tournament = await resolve_tournament(interaction, conn, name)
+        tournament = await resolve_tournament(interaction, conn, name, needs_bracket=True)
         if tournament is None:
-            return None
-        if tournament["status"] == "registration":
-            await interaction.response.send_message(
-                f"**{name}** is still taking sign-ups. Close them with `/registration close name:{name}` first.",
-                ephemeral=True,
-            )
             return None
         if not db.is_next_status(tournament["status"], new_status):
             await interaction.response.send_message(
@@ -152,15 +146,8 @@ class TournamentCog(commands.Cog):
     async def bracket(self, interaction: discord.Interaction, name: str) -> None:
         conn = db.get_connection()
         try:
-            tournament = await resolve_tournament(interaction, conn, name)
+            tournament = await resolve_tournament(interaction, conn, name, needs_bracket=True)
             if tournament is None:
-                return
-            if tournament["status"] == "registration":
-                await interaction.response.send_message(
-                    f"**{name}** is still taking sign-ups, so it has no bracket yet. "
-                    f"See who's in with `/registration entrants name:{name}`.",
-                    ephemeral=True,
-                )
                 return
             await interaction.response.send_message(embed=load_bracket_embed(conn, tournament))
         finally:
@@ -172,7 +159,7 @@ class TournamentCog(commands.Cog):
     async def leaderboard(self, interaction: discord.Interaction, name: str) -> None:
         conn = db.get_connection()
         try:
-            tournament = await resolve_tournament(interaction, conn, name)
+            tournament = await resolve_tournament(interaction, conn, name, needs_bracket=True)
             if tournament is None:
                 return
             embed = render_leaderboard_embed(name, db.load_scores(conn, tournament["id"]))

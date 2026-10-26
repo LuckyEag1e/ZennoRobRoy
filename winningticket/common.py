@@ -38,13 +38,22 @@ class TournamentSession:
 
 
 async def resolve_tournament(
-    interaction: discord.Interaction, conn: sqlite3.Connection, name: str
+    interaction: discord.Interaction, conn: sqlite3.Connection, name: str, needs_bracket: bool = False
 ) -> sqlite3.Row | None:
-    """Fetch a tournament by name for this guild, or send an ephemeral error and return None."""
+    """Fetch a tournament by name for this guild, or send an ephemeral error and return None.
+    With `needs_bracket`, a tournament still taking sign-ups is an error too, since its
+    bracket isn't drawn until registration closes."""
     tournament = db.get_tournament_by_name(conn, interaction.guild_id, name)
     if tournament is None:
         await interaction.response.send_message(
             f"No tournament named '{name}' found in this server.", ephemeral=True
+        )
+        return None
+    if needs_bracket and tournament["status"] == "registration":
+        await interaction.response.send_message(
+            f"**{name}** is still taking sign-ups, so it has no bracket yet. "
+            f"`/registration entrants name:{name}` shows who's in, and `/registration close` draws the bracket.",
+            ephemeral=True,
         )
         return None
     return tournament

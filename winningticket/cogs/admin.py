@@ -14,8 +14,8 @@ from common import (
     team_name_autocomplete,
     tournament_name_autocomplete,
 )
-from embeds import EMBED_DESCRIPTION_LIMIT
-from labels import dropped_results_note, feedback_page, join_within, team_label
+from embeds import EMBED_DESCRIPTION_LIMIT, mention
+from labels import ban_lines, dropped_results_note, feedback_page, join_within, team_label
 
 STATUS_CHOICES = [app_commands.Choice(name=status, value=status) for status in db.FORCEABLE_STATUSES]
 
@@ -44,7 +44,7 @@ class AdminCog(commands.Cog):
     )
 
     async def _load_session(self, interaction: discord.Interaction, conn, tournament: str) -> TournamentSession | None:
-        tournament_row = await resolve_tournament(interaction, conn, tournament)
+        tournament_row = await resolve_tournament(interaction, conn, tournament, needs_bracket=True)
         if tournament_row is None:
             return None
         return TournamentSession.load(conn, tournament_row)
@@ -56,15 +56,8 @@ class AdminCog(commands.Cog):
     async def setstatus(self, interaction: discord.Interaction, tournament: str, status: str) -> None:
         conn = db.get_connection()
         try:
-            tournament_row = await resolve_tournament(interaction, conn, tournament)
+            tournament_row = await resolve_tournament(interaction, conn, tournament, needs_bracket=True)
             if tournament_row is None:
-                return
-            if tournament_row["status"] == "registration":
-                await interaction.response.send_message(
-                    f"**{tournament}** has no bracket until registration closes. "
-                    f"Use `/registration close name:{tournament}` first.",
-                    ephemeral=True,
-                )
                 return
             db.set_tournament_status(conn, tournament_row["id"], status)
         finally:
@@ -308,12 +301,7 @@ class AdminCog(commands.Cog):
         finally:
             conn.close()
         embed = discord.Embed(title="Banned from the bot")
-        lines = [
-            f"<@{ban['user_id']}> (banned {db.from_db_time(ban['banned_at']):%Y-%m-%d} by <@{ban['banned_by']}>)"
-            + (f": {ban['reason']}" if ban["reason"] else "")
-            for ban in bans
-        ]
-        embed.description = join_within(lines, EMBED_DESCRIPTION_LIMIT) if lines else "Nobody is banned."
+        embed.description = join_within(ban_lines(bans, mention), EMBED_DESCRIPTION_LIMIT) if bans else "Nobody is banned."
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
 

@@ -184,7 +184,7 @@ class PredictionsCog(commands.Cog):
     async def predict(self, interaction: discord.Interaction, tournament: str) -> None:
         conn = db.get_connection()
         try:
-            tournament_row = await resolve_tournament(interaction, conn, tournament)
+            tournament_row = await resolve_tournament(interaction, conn, tournament, needs_bracket=True)
             if tournament_row is None:
                 return
             if tournament_row["status"] != "predictions_open":
@@ -215,7 +215,7 @@ class PredictionsCog(commands.Cog):
     async def mypicks(self, interaction: discord.Interaction, tournament: str) -> None:
         conn = db.get_connection()
         try:
-            tournament_row = await resolve_tournament(interaction, conn, tournament)
+            tournament_row = await resolve_tournament(interaction, conn, tournament, needs_bracket=True)
             if tournament_row is None:
                 return
             picks = db.get_user_predictions(conn, tournament_row["id"], interaction.user.id)

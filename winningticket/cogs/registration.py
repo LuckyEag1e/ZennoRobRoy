@@ -18,8 +18,8 @@ from common import (
     team_name_autocomplete,
     tournament_name_autocomplete,
 )
-from embeds import EMBED_DESCRIPTION_LIMIT
-from labels import join_within
+from embeds import EMBED_DESCRIPTION_LIMIT, mention
+from labels import entrant_lines, join_within
 from tournament_builder import close_registration
 
 log = logging.getLogger("winningticket")
@@ -54,12 +54,6 @@ def _signups_message(tournament: sqlite3.Row) -> str:
     return f"📝 Sign-ups are open for **{name}**! Run `/register tournament:{name}` to enter. {closing}"
 
 
-def _entrant_label(entrant: sqlite3.Row) -> str:
-    if entrant["user_id"] is None:
-        return f"{entrant['name']} (no Discord account)"
-    return f"{entrant['name']} (<@{entrant['user_id']}>)"
-
-
 async def _require_registration(interaction: discord.Interaction, tournament: sqlite3.Row) -> bool:
     """True if the tournament is taking sign-ups; otherwise says so and returns False."""
     if tournament["status"] == "registration":
@@ -87,18 +81,29 @@ class RegistrationCog(commands.Cog):
     # Often enough that sign-ups close within seconds of the time players were shown.
     @tasks.loop(seconds=5)
     async def close_due_registrations(self) -> None:
-        conn = db.get_connection()
+        # An exception escaping a tasks.loop stops it until the bot restarts, so every
+        # error is logged here, and one tournament failing doesn't hold up the others.
         try:
-            for tournament in db.get_tournaments_due_to_close(conn):
-                content, embed = _close_and_describe(conn, tournament)
-                if embed is None:
-                    # Don't retry on every check; an organizer can close it by hand once more sign up.
-                    db.clear_registration_deadline(conn, tournament["id"])
-                    content += " Close it by hand with `/registration close` once more players have signed up."
-                await self._update_signups_message(db.get_tournament(conn, tournament["id"]))
-                await self._announce(tournament["channel_id"], content, embed)
-        finally:
-            conn.close()
+            conn = db.get_connection()
+            try:
+                for tournament in db.get_tournaments_due_to_close(conn):
+                    try:
+                        await self._close_when_due(conn, tournament)
+                    except Exception:
+                        log.exception("Couldn't close registration for tournament %s", tournament["id"])
+            finally:
+                conn.close()
+        except Exception:
+            log.exception("Couldn't check for registrations to close")
+
+    async def _close_when_due(self, conn: sqlite3.Connection, tournament: sqlite3.Row) -> None:
+        content, embed = _close_and_describe(conn, tournament)
+        if embed is None:
+            # Don't retry on every check; an organizer can close it by hand once more sign up.
+            db.clear_registration_deadline(conn, tournament["id"])
+            content += " Close it by hand with `/registration close` once more players have signed up."
+        await self._update_signups_message(db.get_tournament(conn, tournament["id"]))
+        await self._announce(tournament["channel_id"], content, embed)
 
     @close_due_registrations.before_loop
     async def _wait_until_ready(self) -> None:
@@ -189,8 +194,7 @@ class RegistrationCog(commands.Cog):
         if not entrants:
             embed.description = "Nobody has signed up yet."
         else:
-            lines = [f"{i}. {_entrant_label(entrant)}" for i, entrant in enumerate(entrants, start=1)]
-            embed.description = join_within(lines, EMBED_DESCRIPTION_LIMIT)
+            embed.description = join_within(entrant_lines(entrants, mention), EMBED_DESCRIPTION_LIMIT)
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
     @group.command(name="add", description="Sign up a member, or an entrant with no Discord account")
@@ -218,10 +222,9 @@ class RegistrationCog(commands.Cog):
                     f"{user.display_name} is already signed up for **{tournament}**.", ephemeral=True
                 )
                 return
-            team_id = db.register_entrant(
+            _, entrant_name = db.register_entrant(
                 conn, tournament_row["id"], name or user.display_name, user.id if user is not None else None
             )
-            entrant_name = db.get_teams(conn, tournament_row["id"])[team_id]["name"]
             count = len(db.get_entrants(conn, tournament_row["id"]))
         finally:
             conn.close()

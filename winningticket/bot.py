@@ -85,12 +85,6 @@ class WinningTicketBot(commands.Bot):
                 "You need the Manage Server permission to use this command.", ephemeral=True
             )
             return
-        if isinstance(error, app_commands.CommandOnCooldown):
-            minutes = max(1, round(error.retry_after / 60))
-            await interaction.response.send_message(
-                f"You can use this again in about {minutes} minute{'s' if minutes != 1 else ''}.", ephemeral=True
-            )
-            return
         command = interaction.command.qualified_name if interaction.command else "?"
         log.error("Error in /%s", command, exc_info=error)
 

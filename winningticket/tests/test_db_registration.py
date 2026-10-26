@@ -1,5 +1,6 @@
 import os
 import random
+import sqlite3
 import sys
 from datetime import datetime, timedelta, timezone
 
@@ -51,9 +52,9 @@ def test_registering_makes_a_one_person_team(conn):
 
 def test_a_taken_name_gets_a_number(conn):
     tournament_id = _open_with(conn, 0)
-    for user_id in (1, 2, 3):
-        db.register_entrant(conn, tournament_id, "Sam", user_id)
-    assert [e["name"] for e in db.get_entrants(conn, tournament_id)] == ["Sam", "Sam (2)", "Sam (3)"]
+    names = [db.register_entrant(conn, tournament_id, "Sam", user_id)[1] for user_id in (1, 2, 3)]
+    assert names == ["Sam", "Sam (2)", "Sam (3)"]
+    assert [e["name"] for e in db.get_entrants(conn, tournament_id)] == names
 
 
 def test_unregistering_removes_the_team(conn):
@@ -66,7 +67,7 @@ def test_unregistering_removes_the_team(conn):
 
 def test_entrants_without_an_account_are_listed_and_drawn(conn):
     tournament_id = _open_with(conn, 1)
-    guest_id = db.register_entrant(conn, tournament_id, "Guest", None)
+    guest_id, _ = db.register_entrant(conn, tournament_id, "Guest", None)
     assert [(e["name"], e["user_id"]) for e in db.get_entrants(conn, tournament_id)] == [
         ("Player 1", 1), ("Guest", None),
     ]
@@ -77,7 +78,7 @@ def test_entrants_without_an_account_are_listed_and_drawn(conn):
 
 def test_deleting_a_team_withdraws_it(conn):
     tournament_id = _open_with(conn, 1)
-    guest_id = db.register_entrant(conn, tournament_id, "Guest", None)
+    guest_id, _ = db.register_entrant(conn, tournament_id, "Guest", None)
     db.delete_team(conn, guest_id)
     db.delete_team(conn, db.get_entrant_team_id(conn, tournament_id, 1))
     assert db.get_entrants(conn, tournament_id) == []
@@ -102,6 +103,22 @@ def test_closing_with_too_few_entrants_changes_nothing(conn):
         close_registration(conn, tournament_id)
     assert db.get_tournament(conn, tournament_id)["status"] == "registration"
     assert db.get_matches(conn, tournament_id) == {}
+
+
+def test_a_close_that_fails_partway_saves_nothing_and_can_be_retried(conn, monkeypatch):
+    tournament_id = _open_with(conn, 3)
+
+    def fail(*args):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(db, "set_tournament_status", fail)
+    with pytest.raises(sqlite3.OperationalError):
+        close_registration(conn, tournament_id)
+    assert db.get_matches(conn, tournament_id) == {}
+    assert db.get_tournament(conn, tournament_id)["status"] == "registration"
+
+    monkeypatch.undo()
+    assert close_registration(conn, tournament_id) == 3
 
 
 def test_only_passed_deadlines_are_due(conn):

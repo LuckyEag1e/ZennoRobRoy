@@ -104,5 +104,6 @@ def import_tournament(conn: sqlite3.Connection, guild_id: int, name: str,
     except BracketError as e:
         db.delete_tournament(conn, tournament_id)
         raise CsvValidationError(str(e))
+    conn.commit()
 
     return tournament_id

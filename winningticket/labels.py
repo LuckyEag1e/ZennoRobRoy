@@ -84,6 +84,25 @@ def pickem_podium_lines(scores: list[UserScore], player_label: Callable[[int], s
     return [f"{MEDALS[place]} {player_label(s.user_id)} — {score_label(s)}" for place, s in placed]
 
 
+def entrant_lines(entrants: list, player_label: Callable[[int], str]) -> list[str]:
+    """A numbered sign-up list, with `player_label` naming each entrant's user by id."""
+    lines = []
+    for number, entrant in enumerate(entrants, start=1):
+        account = "no Discord account" if entrant["user_id"] is None else player_label(entrant["user_id"])
+        lines.append(f"{number}. {entrant['name']} ({account})")
+    return lines
+
+
+def ban_lines(bans: list, player_label: Callable[[int], str]) -> list[str]:
+    """One line per banned user, with `player_label` naming users by id."""
+    lines = []
+    for ban in bans:
+        # banned_at is stored as ISO text, so its first ten characters are the date.
+        line = f"{player_label(ban['user_id'])} (banned {ban['banned_at'][:10]} by {player_label(ban['banned_by'])})"
+        lines.append(line + (f": {ban['reason']}" if ban["reason"] else ""))
+    return lines
+
+
 def join_within(lines: list[str], limit: int) -> str:
     """Join lines with newlines, dropping lines from the end, with a note saying how many,
     so the result fits in `limit` characters."""

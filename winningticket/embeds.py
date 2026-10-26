@@ -15,6 +15,10 @@ EMBED_FIELD_LIMIT = 1024
 EMBED_DESCRIPTION_LIMIT = 4096
 
 
+def mention(user_id: int) -> str:
+    return f"<@{user_id}>"
+
+
 def render_bracket_embed(
     tournament_name: str,
     status: str,
@@ -60,7 +64,7 @@ def render_final_results_embed(
 ) -> discord.Embed:
     embed = discord.Embed(title=f"🏆 {tournament_name}: final results")
     embed.add_field(name="Podium", value="\n".join(podium_lines(result, teams_by_id)), inline=False)
-    pickem = pickem_podium_lines(scores, lambda user_id: f"<@{user_id}>")
+    pickem = pickem_podium_lines(scores, mention)
     embed.add_field(name="Pick'em leaders", value=join_within(pickem, EMBED_FIELD_LIMIT), inline=False)
     if scores:
         player_word = "player" if len(scores) == 1 else "players"
