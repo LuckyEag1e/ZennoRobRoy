@@ -5,3 +5,4 @@ data/
 *.kate-swp
 CLAUDE.local.md
 zennorobroy/reference/
+.vscode/
