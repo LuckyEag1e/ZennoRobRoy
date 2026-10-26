@@ -57,6 +57,8 @@ class Simulation:
 
     @classmethod
     async def create(cls, db_path: Path) -> Simulation:
+        """Load the bot's cogs against a new database at `db_path`. This points the db
+        module at it; run_scenario puts the old path back afterwards."""
         db.DB_PATH = db_path
         conn = db.get_connection()
         db.init_db(conn)
@@ -170,7 +172,7 @@ class Simulation:
         text_input._value = text
         interaction = FakeInteraction(bot=self.bot, user=user, channel=self.channel, guild_id=GUILD_ID,
                                       kind=discord.InteractionType.modal_submit)
-        await self._dispatch(interaction, lambda: modal.on_submit(interaction))
+        await self._dispatch(interaction, lambda: self._submit(modal, interaction))
         return interaction
 
     async def run_background(self, label: str, work) -> None:
@@ -211,6 +213,11 @@ class Simulation:
         elif interaction.response.kind == "modal":
             self._note("(a form opens)")
         self._after_step(shown=interaction.sent)
+
+    @staticmethod
+    async def _submit(modal: discord.ui.Modal, interaction: FakeInteraction) -> None:
+        if await modal.interaction_check(interaction):
+            await modal.on_submit(interaction)
 
     @staticmethod
     async def _run_item(view: discord.ui.View, item: discord.ui.Item, interaction: FakeInteraction) -> None:

@@ -51,7 +51,7 @@ class Scenario:
     entry: str = "signups"         # "signups", or "csv" for a bracket uploaded with /tournament create
     turns_per_stage: int = 3
     duplicate_names: bool = False  # two players share a display name
-    format: str = "single_elim"    # the only format so far; Phase 5 adds more
+    format: str = "single_elim"    # the only format the bot supports so far
 
 
 SCENARIOS = {
@@ -274,6 +274,8 @@ class TournamentRun:
     async def _housekeeping(self) -> None:
         """What an organizer does between stages: read and clear feedback, and deal with
         whoever keeps poking at admin commands."""
+        # Stages are hours apart on a real server, so any feedback wait has long run out.
+        self.sim.cogs["FeedbackCog"].cooldown.last_sent.clear()
         org = self.organizer.user
         reply = await self.sim.run(org, "admin feedback")
         newest = reply.sent.embed.fields if reply.sent is not None and reply.sent.embed is not None else []
@@ -285,10 +287,27 @@ class TournamentRun:
         else:
             troublemakers = [p for p in self.players if p.competence.pokes_admin >= CHAOTIC.pokes_admin]
             if troublemakers and self.rng.random() < 0.5:
-                self.banned = self.rng.choice(troublemakers)
-                await self.sim.run(org, "admin ban", user=self.banned.user, reason="kept poking admin commands")
+                await self._ban_midway(self.rng.choice(troublemakers))
                 await self.sim.run(org, "admin ban", user=org, reason=None)  # can't ban an organizer
         await self.sim.run(org, "admin bans")
+
+    async def _ban_midway(self, player: Player) -> None:
+        """Ban a player who has a feedback form and a stats menu open, then have them try
+        both. A ban should stop what's already open, not only new commands."""
+        form = (await self.sim.run(player.user, "feedback")).response.modal
+        stats = (await self.sim.run(player.user, "match stats", tournament=self.name)).sent
+        self.banned = player
+        await self.sim.run(self.organizer.user, "admin ban", user=player.user, reason="kept poking admin commands")
+        if form is not None:
+            self._expect_refusal("feedback form", await self.sim.submit_form(player.user, form, "Sent after being banned"))
+        menu = _menu(stats)
+        if menu is not None:
+            self._expect_refusal("stats menu", await self.sim.choose(player.user, stats, menu.options[0].value))
+
+    def _expect_refusal(self, what: str, reply) -> None:
+        refused = reply is not None and reply.sent is not None and "blocked you" in (reply.sent.content or "")
+        if not refused:
+            self.sim._problem(f"a banned member could still use a {what} opened before the ban")
 
     async def _player_turns(self) -> None:
         for _ in range(self.scenario.turns_per_stage):
@@ -413,7 +432,18 @@ def _menu(message) -> Optional[discord.ui.Select]:
 async def run_scenario(scenario: Scenario, seed: int) -> Simulation:
     """Play one tournament from start to finish and return the simulation, with its issues and transcript."""
     rng = random.Random(seed)
-    random.seed(seed)  # closing sign-ups draws the bracket with the random module
+    # The run points db at a throwaway database and seeds the random module, which closing
+    # sign-ups draws the bracket with. Both are put back afterwards so nothing else sees them.
+    saved_db_path, saved_random_state = db.DB_PATH, random.getstate()
+    random.seed(seed)
+    try:
+        return await _play_scenario(scenario, rng)
+    finally:
+        db.DB_PATH = saved_db_path
+        random.setstate(saved_random_state)
+
+
+async def _play_scenario(scenario: Scenario, rng: random.Random) -> Simulation:
     with tempfile.TemporaryDirectory() as directory:
         sim = await Simulation.create(Path(directory) / "sim.db")
         organizer = Organizer(sim.add_user(1, "Organizer", organizer=True), scenario.organizer)

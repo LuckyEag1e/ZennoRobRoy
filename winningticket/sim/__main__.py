@@ -39,7 +39,7 @@ def main() -> int:
             sim = asyncio.run(run_scenario(SCENARIOS[name], seed))
             total_issues += len(sim.issues)
             coverage.update(sim.coverage)
-            every_command = set(sim.commands)
+            every_command |= set(sim.commands)
             print(f"{name} seed {seed}: {sim.step} steps, {len(sim.issues)} problem(s)")
             if args.transcript:
                 print("\n".join(sim.transcript))
