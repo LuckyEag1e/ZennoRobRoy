@@ -122,8 +122,28 @@ pytest
 
 Covers bracket-tree generation, slot derivation (including upset propagation),
 scoring, pick-distribution stats, and CSV validation — no live bot connection
-needed. Discord-side interactions (buttons/selects) are exercised manually
-against a real server.
+needed. It also plays one simulated tournament per scenario (see below).
+
+### Simulated tournaments
+
+`python -m sim` plays whole tournaments through the real slash commands, buttons,
+menus and forms, using a fake Discord layer and a throwaway database. Simulated
+players and an organizer register, predict, check the leaderboard, make typos,
+double-click, abandon brackets, poke at admin commands and so on, each according to
+a competence profile. After every step it checks for crashes, unanswered
+interactions, messages Discord would reject, organizer commands in public posts,
+DMs and inconsistent data; at the end it compares the champion and every score
+against the results it played.
+
+```
+python -m sim --list                         # the scenarios
+python -m sim                                # every scenario, 5 seeds each
+python -m sim --scenario chaos --seed 3 --transcript   # replay one run step by step
+python -m sim --coverage                     # which commands ran at which stage
+```
+
+Scenarios, competence profiles and organizer styles live in `sim/scenarios.py`
+and `sim/actors.py`. Buttons on real Discord still get a manual check before release.
 
 ## Deployment
 
