@@ -27,16 +27,14 @@ log = logging.getLogger("winningticket")
 
 def _close_and_describe(conn: sqlite3.Connection, tournament: sqlite3.Row) -> tuple[str, discord.Embed | None]:
     """Close registration and return the announcement and the new bracket. If too few
-    signed up, the tournament stays open, and the message says why with no bracket."""
+    signed up, the tournament stays open, and the message says why with no bracket.
+    The announcement is for everyone, so it doesn't mention organizer commands."""
     name = tournament["name"]
     try:
         count = close_registration(conn, tournament["id"])
     except BracketError as e:
         return f"Registration for **{name}** couldn't close: {e}", None
-    content = (
-        f"Registration for **{name}** is closed, and {count} entrants were drawn into the bracket. "
-        f"Run `/tournament open name:{name}` when you're ready for predictions to begin."
-    )
+    content = f"Registration for **{name}** is closed, and {count} entrants were drawn into the bracket."
     return content, load_bracket_embed(conn, db.get_tournament(conn, tournament["id"]))
 
 
@@ -101,7 +99,7 @@ class RegistrationCog(commands.Cog):
         if embed is None:
             # Don't retry on every check; an organizer can close it by hand once more sign up.
             db.clear_registration_deadline(conn, tournament["id"])
-            content += " Close it by hand with `/registration close` once more players have signed up."
+            content += " Sign-ups stay open until an organizer closes them."
         await self._update_signups_message(db.get_tournament(conn, tournament["id"]))
         await self._announce(tournament["channel_id"], content, embed)
 
@@ -174,6 +172,9 @@ class RegistrationCog(commands.Cog):
                 await interaction.response.send_message(content, ephemeral=True)
                 return
             await interaction.response.send_message(content, embed=embed)
+            await interaction.followup.send(
+                f"Run `/tournament open name:{name}` when you're ready for predictions to begin.", ephemeral=True
+            )
             await self._update_signups_message(db.get_tournament(conn, tournament["id"]))
         finally:
             conn.close()

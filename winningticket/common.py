@@ -50,11 +50,13 @@ async def resolve_tournament(
         )
         return None
     if needs_bracket and tournament["status"] == "registration":
-        await interaction.response.send_message(
+        message = (
             f"**{name}** is still taking sign-ups, so it has no bracket yet. "
-            f"`/registration entrants name:{name}` shows who's in, and `/registration close` draws the bracket.",
-            ephemeral=True,
+            f"`/registration entrants name:{name}` shows who's in"
         )
+        # Only organizers can close sign-ups, so only they are pointed at the command.
+        message += ", and `/registration close` draws the bracket." if interaction.permissions.manage_guild else "."
+        await interaction.response.send_message(message, ephemeral=True)
         return None
     return tournament
 

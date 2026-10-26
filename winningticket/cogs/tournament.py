@@ -82,9 +82,10 @@ class TournamentCog(commands.Cog):
                 await interaction.response.send_message(f"CSV error: {e}", ephemeral=True)
                 return
 
-            await interaction.response.send_message(
-                f"Created tournament **{name}** with {len(rows)} round-1 matchups. "
-                f"Run `/tournament open name:{name}` when you're ready for predictions to begin."
+            # Announcements are public, so the organizer's next step goes to them privately.
+            await interaction.response.send_message(f"Created tournament **{name}** with {len(rows)} round-1 matchups.")
+            await interaction.followup.send(
+                f"Run `/tournament open name:{name}` when you're ready for predictions to begin.", ephemeral=True
             )
         finally:
             conn.close()
@@ -108,9 +109,8 @@ class TournamentCog(commands.Cog):
     async def lock(self, interaction: discord.Interaction, name: str) -> None:
         if not await self._advance_status(interaction, name, "in_progress"):
             return
-        await interaction.response.send_message(
-            f"🔒 Predictions are locked for **{name}**. Use `/match result` to record real outcomes."
-        )
+        await interaction.response.send_message(f"🔒 Predictions are locked for **{name}**.")
+        await interaction.followup.send("Use `/match result` to record real outcomes.", ephemeral=True)
 
     @group.command(name="conclude", description="Archive a finished tournament, keeping its results")
     @app_commands.describe(name="Tournament name")

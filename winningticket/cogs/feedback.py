@@ -21,6 +21,9 @@ class FeedbackModal(discord.ui.Modal, title="Anonymous feedback"):
         style=discord.TextStyle.paragraph,
         placeholder="Organizers can read this, but they won't see who sent it.",
         max_length=FEEDBACK_MAX_LENGTH,
+        # Discord rejects a required field holding only spaces with a vague error of its
+        # own, so the field is optional and on_submit turns blank text away instead.
+        required=False,
     )
 
     def __init__(self, on_sent: Callable[[], None]) -> None:
