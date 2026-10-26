@@ -89,8 +89,14 @@ class WinningTicketCLI(cmd.Cmd):
             name = tournament["name"]
             try:
                 count = tournament_builder.close_overdue_registration(self.conn, tournament["id"])
+            except tournament_builder.RegistrationClosedError:
+                continue  # something else sharing the database closed it since the check
             except BracketError as e:
                 print(f"Registration for '{name}' couldn't close automatically: {e} It stays open until 'regclose'.")
+                continue
+            except Exception as e:
+                # This runs before every command, so a close that keeps failing mustn't take the CLI down with it.
+                print(f"Registration for '{name}' couldn't close automatically: {e!r}")
                 continue
             print(f"Registration for '{name}' closed automatically; {count} entrants drawn into the bracket.")
 
