@@ -269,6 +269,16 @@ def set_announcement_message(conn: sqlite3.Connection, tournament_id: int, messa
     conn.commit()
 
 
+def claim_registration_close(conn: sqlite3.Connection, tournament_id: int) -> bool:
+    """Move a tournament from registration to setup without committing, so it lands
+    together with the bracket. False if it had already left registration. The status
+    check and the change are one statement, so two closes can't both claim it."""
+    cur = conn.execute(
+        "UPDATE tournaments SET status = 'setup' WHERE id = ? AND status = 'registration'", (tournament_id,)
+    )
+    return cur.rowcount > 0
+
+
 def clear_registration_deadline(conn: sqlite3.Connection, tournament_id: int) -> None:
     conn.execute("UPDATE tournaments SET registration_closes_at = NULL WHERE id = ?", (tournament_id,))
     conn.commit()

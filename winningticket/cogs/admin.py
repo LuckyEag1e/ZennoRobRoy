@@ -10,6 +10,7 @@ from common import (
     MatchPicker,
     TournamentSession,
     WinnerPicker,
+    edit_signups_message,
     resolve_tournament,
     team_name_autocomplete,
     tournament_name_autocomplete,
@@ -44,7 +45,7 @@ class AdminCog(commands.Cog):
     )
 
     async def _load_session(self, interaction: discord.Interaction, conn, tournament: str) -> TournamentSession | None:
-        tournament_row = await resolve_tournament(interaction, conn, tournament, needs_bracket=True)
+        tournament_row = await resolve_tournament(interaction, conn, tournament)
         if tournament_row is None:
             return None
         return TournamentSession.load(conn, tournament_row)
@@ -56,7 +57,7 @@ class AdminCog(commands.Cog):
     async def setstatus(self, interaction: discord.Interaction, tournament: str, status: str) -> None:
         conn = db.get_connection()
         try:
-            tournament_row = await resolve_tournament(interaction, conn, tournament, needs_bracket=True)
+            tournament_row = await resolve_tournament(interaction, conn, tournament)
             if tournament_row is None:
                 return
             db.set_tournament_status(conn, tournament_row["id"], status)
@@ -75,13 +76,15 @@ class AdminCog(commands.Cog):
             return
         conn = db.get_connection()
         try:
-            tournament_row = await resolve_tournament(interaction, conn, tournament)
+            tournament_row = await resolve_tournament(interaction, conn, tournament, needs_bracket=False)
             if tournament_row is None:
                 return
             db.delete_tournament(conn, tournament_row["id"])
         finally:
             conn.close()
         await interaction.response.send_message(f"🗑️ Deleted tournament **{tournament}** and all its data.", ephemeral=True)
+        if tournament_row["status"] == "registration":
+            await edit_signups_message(self.bot, tournament_row, f"📝 Sign-ups for **{tournament}** were cancelled.")
 
     @group.command(name="editteam", description="Fix a team's name or seed")
     @app_commands.describe(tournament="Tournament name", team="Team to edit", new_name="New name (optional)", new_seed="New seed (optional)")
@@ -90,7 +93,7 @@ class AdminCog(commands.Cog):
                          new_name: str | None = None, new_seed: int | None = None) -> None:
         conn = db.get_connection()
         try:
-            tournament_row = await resolve_tournament(interaction, conn, tournament)
+            tournament_row = await resolve_tournament(interaction, conn, tournament, needs_bracket=False)
             if tournament_row is None:
                 return
             team_row = db.get_team_by_name(conn, tournament_row["id"], team)
@@ -210,7 +213,7 @@ class AdminCog(commands.Cog):
     async def clearpredictions(self, interaction: discord.Interaction, tournament: str, user: discord.Member) -> None:
         conn = db.get_connection()
         try:
-            tournament_row = await resolve_tournament(interaction, conn, tournament)
+            tournament_row = await resolve_tournament(interaction, conn, tournament, needs_bracket=False)
             if tournament_row is None:
                 return
             existing = db.get_user_predictions(conn, tournament_row["id"], user.id)
@@ -267,7 +270,10 @@ class AdminCog(commands.Cog):
     @group.command(name="ban", description="Block a member from using the bot in this server")
     @app_commands.describe(user="Member to block", reason="Why (only admins see this)")
     async def ban(self, interaction: discord.Interaction, user: discord.Member, reason: str | None = None) -> None:
-        # Otherwise one admin could lock another out of /admin unban.
+        # Otherwise one admin could lock another out of /admin unban. This assumes only
+        # Manage Server members can use /admin, as its default_permissions say. A server that
+        # opens /admin to others with permission overrides can still undo a ban as long as
+        # someone with Manage Server is around.
         if user.guild_permissions.manage_guild:
             await interaction.response.send_message(
                 "Members with the Manage Server permission can't be banned from the bot.", ephemeral=True

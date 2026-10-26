@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import cmd
 import shlex
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import csv_import
@@ -74,11 +75,24 @@ class WinningTicketCLI(cmd.Cmd):
         self._update_prompt()
 
     def onecmd(self, line: str) -> bool:
+        self._close_due_registrations()
         command = self.parseline(line)[0]
         if command and command not in ALLOWED_WHEN_BANNED and db.is_banned(self.conn, GUILD_ID, self.user_id):
             print("An admin has blocked you from using WinningTicket. Use 'as' to switch user.")
             return False
         return super().onecmd(line)
+
+    def _close_due_registrations(self) -> None:
+        """The bot closes overdue sign-ups from a background loop; the CLI has none, so it
+        does the same before each command."""
+        for tournament in db.get_tournaments_due_to_close(self.conn):
+            name = tournament["name"]
+            try:
+                count = tournament_builder.close_overdue_registration(self.conn, tournament["id"])
+            except BracketError as e:
+                print(f"Registration for '{name}' couldn't close automatically: {e} It stays open until 'regclose'.")
+                continue
+            print(f"Registration for '{name}' closed automatically; {count} entrants drawn into the bracket.")
 
     def _update_prompt(self) -> None:
         self.prompt = f"(tourney:{self.user_name}) "
@@ -168,7 +182,7 @@ class WinningTicketCLI(cmd.Cmd):
 
     def do_bracket(self, arg: str) -> None:
         "Show the real bracket's current progress: bracket <name>"
-        tournament = self._require_tournament(arg.strip(), needs_bracket=True)
+        tournament = self._require_tournament(arg.strip())
         if tournament is None:
             return
         matches_by_id, feeders, teams_by_id = db.load_bracket(self.conn, tournament["id"])
@@ -181,7 +195,7 @@ class WinningTicketCLI(cmd.Cmd):
 
     def do_leaderboard(self, arg: str) -> None:
         "Show the current standings: leaderboard <name>"
-        tournament = self._require_tournament(arg.strip(), needs_bracket=True)
+        tournament = self._require_tournament(arg.strip())
         if tournament is None:
             return
         scores = db.load_scores(self.conn, tournament["id"])
@@ -196,16 +210,26 @@ class WinningTicketCLI(cmd.Cmd):
     # -- registration --------------------------------------------------------
 
     def do_regopen(self, arg: str) -> None:
-        "Create a tournament that takes sign-ups (closed by hand with 'regclose'): regopen <name>"
-        name = arg.strip()
+        "Create a tournament that takes sign-ups, closing automatically after --closes-in hours if given: regopen <name> [--closes-in HOURS]"
+        name, _, hours = arg.partition("--closes-in")
+        name = name.strip()
         if not name:
-            print("usage: regopen <name>")
+            print("usage: regopen <name> [--closes-in HOURS]")
             return
+        closes_at = None
+        if hours.strip():
+            try:
+                closes_at = datetime.now(timezone.utc) + timedelta(hours=float(hours))
+            except ValueError:
+                print("--closes-in must be a number of hours, like 0.01 for about 36 seconds")
+                return
         if db.get_tournament_by_name(self.conn, GUILD_ID, name) is not None:
             print(f"A tournament named '{name}' already exists.")
             return
-        db.open_registration(self.conn, GUILD_ID, name, self.user_id, None, None)
-        print(f"Sign-ups open for '{name}'. Use 'as' to switch users, then 'register {name}'.")
+        db.open_registration(self.conn, GUILD_ID, name, self.user_id, None,
+                             db.to_db_time(closes_at) if closes_at is not None else None)
+        closing = f" Sign-ups close at {closes_at:%H:%M:%S} UTC." if closes_at is not None else ""
+        print(f"Sign-ups open for '{name}'.{closing} Use 'as' to switch users, then 'register {name}'.")
 
     def do_register(self, arg: str) -> None:
         "Sign up the current user: register <name>"
@@ -230,7 +254,7 @@ class WinningTicketCLI(cmd.Cmd):
 
     def do_entrants(self, arg: str) -> None:
         "List who has signed up: entrants <name>"
-        tournament = self._require_tournament(arg.strip())
+        tournament = self._require_tournament(arg.strip(), needs_bracket=False)
         if tournament is None:
             return
         entrants = db.get_entrants(self.conn, tournament["id"])
@@ -295,7 +319,7 @@ class WinningTicketCLI(cmd.Cmd):
     def do_predict(self, arg: str) -> None:
         "Fill out your bracket prediction round by round: predict <name>"
         name = arg.strip()
-        tournament = self._require_tournament(name, needs_bracket=True)
+        tournament = self._require_tournament(name)
         if tournament is None:
             return
         if tournament["status"] != "predictions_open":
@@ -331,7 +355,7 @@ class WinningTicketCLI(cmd.Cmd):
 
     def do_mypicks(self, arg: str) -> None:
         "Show your saved predictions and current score: mypicks <name>"
-        tournament = self._require_tournament(arg.strip(), needs_bracket=True)
+        tournament = self._require_tournament(arg.strip())
         if tournament is None:
             return
         picks = db.get_user_predictions(self.conn, tournament["id"], self.user_id)
@@ -353,7 +377,7 @@ class WinningTicketCLI(cmd.Cmd):
 
     def do_matchresult(self, arg: str) -> None:
         "Record a real match result: matchresult <name>"
-        tournament = self._require_tournament(arg.strip(), needs_bracket=True)
+        tournament = self._require_tournament(arg.strip())
         if tournament is None:
             return
         if tournament["status"] != "in_progress":
@@ -363,7 +387,7 @@ class WinningTicketCLI(cmd.Cmd):
 
     def do_matchstats(self, arg: str) -> None:
         "See the pool's pick breakdown for a matchup: matchstats <name>"
-        tournament = self._require_tournament(arg.strip(), needs_bracket=True)
+        tournament = self._require_tournament(arg.strip())
         if tournament is None:
             return
         matches_by_id, feeders, teams_by_id = db.load_bracket(self.conn, tournament["id"])
@@ -396,7 +420,7 @@ class WinningTicketCLI(cmd.Cmd):
         if status not in db.FORCEABLE_STATUSES:
             print(f"status must be one of: {', '.join(db.FORCEABLE_STATUSES)} (use 'conclude' to conclude)")
             return
-        tournament = self._require_tournament(name, needs_bracket=True)
+        tournament = self._require_tournament(name)
         if tournament is None:
             return
         db.set_tournament_status(self.conn, tournament["id"], status)
@@ -405,7 +429,7 @@ class WinningTicketCLI(cmd.Cmd):
     def do_admin_delete(self, arg: str) -> None:
         "Permanently delete a tournament (asks you to retype the name): admin_delete <name>"
         name = arg.strip()
-        tournament = self._require_tournament(name)
+        tournament = self._require_tournament(name, needs_bracket=False)
         if tournament is None:
             return
         if input(f"Type '{name}' again to confirm permanent deletion: ").strip() != name:
@@ -439,7 +463,7 @@ class WinningTicketCLI(cmd.Cmd):
         if new_name is None and not seed_given:
             print("Provide a new name and/or --seed N")
             return
-        tournament = self._require_tournament(name)
+        tournament = self._require_tournament(name, needs_bracket=False)
         if tournament is None:
             return
         team_row = db.get_team_by_name(self.conn, tournament["id"], team)
@@ -451,14 +475,14 @@ class WinningTicketCLI(cmd.Cmd):
 
     def do_admin_setresult(self, arg: str) -> None:
         "Force/overwrite any known matchup's result: admin_setresult <name>"
-        tournament = self._require_tournament(arg.strip(), needs_bracket=True)
+        tournament = self._require_tournament(arg.strip())
         if tournament is None:
             return
         self._pick_and_record_result(tournament, allow_overwrite=True)
 
     def do_admin_clearresult(self, arg: str) -> None:
         "Delete a recorded match result: admin_clearresult <name>"
-        tournament = self._require_tournament(arg.strip(), needs_bracket=True)
+        tournament = self._require_tournament(arg.strip())
         if tournament is None:
             return
         matches_by_id, feeders, teams_by_id = db.load_bracket(self.conn, tournament["id"])
@@ -484,7 +508,7 @@ class WinningTicketCLI(cmd.Cmd):
             print("usage: admin_clearpredictions <name> <user_id>")
             return
         name, user_id_str = parts
-        tournament = self._require_tournament(name)
+        tournament = self._require_tournament(name, needs_bracket=False)
         if tournament is None:
             return
         try:
@@ -579,7 +603,7 @@ class WinningTicketCLI(cmd.Cmd):
 
     def _require_next_status(self, name: str, new_status: str):
         """The tournament, if it's at the step just before `new_status`; otherwise None."""
-        tournament = self._require_tournament(name, needs_bracket=True)
+        tournament = self._require_tournament(name)
         if tournament is None:
             return None
         if not db.is_next_status(tournament["status"], new_status):
@@ -598,7 +622,7 @@ class WinningTicketCLI(cmd.Cmd):
 
     def _require_registration(self, name: str):
         """The tournament, if it's taking sign-ups; otherwise None."""
-        tournament = self._require_tournament(name)
+        tournament = self._require_tournament(name, needs_bracket=False)
         if tournament is None:
             return None
         if tournament["status"] != "registration":
@@ -606,9 +630,9 @@ class WinningTicketCLI(cmd.Cmd):
             return None
         return tournament
 
-    def _require_tournament(self, name: str, needs_bracket: bool = False):
-        """The tournament, or None after saying why not. With `needs_bracket`, one still
-        taking sign-ups doesn't count, since its bracket isn't drawn until they close."""
+    def _require_tournament(self, name: str, needs_bracket: bool = True):
+        """The tournament, or None after saying why not. One still taking sign-ups has no
+        bracket yet, so it doesn't count unless needs_bracket=False."""
         if not name:
             print("Tournament name required.")
             return None

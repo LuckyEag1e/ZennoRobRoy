@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import sqlite3
 from dataclasses import dataclass
 from typing import Awaitable, Callable
@@ -13,6 +14,8 @@ import db
 from bracket import Match, resolve_all_slots
 from embeds import render_bracket_embed
 from labels import matchup_label, team_label
+
+log = logging.getLogger("winningticket")
 
 # Discord's limit on options in one select menu.
 MAX_SELECT_OPTIONS = 25
@@ -38,11 +41,11 @@ class TournamentSession:
 
 
 async def resolve_tournament(
-    interaction: discord.Interaction, conn: sqlite3.Connection, name: str, needs_bracket: bool = False
+    interaction: discord.Interaction, conn: sqlite3.Connection, name: str, needs_bracket: bool = True
 ) -> sqlite3.Row | None:
     """Fetch a tournament by name for this guild, or send an ephemeral error and return None.
-    With `needs_bracket`, a tournament still taking sign-ups is an error too, since its
-    bracket isn't drawn until registration closes."""
+    A tournament still taking sign-ups has no bracket yet, so it's an error too unless the
+    command passes needs_bracket=False because it works without one."""
     tournament = db.get_tournament_by_name(conn, interaction.guild_id, name)
     if tournament is None:
         await interaction.response.send_message(
@@ -106,6 +109,31 @@ async def team_name_autocomplete(interaction: discord.Interaction, current: str)
         for team in teams_by_id.values()
         if current.lower() in team["name"].lower()
     ][:MAX_SELECT_OPTIONS]
+
+
+def signups_message(tournament: sqlite3.Row) -> str:
+    """The sign-ups announcement as the tournament now stands. It's posted when sign-ups
+    open and rewritten when they close, so its countdown doesn't keep running."""
+    name = tournament["name"]
+    if tournament["status"] != "registration":
+        return f"📝 Sign-ups for **{name}** are closed."
+    closes_at = tournament["registration_closes_at"]
+    closing = (
+        f"Sign-ups close <t:{int(db.from_db_time(closes_at).timestamp())}:R>."
+        if closes_at is not None else "An organizer will close sign-ups."
+    )
+    return f"📝 Sign-ups are open for **{name}**! Run `/register tournament:{name}` to enter. {closing}"
+
+
+async def edit_signups_message(client: discord.Client, tournament: sqlite3.Row, content: str) -> None:
+    """Rewrite a tournament's sign-ups announcement, if it has one the bot can still find."""
+    channel = client.get_channel(tournament["channel_id"]) if tournament["channel_id"] is not None else None
+    if channel is None or tournament["announcement_message_id"] is None:
+        return
+    try:
+        await channel.get_partial_message(tournament["announcement_message_id"]).edit(content=content)
+    except discord.HTTPException:
+        log.warning("Couldn't update the sign-ups message for tournament %s", tournament["id"])
 
 
 def load_bracket_embed(conn: sqlite3.Connection, tournament: sqlite3.Row) -> discord.Embed:

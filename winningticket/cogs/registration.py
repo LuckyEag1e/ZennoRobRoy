@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import sqlite3
 from datetime import datetime, timedelta, timezone
+from typing import Callable
 
 import discord
 from discord import app_commands
@@ -11,45 +12,39 @@ from discord.ext import commands, tasks
 import db
 from bracket import BracketError
 from common import (
+    edit_signups_message,
     load_bracket_embed,
     registration_name_autocomplete,
     requires_manage_server,
     resolve_tournament,
+    signups_message,
     team_name_autocomplete,
     tournament_name_autocomplete,
 )
 from embeds import EMBED_DESCRIPTION_LIMIT, mention
 from labels import entrant_lines, join_within
-from tournament_builder import close_registration
+from tournament_builder import RegistrationClosedError, close_overdue_registration, close_registration
 
 log = logging.getLogger("winningticket")
 
 
-def _close_and_describe(conn: sqlite3.Connection, tournament: sqlite3.Row) -> tuple[str, discord.Embed | None]:
-    """Close registration and return the announcement and the new bracket. If too few
-    signed up, the tournament stays open, and the message says why with no bracket.
-    The announcement is for everyone, so it doesn't mention organizer commands."""
+def _close_and_describe(conn: sqlite3.Connection, tournament: sqlite3.Row,
+                        close: Callable[[sqlite3.Connection, int], int] = close_registration,
+                        ) -> tuple[str, discord.Embed | None]:
+    """Close registration with `close` and return the announcement and the new bracket.
+    If too few signed up, the tournament stays open, and the message says why with no
+    bracket. The announcement is for everyone, so it doesn't mention organizer commands."""
     name = tournament["name"]
     try:
-        count = close_registration(conn, tournament["id"])
+        count = close(conn, tournament["id"])
     except BracketError as e:
         return f"Registration for **{name}** couldn't close: {e}", None
     content = f"Registration for **{name}** is closed, and {count} entrants were drawn into the bracket."
     return content, load_bracket_embed(conn, db.get_tournament(conn, tournament["id"]))
 
 
-def _signups_message(tournament: sqlite3.Row) -> str:
-    """The sign-ups announcement as the tournament now stands. It's posted when sign-ups
-    open and rewritten when they close, so its countdown doesn't keep running."""
-    name = tournament["name"]
-    if tournament["status"] != "registration":
-        return f"📝 Sign-ups for **{name}** are closed."
-    closes_at = tournament["registration_closes_at"]
-    closing = (
-        f"Sign-ups close <t:{int(db.from_db_time(closes_at).timestamp())}:R>."
-        if closes_at is not None else "An organizer will close sign-ups."
-    )
-    return f"📝 Sign-ups are open for **{name}**! Run `/register tournament:{name}` to enter. {closing}"
+def _open_predictions_hint(name: str) -> str:
+    return f"Run `/tournament open name:{name}` when you're ready for predictions to begin."
 
 
 async def _require_registration(interaction: discord.Interaction, tournament: sqlite3.Row) -> bool:
@@ -95,29 +90,34 @@ class RegistrationCog(commands.Cog):
             log.exception("Couldn't check for registrations to close")
 
     async def _close_when_due(self, conn: sqlite3.Connection, tournament: sqlite3.Row) -> None:
-        content, embed = _close_and_describe(conn, tournament)
+        name = tournament["name"]
+        try:
+            content, embed = _close_and_describe(conn, tournament, close_overdue_registration)
+        except RegistrationClosedError:
+            return  # an organizer closed it by hand since the list of due tournaments was fetched
         if embed is None:
-            # Don't retry on every check; an organizer can close it by hand once more sign up.
-            db.clear_registration_deadline(conn, tournament["id"])
             content += " Sign-ups stay open until an organizer closes them."
-        await self._update_signups_message(db.get_tournament(conn, tournament["id"]))
+            next_step = (f"Sign-ups for **{name}** couldn't close automatically because too few signed up. "
+                         f"Close them with `/registration close name:{name}` once more have.")
+        else:
+            next_step = f"Sign-ups for **{name}** closed automatically. {_open_predictions_hint(name)}"
+        updated = db.get_tournament(conn, tournament["id"])
+        await edit_signups_message(self.bot, updated, signups_message(updated))
         await self._announce(tournament["channel_id"], content, embed)
+        await self._message_organizer(tournament["created_by"], next_step)
 
     @close_due_registrations.before_loop
     async def _wait_until_ready(self) -> None:
         await self.bot.wait_until_ready()
 
-    async def _update_signups_message(self, tournament: sqlite3.Row) -> None:
-        """Rewrite the sign-ups announcement to match the tournament, if it can still be found."""
-        channel = self.bot.get_channel(tournament["channel_id"]) if tournament["channel_id"] is not None else None
-        if channel is None or tournament["announcement_message_id"] is None:
-            return
+    async def _message_organizer(self, user_id: int, content: str) -> None:
+        """Privately tell an organizer about something that happened without them, since
+        public announcements don't mention organizer commands."""
         try:
-            await channel.get_partial_message(tournament["announcement_message_id"]).edit(
-                content=_signups_message(tournament)
-            )
+            user = self.bot.get_user(user_id) or await self.bot.fetch_user(user_id)
+            await user.send(content)
         except discord.HTTPException:
-            log.warning("Couldn't update the sign-ups message for tournament %s", tournament["id"])
+            log.warning("Couldn't message organizer %s", user_id)
 
     async def _announce(self, channel_id: int | None, content: str, embed: discord.Embed | None) -> None:
         channel = self.bot.get_channel(channel_id) if channel_id is not None else None
@@ -151,7 +151,7 @@ class RegistrationCog(commands.Cog):
                 conn, interaction.guild_id, name, interaction.user.id, interaction.channel_id,
                 db.to_db_time(closes_at) if closes_at is not None else None,
             )
-            await interaction.response.send_message(_signups_message(db.get_tournament(conn, tournament_id)))
+            await interaction.response.send_message(signups_message(db.get_tournament(conn, tournament_id)))
             message = await interaction.original_response()
             db.set_announcement_message(conn, tournament_id, message.id)
         finally:
@@ -164,18 +164,21 @@ class RegistrationCog(commands.Cog):
     async def close_signups(self, interaction: discord.Interaction, name: str) -> None:
         conn = db.get_connection()
         try:
-            tournament = await resolve_tournament(interaction, conn, name)
+            tournament = await resolve_tournament(interaction, conn, name, needs_bracket=False)
             if tournament is None or not await _require_registration(interaction, tournament):
                 return
-            content, embed = _close_and_describe(conn, tournament)
+            try:
+                content, embed = _close_and_describe(conn, tournament)
+            except RegistrationClosedError:
+                await interaction.response.send_message(f"Sign-ups for **{name}** have already closed.", ephemeral=True)
+                return
             if embed is None:
                 await interaction.response.send_message(content, ephemeral=True)
                 return
             await interaction.response.send_message(content, embed=embed)
-            await interaction.followup.send(
-                f"Run `/tournament open name:{name}` when you're ready for predictions to begin.", ephemeral=True
-            )
-            await self._update_signups_message(db.get_tournament(conn, tournament["id"]))
+            await interaction.followup.send(_open_predictions_hint(name), ephemeral=True)
+            updated = db.get_tournament(conn, tournament["id"])
+            await edit_signups_message(self.bot, updated, signups_message(updated))
         finally:
             conn.close()
 
@@ -185,7 +188,7 @@ class RegistrationCog(commands.Cog):
     async def entrants(self, interaction: discord.Interaction, name: str) -> None:
         conn = db.get_connection()
         try:
-            tournament = await resolve_tournament(interaction, conn, name)
+            tournament = await resolve_tournament(interaction, conn, name, needs_bracket=False)
             if tournament is None:
                 return
             entrants = db.get_entrants(conn, tournament["id"])
@@ -215,7 +218,7 @@ class RegistrationCog(commands.Cog):
             return
         conn = db.get_connection()
         try:
-            tournament_row = await resolve_tournament(interaction, conn, tournament)
+            tournament_row = await resolve_tournament(interaction, conn, tournament, needs_bracket=False)
             if tournament_row is None or not await _require_registration(interaction, tournament_row):
                 return
             if user is not None and db.get_entrant_team_id(conn, tournament_row["id"], user.id) is not None:
@@ -241,7 +244,7 @@ class RegistrationCog(commands.Cog):
     async def remove(self, interaction: discord.Interaction, tournament: str, entrant: str) -> None:
         conn = db.get_connection()
         try:
-            tournament_row = await resolve_tournament(interaction, conn, tournament)
+            tournament_row = await resolve_tournament(interaction, conn, tournament, needs_bracket=False)
             if tournament_row is None or not await _require_registration(interaction, tournament_row):
                 return
             team = db.get_team_by_name(conn, tournament_row["id"], entrant)
@@ -262,7 +265,7 @@ class RegistrationCog(commands.Cog):
     async def register(self, interaction: discord.Interaction, tournament: str) -> None:
         conn = db.get_connection()
         try:
-            tournament_row = await resolve_tournament(interaction, conn, tournament)
+            tournament_row = await resolve_tournament(interaction, conn, tournament, needs_bracket=False)
             if tournament_row is None or not await _require_registration(interaction, tournament_row):
                 return
             if db.get_entrant_team_id(conn, tournament_row["id"], interaction.user.id) is not None:
@@ -285,7 +288,7 @@ class RegistrationCog(commands.Cog):
     async def unregister(self, interaction: discord.Interaction, tournament: str) -> None:
         conn = db.get_connection()
         try:
-            tournament_row = await resolve_tournament(interaction, conn, tournament)
+            tournament_row = await resolve_tournament(interaction, conn, tournament, needs_bracket=False)
             if tournament_row is None or not await _require_registration(interaction, tournament_row):
                 return
             withdrawn = db.unregister_entrant(conn, tournament_row["id"], interaction.user.id)

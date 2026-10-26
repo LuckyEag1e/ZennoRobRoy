@@ -10,7 +10,7 @@ import pytest
 
 import db
 from bracket import BracketError, is_bye
-from tournament_builder import close_registration
+from tournament_builder import RegistrationClosedError, close_overdue_registration, close_registration
 
 # The tournaments table as schema version 1 databases have it.
 V1_TOURNAMENTS_TABLE = """
@@ -111,7 +111,7 @@ def test_a_close_that_fails_partway_saves_nothing_and_can_be_retried(conn, monke
     def fail(*args):
         raise sqlite3.OperationalError("database is locked")
 
-    monkeypatch.setattr(db, "set_tournament_status", fail)
+    monkeypatch.setattr(db, "link_feeders", fail)
     with pytest.raises(sqlite3.OperationalError):
         close_registration(conn, tournament_id)
     assert db.get_matches(conn, tournament_id) == {}
@@ -119,6 +119,23 @@ def test_a_close_that_fails_partway_saves_nothing_and_can_be_retried(conn, monke
 
     monkeypatch.undo()
     assert close_registration(conn, tournament_id) == 3
+
+
+def test_a_tournament_cant_be_closed_twice(conn):
+    tournament_id = _open_with(conn, 2)
+    close_registration(conn, tournament_id)
+    with pytest.raises(RegistrationClosedError):
+        close_registration(conn, tournament_id)
+    assert len(db.get_matches(conn, tournament_id)) == 1
+
+
+def test_an_overdue_close_with_too_few_drops_the_deadline(conn):
+    past = db.to_db_time(datetime.now(timezone.utc) - timedelta(minutes=1))
+    tournament_id = _open_with(conn, 1, closes_at=past)
+    with pytest.raises(BracketError):
+        close_overdue_registration(conn, tournament_id)
+    tournament = db.get_tournament(conn, tournament_id)
+    assert (tournament["status"], tournament["registration_closes_at"]) == ("registration", None)
 
 
 def test_only_passed_deadlines_are_due(conn):

@@ -98,7 +98,7 @@ database), so you can test full tournament flows without a bot token or server:
 python cli.py
 ```
 
-Commands mirror the slash commands: `create <name> <csv>`, `regopen <name>`, `register <name>`,
+Commands mirror the slash commands: `create <name> <csv>`, `regopen <name> [--closes-in HOURS]`, `register <name>`,
 `unregister <name>`, `entrants <name>`, `regadd <name> <entrant> [user_id]`, `regremove <name> <entrant>`,
 `regclose <name>`, `open <name>`, `predict <name>`,
 `lock <name>`, `conclude <name>`, `matchresult <name>`, `matchstats <name>`, `mypicks <name>`, `bracket <name>`,

@@ -7,8 +7,12 @@ import sqlite3
 from typing import Optional
 
 import db
-from bracket import generate_tree
+from bracket import BracketError, generate_tree
 from seeding import seeded_pairs
+
+
+class RegistrationClosedError(Exception):
+    """Raised when closing a tournament that has already left registration."""
 
 
 def build_matches(conn: sqlite3.Connection, tournament_id: int,
@@ -32,10 +36,23 @@ def build_matches(conn: sqlite3.Connection, tournament_id: int,
 def close_registration(conn: sqlite3.Connection, tournament_id: int, rng: random.Random | None = None) -> int:
     """Draw the signed-up teams into a bracket in random order and move the tournament on
     to setup. Returns how many teams were drawn. Raises BracketError if too few signed
-    up. On any error nothing is saved, so closing can simply be tried again."""
-    team_ids = sorted({entrant["team_id"] for entrant in db.get_entrants(conn, tournament_id)})
-    pairs = seeded_pairs((rng or random).sample(team_ids, len(team_ids)))
+    up, and RegistrationClosedError if it was already closed. On any error nothing is
+    saved, so closing can simply be tried again."""
     with conn:
+        if not db.claim_registration_close(conn, tournament_id):
+            raise RegistrationClosedError(f"Registration for tournament {tournament_id} has already closed.")
+        team_ids = sorted({entrant["team_id"] for entrant in db.get_entrants(conn, tournament_id)})
+        pairs = seeded_pairs((rng or random).sample(team_ids, len(team_ids)))
         build_matches(conn, tournament_id, pairs)
-        db.set_tournament_status(conn, tournament_id, "setup")
     return len(team_ids)
+
+
+def close_overdue_registration(conn: sqlite3.Connection, tournament_id: int) -> int:
+    """close_registration for a tournament whose deadline has passed. If too few signed
+    up, the deadline is dropped so it isn't retried on every check, and the BracketError
+    is raised for the caller to report. Sign-ups then stay open until closed by hand."""
+    try:
+        return close_registration(conn, tournament_id)
+    except BracketError:
+        db.clear_registration_deadline(conn, tournament_id)
+        raise

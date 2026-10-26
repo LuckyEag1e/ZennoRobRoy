@@ -59,7 +59,7 @@ class ResultsCog(commands.Cog):
     async def result(self, interaction: discord.Interaction, tournament: str) -> None:
         conn = db.get_connection()
         try:
-            tournament_row = await resolve_tournament(interaction, conn, tournament, needs_bracket=True)
+            tournament_row = await resolve_tournament(interaction, conn, tournament)
             if tournament_row is None:
                 return
             if tournament_row["status"] != "in_progress":
@@ -110,7 +110,7 @@ class ResultsCog(commands.Cog):
     async def stats(self, interaction: discord.Interaction, tournament: str) -> None:
         conn = db.get_connection()
         try:
-            tournament_row = await resolve_tournament(interaction, conn, tournament, needs_bracket=True)
+            tournament_row = await resolve_tournament(interaction, conn, tournament)
             if tournament_row is None:
                 return
             matches_by_id, feeders, teams_by_id = db.load_bracket(conn, tournament_row["id"])

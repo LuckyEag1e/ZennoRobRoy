@@ -31,7 +31,7 @@ class TournamentCog(commands.Cog):
                                        name: str, new_status: str) -> sqlite3.Row | None:
         """Fetch a tournament that's at the step just before `new_status`, or reply with an
         error and return None."""
-        tournament = await resolve_tournament(interaction, conn, name, needs_bracket=True)
+        tournament = await resolve_tournament(interaction, conn, name)
         if tournament is None:
             return None
         if not db.is_next_status(tournament["status"], new_status):
@@ -146,7 +146,7 @@ class TournamentCog(commands.Cog):
     async def bracket(self, interaction: discord.Interaction, name: str) -> None:
         conn = db.get_connection()
         try:
-            tournament = await resolve_tournament(interaction, conn, name, needs_bracket=True)
+            tournament = await resolve_tournament(interaction, conn, name)
             if tournament is None:
                 return
             await interaction.response.send_message(embed=load_bracket_embed(conn, tournament))
@@ -159,7 +159,7 @@ class TournamentCog(commands.Cog):
     async def leaderboard(self, interaction: discord.Interaction, name: str) -> None:
         conn = db.get_connection()
         try:
-            tournament = await resolve_tournament(interaction, conn, name, needs_bracket=True)
+            tournament = await resolve_tournament(interaction, conn, name)
             if tournament is None:
                 return
             embed = render_leaderboard_embed(name, db.load_scores(conn, tournament["id"]))
