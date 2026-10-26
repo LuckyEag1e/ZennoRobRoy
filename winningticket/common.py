@@ -48,9 +48,11 @@ async def resolve_tournament(
     command passes needs_bracket=False because it works without one."""
     tournament = db.get_tournament_by_name(conn, interaction.guild_id, name)
     if tournament is None:
-        await interaction.response.send_message(
-            f"No tournament named '{name}' found in this server.", ephemeral=True
-        )
+        if db.has_concluded_tournament(conn, interaction.guild_id, name):
+            message = f"**{name}** has concluded. Its final results were posted when it ended."
+        else:
+            message = f"No tournament named '{name}' found in this server."
+        await interaction.response.send_message(message, ephemeral=True)
         return None
     if needs_bracket and tournament["status"] == "registration":
         message = (

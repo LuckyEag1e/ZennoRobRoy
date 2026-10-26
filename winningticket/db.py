@@ -245,6 +245,12 @@ def get_tournament_by_name(conn: sqlite3.Connection, guild_id: int, name: str) -
     ).fetchone()
 
 
+def has_concluded_tournament(conn: sqlite3.Connection, guild_id: int, name: str) -> bool:
+    return conn.execute(
+        "SELECT 1 FROM tournaments WHERE guild_id = ? AND name = ? AND status = 'concluded'", (guild_id, name)
+    ).fetchone() is not None
+
+
 def get_tournament(conn: sqlite3.Connection, tournament_id: int) -> sqlite3.Row:
     return conn.execute("SELECT * FROM tournaments WHERE id = ?", (tournament_id,)).fetchone()
 

@@ -26,6 +26,7 @@ from bracket import (
     matches_with_both_teams,
     next_opponent,
     pick_distribution,
+    ranked_places,
     resolvable_matches,
     resolve_all_slots,
     resolve_slot,
@@ -210,8 +211,8 @@ class WinningTicketCLI(cmd.Cmd):
             return
         participant_word = "participant" if len(scores) == 1 else "participants"
         print(f"{len(scores)} {participant_word}\n")
-        for rank, s in enumerate(scores, start=1):
-            print(f"{rank}. user {s.user_id}: {score_label(s)}")
+        for place, s in ranked_places(scores):
+            print(f"{place}. {user_label(s.user_id)}: {score_label(s)}")
 
     # -- registration --------------------------------------------------------
 
@@ -652,7 +653,10 @@ class WinningTicketCLI(cmd.Cmd):
             return None
         tournament = db.get_tournament_by_name(self.conn, GUILD_ID, name)
         if tournament is None:
-            print(f"No tournament named '{name}'. Use 'tournaments' to list them.")
+            if db.has_concluded_tournament(self.conn, GUILD_ID, name):
+                print(f"'{name}' has concluded. Its final results were shown when it ended.")
+            else:
+                print(f"No tournament named '{name}'. Use 'tournaments' to list them.")
             return None
         if needs_bracket and tournament["status"] == "registration":
             print(f"'{name}' is still taking sign-ups, so it has no bracket yet. "
