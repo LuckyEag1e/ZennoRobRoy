@@ -153,7 +153,8 @@ a `co_organizer` recording results alongside the organizer. The order is chosen 
 the seed, so any run replays exactly.
 
 Scenarios, competence profiles and organizer styles live in `sim/scenarios.py`
-and `sim/actors.py`. Buttons on real Discord still get a manual check before release.
+and `sim/actors.py`. [`sim/README.md`](sim/README.md) explains how a run works, what
+it checks, what it doesn't test, and how to extend it. Buttons on real Discord still get a manual check before release.
 
 ## Deployment
 
