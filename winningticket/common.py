@@ -179,6 +179,16 @@ class BotModal(discord.ui.Modal):
         return not await turn_away_if_banned(interaction)
 
 
+def outdated_pick_message(now: db.MatchNow | None, teams: tuple[int, int]) -> str | None:
+    """Why a match picked from a menu opened earlier can't be saved any more, or None if
+    it still can. `teams` are the two teams the menu showed."""
+    if now is None:
+        return "That tournament no longer exists."
+    if set(now.teams) != set(teams):
+        return "This matchup has changed since the menu was opened, because an earlier result was edited. Run the command again."
+    return None
+
+
 MatchCallback = Callable[[discord.Interaction, Match], Awaitable[None]]
 WinnerCallback = Callable[[discord.Interaction, int, int], Awaitable[None]]
 

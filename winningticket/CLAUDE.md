@@ -45,6 +45,7 @@ Concepts that span several files:
 - **Bans** are checked by `common.turn_away_if_banned`: `bot.WinningTicketTree` runs it before every slash command and autocomplete, and every button view and form runs it through its `BotView`/`BotModal` base class, so a ban also stops views already open. New views and forms must subclass those. The CLI checks in `onecmd`.
 - **Feedback stays anonymous:** the `feedback` table has no user column and stores only the date. Keep it that way; the `/feedback` cooldown (`FeedbackCooldown`) is the only thing that knows who sent what, and it lives in memory.
 - **Select menus** hold at most 25 options, so match choices go through `common.MatchPicker`, which pages.
+- **Menus go out of date:** a menu can sit open while someone else changes the bracket, so anything picked from one is checked against `db.match_now` (and `common.outdated_pick_message`) right before it's saved, with no `await` in between.
 
 ## Deployment
 

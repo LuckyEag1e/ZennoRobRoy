@@ -1,0 +1,142 @@
+"""Menus opened before someone else changed the bracket mustn't save outdated picks."""
+
+import asyncio
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+import pytest
+
+import db
+from sim.discord_fakes import FakeAttachment
+from sim.harness import Simulation
+
+BRACKET = b"team_a,team_b\nAce,Blaze\nComet,Dash\n"
+
+
+@pytest.fixture
+def world(tmp_path):
+    """A locked 4-team tournament and two organizers, run through the real cogs."""
+    path_before = db.DB_PATH
+
+    async def build():
+        sim = await Simulation.create(tmp_path / "test.db")
+        first = sim.add_user(1, "First organizer", organizer=True)
+        second = sim.add_user(2, "Second organizer", organizer=True)
+        await sim.run(first, "tournament create", name="Cup", csv_file=FakeAttachment(BRACKET))
+        await sim.run(first, "tournament open", name="Cup")
+        await sim.run(first, "tournament lock", name="Cup")
+        return sim, first, second
+
+    yield asyncio.run(build())
+    db.DB_PATH = path_before
+
+
+def _results(sim) -> dict[str, str]:
+    """Stored results as {loser's first-round opponent pairing: winner}, by team name."""
+    conn = db.get_connection()
+    try:
+        teams = {team_id: row["name"] for team_id, row in db.get_teams(conn, 1).items()}
+        return {match_id: teams[winner] for match_id, winner in db.get_results(conn, 1).items()}
+    finally:
+        conn.close()
+
+
+def _first_option(message) -> str:
+    return message.view.children[0].options[0].value
+
+
+async def _record(sim, organizer, match_value: str, winner: str):
+    menu = (await sim.run(organizer, "match result", tournament="Cup")).sent
+    await sim.choose(organizer, menu, match_value)
+    return await sim.click(organizer, menu, winner)
+
+
+def test_a_second_result_menu_cant_overwrite_the_first(world):
+    sim, first, second = world
+
+    async def play():
+        menu_a = (await sim.run(first, "match result", tournament="Cup")).sent
+        menu_b = (await sim.run(second, "match result", tournament="Cup")).sent
+        match = _first_option(menu_a)
+        await sim.choose(first, menu_a, match)
+        await sim.click(first, menu_a, "Ace")
+        posts_before = len(sim.public_posts_since(0))
+        await sim.choose(second, menu_b, match)
+        refused = await sim.click(second, menu_b, "Blaze")
+        return refused, posts_before
+
+    refused, posts_before = asyncio.run(play())
+    assert "already recorded" in refused.message.content
+    assert list(_results(sim).values()) == ["Ace"]
+    assert len(sim.public_posts_since(0)) == posts_before  # no second, contradictory announcement
+    assert not sim.issues
+
+
+def test_setresult_asks_before_overwriting_a_result_recorded_after_its_menu_opened(world):
+    sim, first, second = world
+
+    async def play():
+        admin_menu = (await sim.run(second, "admin setresult", tournament="Cup")).sent
+        match = _first_option(admin_menu)
+        await _record(sim, first, match, "Ace")
+        await sim.choose(second, admin_menu, match)
+        return await sim.click(second, admin_menu, "Blaze")
+
+    asked = asyncio.run(play())
+    assert "Overwrite" in asked.message.content
+    assert list(_results(sim).values()) == ["Ace"]
+
+
+def test_a_changed_matchup_is_refused(world):
+    sim, first, second = world
+
+    async def play():
+        semi_1 = _first_option((await sim.run(first, "match result", tournament="Cup")).sent)
+        await _record(sim, first, semi_1, "Ace")
+        semi_2 = _first_option((await sim.run(first, "match result", tournament="Cup")).sent)
+        await _record(sim, first, semi_2, "Comet")
+        final_menu = (await sim.run(second, "match result", tournament="Cup")).sent  # shows Ace vs Comet
+        # Meanwhile the first organizer corrects semi-final 1: Blaze won, not Ace.
+        admin_menu = (await sim.run(first, "admin setresult", tournament="Cup")).sent
+        await sim.choose(first, admin_menu, semi_1)
+        await sim.click(first, admin_menu, "Blaze")
+        await sim.click(first, admin_menu, "Confirm")
+        await sim.choose(second, final_menu, _first_option(final_menu))
+        return await sim.click(second, final_menu, "Ace")
+
+    refused = asyncio.run(play())
+    assert "matchup has changed" in refused.message.content
+    assert sorted(_results(sim).values()) == ["Blaze", "Comet"]  # the final wasn't recorded
+
+
+def test_a_deleted_tournament_is_refused_without_crashing(world):
+    sim, first, second = world
+
+    async def play():
+        menu = (await sim.run(second, "match result", tournament="Cup")).sent
+        await sim.choose(second, menu, _first_option(menu))
+        await sim.run(first, "admin deletetournament", tournament="Cup", confirm_name="Cup")
+        return await sim.click(second, menu, "Ace")
+
+    refused = asyncio.run(play())
+    assert "no longer exists" in refused.message.content
+    assert not sim.issues
+
+
+def test_clearing_a_result_twice_says_it_was_already_cleared(world):
+    sim, first, second = world
+
+    async def play():
+        match = _first_option((await sim.run(first, "match result", tournament="Cup")).sent)
+        await _record(sim, first, match, "Ace")
+        menus = [(await sim.run(organizer, "admin clearresult", tournament="Cup")).sent for organizer in (first, second)]
+        for organizer, menu in zip((first, second), menus):
+            await sim.choose(organizer, menu, match)
+        await sim.click(first, menus[0], "Confirm")
+        return await sim.click(second, menus[1], "Confirm")
+
+    second_clear = asyncio.run(play())
+    assert "already cleared" in second_clear.message.content
+    assert _results(sim) == {}

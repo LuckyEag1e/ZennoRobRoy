@@ -12,6 +12,7 @@ from common import (
     TournamentSession,
     WinnerPicker,
     edit_signups_message,
+    outdated_pick_message,
     resolve_tournament,
     team_name_autocomplete,
     tournament_name_autocomplete,
@@ -139,19 +140,37 @@ class AdminCog(commands.Cog):
             async def choose(winner_interaction: discord.Interaction, winner_id: int, loser_id: int) -> None:
                 winner_label = team_label(session.teams_by_id, winner_id)
 
+                def current_match() -> db.MatchNow | None:
+                    conn = db.get_connection()
+                    try:
+                        return db.match_now(conn, session.tournament_id, match.id)
+                    finally:
+                        conn.close()
+
                 async def record(confirm_interaction: discord.Interaction) -> None:
                     conn = db.get_connection()
                     try:
-                        dropped = db.record_result(conn, session.tournament_id, match.id, winner_id,
-                                                   confirm_interaction.user.id)
+                        # Checked again here: the confirm button can sit unclicked while others edit results.
+                        refusal = outdated_pick_message(db.match_now(conn, session.tournament_id, match.id),
+                                                        (winner_id, loser_id))
+                        if refusal is None:
+                            dropped = db.record_result(conn, session.tournament_id, match.id, winner_id,
+                                                       confirm_interaction.user.id)
                     finally:
                         conn.close()
+                    if refusal is not None:
+                        await confirm_interaction.response.edit_message(content=refusal, view=None)
+                        return
                     await confirm_interaction.response.edit_message(
                         content=f"✅ Set Round {match.played_round} winner to **{winner_label}**.{dropped_results_note(dropped)}",
                         view=None,
                     )
 
-                if match.id in results_by_match:
+                now = current_match()
+                refusal = outdated_pick_message(now, (winner_id, loser_id))
+                if refusal is not None:
+                    await winner_interaction.response.edit_message(content=refusal, view=None)
+                elif now.winner is not None:
                     await winner_interaction.response.edit_message(
                         content=f"This match already has a recorded result. Overwrite with **{winner_label}**? "
                                 f"Later results that depended on the old winner will be cleared.",
@@ -195,9 +214,16 @@ class AdminCog(commands.Cog):
             async def clear(confirm_interaction: discord.Interaction) -> None:
                 conn = db.get_connection()
                 try:
-                    dropped = db.clear_result(conn, session.tournament_id, match.id)
+                    now = db.match_now(conn, session.tournament_id, match.id)
+                    if now is not None and now.winner is not None:
+                        dropped = db.clear_result(conn, session.tournament_id, match.id)
                 finally:
                     conn.close()
+                if now is None or now.winner is None:
+                    # Someone else cleared it, or deleted the tournament, since the menu opened.
+                    gone = "That tournament no longer exists." if now is None else "That result was already cleared."
+                    await confirm_interaction.response.edit_message(content=gone, view=None)
+                    return
                 await confirm_interaction.response.edit_message(
                     content=f"✅ Result cleared.{dropped_results_note(dropped)}", view=None
                 )

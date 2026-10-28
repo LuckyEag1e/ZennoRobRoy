@@ -5,6 +5,7 @@ from __future__ import annotations
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import NamedTuple, Optional
 
 from bracket import (
     Match,
@@ -16,6 +17,7 @@ from bracket import (
     compute_leaderboard,
     final_match,
     podium,
+    resolve_slot,
     stale_results,
 )
 
@@ -462,6 +464,27 @@ def load_final_results(conn: sqlite3.Connection, tournament_id: int) -> tuple[Po
 
 
 # -- results ------------------------------------------------------------------
+
+class MatchNow(NamedTuple):
+    status: str  # the tournament's
+    teams: tuple[Optional[int], Optional[int]]
+    winner: Optional[int]
+
+
+def match_now(conn: sqlite3.Connection, tournament_id: int, match_id: int) -> MatchNow | None:
+    """A match's teams and recorded winner as they stand now, with its tournament's status,
+    or None if the tournament is gone. A menu can sit open while others change the
+    bracket, so menus check this before saving what was picked from them."""
+    tournament = get_tournament(conn, tournament_id)
+    if tournament is None:
+        return None
+    matches_by_id, feeders, _ = load_bracket(conn, tournament_id)
+    if match_id not in matches_by_id:
+        return None
+    results = get_results(conn, tournament_id)
+    teams = resolve_slot(matches_by_id[match_id], matches_by_id, results.get, feeders)
+    return MatchNow(tournament["status"], teams, results.get(match_id))
+
 
 def get_results(conn: sqlite3.Connection, tournament_id: int) -> dict[int, int]:
     rows = conn.execute(
