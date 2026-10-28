@@ -3,8 +3,10 @@ Discord and bot.py would, and records a transcript and any problems along the wa
 
 from __future__ import annotations
 
+import asyncio
 import importlib
 import os
+import random
 import traceback
 from collections import Counter
 from dataclasses import dataclass, field
@@ -23,6 +25,44 @@ from sim import checks
 from sim.discord_fakes import FakeBot, FakeChannel, FakeInteraction, FakeMessage, FakePermissions, FakeUser
 
 GUILD_ID = 1
+
+
+class Crowd:
+    """Runs several actors' flows at once, the way people on a server overlap: each flow
+    pauses before every Discord action, and a seeded random choice decides whose action
+    happens next. An action itself runs whole, so its transcript lines and checks stay
+    its own, and the same seed always gives the same order."""
+
+    def __init__(self, rng: random.Random) -> None:
+        self.rng = rng
+        self.members: set[asyncio.Task] = set()
+        self.waiting: list[asyncio.Future] = []
+
+    async def run(self, flows: list) -> None:
+        async def member(flow) -> None:
+            try:
+                await flow
+            finally:
+                self.members.discard(asyncio.current_task())
+                self._release_one()
+
+        tasks = [asyncio.ensure_future(member(flow)) for flow in flows]
+        self.members.update(tasks)
+        outcomes = await asyncio.gather(*tasks, return_exceptions=True)
+        failure = next((outcome for outcome in outcomes if isinstance(outcome, BaseException)), None)
+        if failure is not None:
+            raise failure
+
+    async def wait_turn(self) -> None:
+        turn = asyncio.get_running_loop().create_future()
+        self.waiting.append(turn)
+        self._release_one()
+        await turn
+
+    def _release_one(self) -> None:
+        # Choose only once every flow is waiting or done, so the order never depends on timing.
+        if self.waiting and len(self.waiting) == len(self.members):
+            self.waiting.pop(self.rng.randrange(len(self.waiting))).set_result(None)
 
 
 @dataclass
@@ -52,6 +92,8 @@ class Simulation:
     stage: str = "-"
     coverage: Counter = field(default_factory=Counter)
     _first_new_message: int = 0
+    crowd: Optional[Crowd] = None
+    _results_seen: dict = field(default_factory=dict)  # tournament id -> {match id: winner} after the last step
     _actor: str = ""
     _action: str = ""
 
@@ -90,8 +132,26 @@ class Simulation:
 
     # -- actions --------------------------------------------------------------------
 
+    async def together(self, flows: list, rng: random.Random) -> None:
+        """Run several actors' flows at the same time, interleaving their Discord actions."""
+        self.crowd = Crowd(rng)
+        try:
+            await self.crowd.run(flows)
+        finally:
+            self.crowd = None
+
+    async def narrate(self, text: str) -> None:
+        """Note something an actor does that isn't a Discord action, in its place in the order."""
+        await self._turn()
+        self.transcript.append(f"       ({text})")
+
+    async def _turn(self) -> None:
+        if self.crowd is not None and asyncio.current_task() in self.crowd.members:
+            await self.crowd.wait_turn()
+
     async def run(self, user: FakeUser, name: str, /, **options) -> FakeInteraction:
         """Run a slash command as `user`. Returns the interaction, whose `sent` is the reply."""
+        await self._turn()
         command, cog = self.commands[name]
         shown = " ".join(f"{key}:{value.display_name if isinstance(value, FakeUser) else value}"
                          for key, value in options.items() if value is not None)
@@ -117,6 +177,7 @@ class Simulation:
         return interaction
 
     async def autocomplete(self, user: FakeUser, name: str, option: str, current: str = "", /, **filled) -> list[str]:
+        await self._turn()
         command, _ = self.commands[name]
         callback = command._params[option].autocomplete
         if callback is None:
@@ -136,6 +197,7 @@ class Simulation:
         button the user could click. With `late`, the click counts even if the bot has
         since deleted the message, the way a quick double-click reaches Discord before
         the deletion does."""
+        await self._turn()
         button = next((item for item in self._items(user, message, late)
                        if isinstance(item, discord.ui.Button) and item.label == label and not item.disabled), None)
         if button is None:
@@ -149,6 +211,7 @@ class Simulation:
 
     async def choose(self, user: FakeUser, message: FakeMessage, value: str) -> Optional[FakeInteraction]:
         """Pick `value` from the select menu on `message`."""
+        await self._turn()
         menu = next((item for item in self._items(user, message) if isinstance(item, discord.ui.Select)), None)
         if menu is None or value not in [option.value for option in menu.options]:
             return None
@@ -162,6 +225,7 @@ class Simulation:
 
     async def submit_form(self, user: FakeUser, modal: discord.ui.Modal, text: str) -> Optional[FakeInteraction]:
         """Type `text` into a one-field form and send it."""
+        await self._turn()
         text_input = next(item for item in modal.children if isinstance(item, discord.ui.TextInput))
         text = text[:text_input.max_length] if text_input.max_length else text  # the box stops further typing
         self._begin(user, f"sends form {text!r}")
@@ -177,6 +241,7 @@ class Simulation:
 
     async def run_background(self, label: str, work) -> None:
         """Run something the bot does on its own, like the sign-ups loop."""
+        await self._turn()
         self._begin(None, label)
         try:
             await work()
@@ -261,8 +326,21 @@ class Simulation:
         try:
             for problem in checks.database_problems(conn, GUILD_ID):
                 self._problem(problem)
+            self._check_result_changes(conn)
         finally:
             conn.close()
+
+    def _check_result_changes(self, conn) -> None:
+        """A recorded result may only change to a different winner through /admin
+        setresult's confirmation; anything else overwrote someone's result unasked."""
+        for row in conn.execute("SELECT id FROM tournaments WHERE guild_id = ?", (GUILD_ID,)).fetchall():
+            now = db.get_results(conn, row["id"])
+            before = self._results_seen.get(row["id"], {})
+            confirmed = self._action.startswith("clicks [Confirm]")
+            for match_id, winner in now.items():
+                if before.get(match_id, winner) != winner and not confirmed:
+                    self._problem(f"match {match_id}'s recorded winner changed without /admin setresult's confirmation")
+            self._results_seen[row["id"]] = now
 
 
 class _CogCollector(FakeBot):

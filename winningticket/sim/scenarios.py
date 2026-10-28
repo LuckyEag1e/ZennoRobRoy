@@ -51,6 +51,8 @@ class Scenario:
     entry: str = "signups"         # "signups", or "csv" for a bracket uploaded with /tournament create
     turns_per_stage: int = 3
     duplicate_names: bool = False  # two players share a display name
+    crowded: bool = False          # players act at the same time, so their steps interleave
+    co_organizer: bool = False     # a second organizer records results alongside the first
     format: str = "single_elim"    # the only format the bot supports so far
 
 
@@ -58,14 +60,15 @@ SCENARIOS = {
     scenario.name: scenario for scenario in [
         Scenario("smooth", "8 diligent players and a careful organizer: nothing should go wrong.",
                  ((DILIGENT, 8),), CAREFUL),
-        Scenario("typical", "A realistic mix with a couple of chaotic players and one guest entrant.",
-                 ((DILIGENT, 4), (CASUAL, 6), (CHAOTIC, 2)), CAREFUL, guests=1, duplicate_names=True),
-        Scenario("chaos", "Mostly chaotic players and a sloppy organizer who uses a deadline.",
-                 ((DILIGENT, 2), (CASUAL, 3), (CHAOTIC, 7)), SLOPPY, guests=2, duplicate_names=True),
-        Scenario("large", "40 players and 3 guests, for a 64-line bracket and long menus.",
-                 ((DILIGENT, 10), (CASUAL, 25), (CHAOTIC, 5)), CAREFUL, guests=3, turns_per_stage=2),
-        Scenario("csv", "A bracket of 8 named teams uploaded as a CSV, predicted by a mix of players.",
-                 ((DILIGENT, 3), (CASUAL, 3), (CHAOTIC, 2)), SLOPPY, guests=8, entry="csv"),
+        Scenario("typical", "A realistic mix acting at the same time, with a couple of chaotic players.",
+                 ((DILIGENT, 4), (CASUAL, 6), (CHAOTIC, 2)), CAREFUL, guests=1, duplicate_names=True, crowded=True),
+        Scenario("chaos", "Mostly chaotic players at once, and two sloppy organizers recording results together.",
+                 ((DILIGENT, 2), (CASUAL, 3), (CHAOTIC, 7)), SLOPPY, guests=2, duplicate_names=True,
+                 crowded=True, co_organizer=True),
+        Scenario("large", "40 players and 3 guests at once, for a 64-line bracket and long menus.",
+                 ((DILIGENT, 10), (CASUAL, 25), (CHAOTIC, 5)), CAREFUL, guests=3, turns_per_stage=2, crowded=True),
+        Scenario("csv", "8 named teams uploaded as a CSV, with two organizers recording results together.",
+                 ((DILIGENT, 3), (CASUAL, 3), (CHAOTIC, 2)), SLOPPY, guests=8, entry="csv", co_organizer=True),
     ]
 }
 
@@ -79,8 +82,11 @@ class TournamentRun:
     players: list[Player]
     name: str = "Spring Cup"
     tournament_id: Optional[int] = None
+    co_organizer: Optional[Organizer] = None
     guest_skill: dict[str, float] = field(default_factory=dict)
-    truth: dict[int, int] = field(default_factory=dict)  # match id -> the real winner's team id
+    # The real winner of each matchup played, keyed by (match id, its two teams). A matchup
+    # can change when an earlier result is corrected, and then it's a new game.
+    outcomes: dict[tuple[int, frozenset], int] = field(default_factory=dict)
     banned: Optional[Player] = None
 
     # -- reading the bot's state --------------------------------------------------------
@@ -151,7 +157,7 @@ class TournamentRun:
     async def resume_bracket(self, player: Player) -> None:
         """Pick up a bracket they walked away from, which may be after predictions closed."""
         message, player.unfinished_bracket = player.unfinished_bracket, None
-        self.sim._note(f"({player.user.display_name} comes back to the bracket they left)")
+        await self.sim.narrate(f"{player.user.display_name} comes back to the bracket they left")
         await self._fill_bracket(player, message)
 
     async def _fill_bracket(self, player: Player, message) -> None:
@@ -170,7 +176,7 @@ class TournamentRun:
                 await self.sim.click(user, message, CONFIRM_BRACKET)
                 return
             if self.rng.random() < c.abandon / 4:
-                self.sim._note(f"({user.display_name} walks away from their bracket)")
+                await self.sim.narrate(f"{user.display_name} walks away from their bracket")
                 player.unfinished_bracket = message
                 return
             team_a, team_b = (team_by_label[label] for label in labels[:2])
@@ -197,7 +203,7 @@ class TournamentRun:
             return
         roll = self.rng.random()
         if roll < 0.15:
-            self.sim._note(f"({player.user.display_name} closes the form without sending)")
+            await self.sim.narrate(f"{player.user.display_name} closes the form without sending")
         elif roll < 0.3:
             await self.sim.submit_form(player.user, opened.response.modal, "   ")
         elif roll < 0.45:
@@ -311,8 +317,15 @@ class TournamentRun:
 
     async def _player_turns(self) -> None:
         for _ in range(self.scenario.turns_per_stage):
-            for player in self.rng.sample(self.players, len(self.players)):
-                await player.take_turn(self)
+            await self._all_at_once([player.take_turn(self) for player in self.rng.sample(self.players, len(self.players))])
+
+    async def _all_at_once(self, flows: list) -> None:
+        """Run flows together if the scenario is crowded, otherwise one after another."""
+        if self.scenario.crowded:
+            await self.sim.together(flows, self.rng)
+        else:
+            for flow in flows:
+                await flow
 
     async def _close_signups(self) -> None:
         org = self.organizer.user
@@ -326,21 +339,36 @@ class TournamentRun:
             conn.commit()
             conn.close()
             cog = self.sim.cogs["RegistrationCog"]
-            await self.sim.run_background("sign-up deadline passes", lambda: cog.close_due_registrations.coro(cog))
+            # Latecomers try to sign up just as the deadline passes.
+            latecomers = [p for p in self.players if not self.is_registered(p)][:3]
+            await self._all_at_once(
+                [self.sim.run_background("sign-up deadline passes", lambda: cog.close_due_registrations.coro(cog))]
+                + [self.sim.run(p.user, "register", tournament=self.name) for p in latecomers]
+            )
         if self.status() == "registration":
             await self.sim.run(org, "registration close", name=self.name)
 
     async def _play_matches(self) -> None:
+        organizers = [self.organizer] + ([self.co_organizer] if self.co_organizer else [])
         while self.status() == "in_progress":
-            if not await self._record_one_result():
-                self.sim._problem("the organizer couldn't record any result, so the tournament can't finish")
+            found_a_match = []
+            onlookers = [p.take_turn(self) for p in self.rng.sample(self.players, min(2, len(self.players)))]
+            await self._all_at_once([self._organizer_round(o, found_a_match) for o in organizers] + onlookers)
+            if not found_a_match and self.status() == "in_progress":
+                self.sim._problem("no organizer could record any result, so the tournament can't finish")
                 return
-            for player in self.rng.sample(self.players, min(2, len(self.players))):
-                await player.take_turn(self)
 
-    async def _record_one_result(self) -> bool:
-        """Record the real result of one ready match. False if there was none to record."""
-        org, style = self.organizer.user, self.organizer.style
+    async def _organizer_round(self, organizer: Organizer, found_a_match: list) -> None:
+        """Correct any result this organizer got wrong earlier, then record one more."""
+        await self._review_results(organizer)
+        if await self._record_one_result(organizer):
+            found_a_match.append(organizer)
+
+    async def _record_one_result(self, organizer: Organizer) -> bool:
+        """Record the real result of a ready match. False if the menu had none to offer.
+        With two organizers, the other may record the same match first; the bot should
+        then refuse this one."""
+        org, style = organizer.user, organizer.style
         reply = await self.sim.run(org, "match result", tournament=self.name)
         message = reply.sent
         menu = _menu(message)
@@ -348,43 +376,56 @@ class TournamentRun:
             return False
         match_id = int(self.rng.choice(menu.options).value)
         await self.sim.choose(org, message, str(match_id))
+        buttons = [item.label for item in message.view.children] if message.view is not None else []
+        if len(buttons) != 2:
+            return True  # the matchup was refused or gone by the time they picked it
         matches_by_id, feeders, teams_by_id, results = self._bracket()
-        team_a, team_b = resolve_all_slots(matches_by_id, results.get, feeders)[match_id]
-        winner = self._real_winner(team_a, team_b)
+        label_to_team = {team_label(teams_by_id, team)[:80]: team for team in teams_by_id}
+        team_a, team_b = (label_to_team[label] for label in buttons)
+        winner = self._real_winner(match_id, team_a, team_b)
         loser = team_b if winner == team_a else team_a
         if self.rng.random() < style.wrong_result:
             await self.sim.click(org, message, team_label(teams_by_id, loser)[:80])
-            await self._fix_result(match_id, winner, teams_by_id)
+            await self._fix_result(organizer, match_id, winner, teams_by_id)
         else:
             await self.sim.click(org, message, team_label(teams_by_id, winner)[:80])
-        self.truth[match_id] = winner
         if self.rng.random() < style.wrong_result / 2:
-            await self._clear_result(match_id)
+            await self._clear_result(organizer, match_id)
         return True
 
-    async def _clear_result(self, match_id: int) -> None:
-        """Clears a result they just recorded, as if unsure; it gets recorded again later."""
-        org = self.organizer.user
-        reply = await self.sim.run(org, "admin clearresult", tournament=self.name)
-        if await self.sim.choose(org, reply.sent, str(match_id)) is None:
-            self.sim._problem("/admin clearresult didn't offer the result just recorded")
-            return
-        await self.sim.click(org, reply.sent, "Confirm")
-        del self.truth[match_id]
+    async def _review_results(self, organizer: Organizer) -> None:
+        """Look over the recorded results and correct any that don't match what was played,
+        as an organizer would after noticing a mistake."""
+        matches_by_id, feeders, teams_by_id, results = self._bracket()
+        slots = resolve_all_slots(matches_by_id, results.get, feeders)
+        for match_id, winner in results.items():
+            real = self.outcomes.get((match_id, frozenset(slots[match_id])))
+            if real is not None and real != winner:
+                await self._fix_result(organizer, match_id, real, teams_by_id)
 
-    async def _fix_result(self, match_id: int, winner: int, teams_by_id) -> None:
-        org = self.organizer.user
+    async def _clear_result(self, organizer: Organizer, match_id: int) -> None:
+        """Clears a result they just recorded, as if unsure; it gets recorded again later."""
+        org = organizer.user
+        reply = await self.sim.run(org, "admin clearresult", tournament=self.name)
+        if await self.sim.choose(org, reply.sent, str(match_id)) is not None:
+            await self.sim.click(org, reply.sent, "Confirm")
+
+    async def _fix_result(self, organizer: Organizer, match_id: int, winner: int, teams_by_id) -> None:
+        org = organizer.user
         reply = await self.sim.run(org, "admin setresult", tournament=self.name)
         message = reply.sent
         if await self.sim.choose(org, message, str(match_id)) is None:
-            self.sim._problem("/admin setresult didn't offer the match that needed fixing")
-            return
+            return  # the match isn't on offer any more, after someone else's change
         await self.sim.click(org, message, team_label(teams_by_id, winner)[:80])
         await self.sim.click(org, message, "Confirm")
 
-    def _real_winner(self, team_a: int, team_b: int) -> int:
-        a_wins = 1 / (1 + 10 ** ((self.skill_of(team_b) - self.skill_of(team_a)) / 400))
-        return team_a if self.rng.random() < a_wins else team_b
+    def _real_winner(self, match_id: int, team_a: int, team_b: int) -> int:
+        """Who really wins this matchup, decided by skill the first time anyone asks."""
+        key = (match_id, frozenset((team_a, team_b)))
+        if key not in self.outcomes:
+            a_wins = 1 / (1 + 10 ** ((self.skill_of(team_b) - self.skill_of(team_a)) / 400))
+            self.outcomes[key] = team_a if self.rng.random() < a_wins else team_b
+        return self.outcomes[key]
 
     # -- the final comparison ------------------------------------------------------------
 
@@ -398,10 +439,16 @@ class TournamentRun:
                 return
             matches_by_id, feeders, _ = db.load_bracket(conn, self.tournament_id)
             results = db.get_results(conn, self.tournament_id)
-            if results != self.truth:
-                self.sim._problem(f"stored results {results} differ from the ones played {self.truth}")
+            slots = resolve_all_slots(matches_by_id, results.get, feeders)
+            for match_id, winner in results.items():
+                real = self.outcomes.get((match_id, frozenset(slots[match_id])))
+                if real is None:
+                    self.sim._problem(f"match {match_id} has a result for a matchup nobody played")
+                elif real != winner:
+                    self.sim._problem(f"match {match_id}'s stored winner isn't the one who really won")
             podium, _, scores = db.load_final_results(conn, self.tournament_id)
-            if podium.champion != self.truth.get(final_match(matches_by_id).id):
+            final = final_match(matches_by_id)
+            if podium.champion != self.outcomes.get((final.id, frozenset(slots[final.id]))):
                 self.sim._problem("the stored champion isn't the one who won the final")
             predictions = db.get_all_predictions(conn, self.tournament_id)
         finally:
@@ -415,7 +462,7 @@ class TournamentRun:
                 elif picks[match.id] not in resolve_slot(match, matches_by_id, picks.get, feeders):
                     self.sim._problem(f"user {user_id} picked a team that isn't in match {match.id} of their own bracket")
         expected = {
-            user_id: sum(2 ** (matches_by_id[m].played_round - 1) for m, team in picks.items() if self.truth.get(m) == team)
+            user_id: sum(2 ** (matches_by_id[m].played_round - 1) for m, team in picks.items() if results.get(m) == team)
             for user_id, picks in predictions.items()
         }
         actual = {score.user_id: score.points for score in scores}
@@ -457,6 +504,8 @@ async def _play_scenario(scenario: Scenario, rng: random.Random) -> Simulation:
         if scenario.duplicate_names and len(players) > 1:
             players[1].user.display_name = players[0].user.display_name
         run = TournamentRun(sim, scenario, rng, organizer, players)
+        if scenario.co_organizer:
+            run.co_organizer = Organizer(sim.add_user(2, "Co-organizer", organizer=True), scenario.organizer)
         await run.play()
         run.check_final_state()
     return sim
