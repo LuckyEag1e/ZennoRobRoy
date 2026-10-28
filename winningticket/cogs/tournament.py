@@ -1,14 +1,14 @@
 from __future__ import annotations
 
+import logging
 import sqlite3
 
 import discord
 from discord import app_commands
-from discord.ext import commands
+from discord.ext import commands, tasks
 
 import db
 from common import (
-    MemberCooldown,
     load_bracket_embed,
     requires_manage_server,
     resolve_emoji,
@@ -19,30 +19,116 @@ from csv_import import CsvValidationError, import_tournament, parse_csv
 from embeds import render_final_results_embed, render_leaderboard_embed
 
 
-# How often one member can put a bracket or leaderboard in the channel.
-PUBLIC_LOOKUP_COOLDOWN_SECONDS = 60
+# A live post further up the channel than this many messages has scrolled out of view,
+# so asking for it posts a fresh one instead of pointing at it.
+LIVE_POST_IN_VIEW = 5
+
+log = logging.getLogger("winningticket")
+
+
+def render_live_post(conn: sqlite3.Connection, tournament: sqlite3.Row, kind: str) -> discord.Embed:
+    """A tournament's bracket or leaderboard as it stands now."""
+    if kind == "bracket":
+        return load_bracket_embed(conn, tournament)
+    return render_leaderboard_embed(tournament["name"], db.load_scores(conn, tournament["id"]))
+
+
+def _jump_url(guild_id: int, channel_id: int, message_id: int) -> str:
+    return f"https://discord.com/channels/{guild_id}/{channel_id}/{message_id}"
 
 
 class TournamentCog(commands.Cog):
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
-        self.public_lookups = MemberCooldown(PUBLIC_LOOKUP_COOLDOWN_SECONDS)
+        # What each live post's message last showed, so the refresh loop only edits ones that
+        # changed. It's by message: a new post can replace the live one mid-refresh, and an
+        # edit to the old message mustn't mark the new one as current.
+        self.last_shown: dict[int, dict] = {}
 
     group = app_commands.Group(
         name="tournament", description="Manage bracket prediction tournaments", guild_only=True
     )
 
-    async def _post_lookup(self, interaction: discord.Interaction, embed: discord.Embed) -> None:
-        """Post a bracket or leaderboard in the channel, where everyone can see it, unless
-        this member posted one in the last minute; then it's shown just to them, so no one
-        can fill the channel with them."""
-        if self.public_lookups.seconds_left(interaction) > 0:
+    async def cog_load(self) -> None:
+        self.refresh_live_posts.start()
+
+    async def cog_unload(self) -> None:
+        self.refresh_live_posts.cancel()
+
+    # Every change to a tournament shows up in its live posts within a few seconds, whatever
+    # caused it, so nothing that changes results, names or status needs to remember to refresh them.
+    @tasks.loop(seconds=5)
+    async def refresh_live_posts(self) -> None:
+        try:
+            conn = db.get_connection()
+            try:
+                for live in db.get_live_posts(conn):
+                    try:
+                        await self._refresh(conn, live)
+                    except Exception:
+                        log.exception("Couldn't refresh the %s post for tournament %s", live["kind"], live["tournament_id"])
+            finally:
+                conn.close()
+        except Exception:
+            log.exception("Couldn't refresh live posts")
+
+    @refresh_live_posts.before_loop
+    async def _wait_until_ready(self) -> None:
+        await self.bot.wait_until_ready()
+
+    async def _refresh(self, conn: sqlite3.Connection, live: sqlite3.Row) -> None:
+        tournament = db.get_tournament(conn, live["tournament_id"])
+        message_id = live["message_id"]
+        shown = render_live_post(conn, tournament, live["kind"])
+        channel = self.bot.get_channel(live["channel_id"])
+        if self.last_shown.get(message_id) != shown.to_dict() and channel is not None:
+            try:
+                await channel.get_partial_message(message_id).edit(embed=shown)
+                self.last_shown[message_id] = shown.to_dict()
+            except discord.NotFound:
+                # Deleted by someone; the next request posts a new one.
+                self._forget(conn, live)
+                return
+        if tournament["status"] == "concluded":
+            # Its final state is shown; nothing will change it again.
+            self._forget(conn, live)
+
+    def _forget(self, conn: sqlite3.Connection, live: sqlite3.Row) -> None:
+        # Only if it's still the live post: a newer one may have replaced it meanwhile.
+        current = db.get_live_post(conn, live["tournament_id"], live["kind"])
+        if current is not None and current["message_id"] == live["message_id"]:
+            db.delete_live_post(conn, live["tournament_id"], live["kind"])
+        self.last_shown.pop(live["message_id"], None)
+
+    async def _show_live_post(self, interaction: discord.Interaction, conn: sqlite3.Connection,
+                              tournament: sqlite3.Row, kind: str) -> None:
+        """Point the member at the tournament's live bracket or leaderboard if it's still in
+        view in this channel, privately, so the channel doesn't fill up with copies.
+        Otherwise post a fresh one, which becomes the live post."""
+        live = db.get_live_post(conn, tournament["id"], kind)
+        if live is not None and await self._in_view(interaction.channel, live):
+            url = _jump_url(interaction.guild_id, live["channel_id"], live["message_id"])
             await interaction.response.send_message(
-                "Shown just to you, since you posted one in the channel a moment ago.", embed=embed, ephemeral=True
+                f"The {kind} is just above, and it's kept up to date: {url}", ephemeral=True
             )
             return
-        self.public_lookups.record(interaction)
+        embed = render_live_post(conn, tournament, kind)
         await interaction.response.send_message(embed=embed)
+        message = await interaction.original_response()
+        db.set_live_post(conn, tournament["id"], kind, interaction.channel_id, message.id)
+        self.last_shown[message.id] = embed.to_dict()
+
+    @staticmethod
+    async def _in_view(channel, live: sqlite3.Row) -> bool:
+        if channel is None or channel.id != live["channel_id"]:
+            return False
+        try:
+            async for message in channel.history(limit=LIVE_POST_IN_VIEW):
+                if message.id == live["message_id"]:
+                    return True
+        except discord.HTTPException:
+            pass  # e.g. no permission to read history; a fresh post is the safe answer
+        return False
 
     @staticmethod
     async def _resolve_for_next_status(interaction: discord.Interaction, conn: sqlite3.Connection,
@@ -167,7 +253,7 @@ class TournamentCog(commands.Cog):
             tournament = await resolve_tournament(interaction, conn, name)
             if tournament is None:
                 return
-            await self._post_lookup(interaction, load_bracket_embed(conn, tournament))
+            await self._show_live_post(interaction, conn, tournament, "bracket")
         finally:
             conn.close()
 
@@ -180,7 +266,7 @@ class TournamentCog(commands.Cog):
             tournament = await resolve_tournament(interaction, conn, name)
             if tournament is None:
                 return
-            await self._post_lookup(interaction, render_leaderboard_embed(name, db.load_scores(conn, tournament["id"])))
+            await self._show_live_post(interaction, conn, tournament, "leaderboard")
         finally:
             conn.close()
 

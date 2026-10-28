@@ -88,6 +88,10 @@ Everyone:
 - `/tournament bracket name:<name>` — see the real bracket's progress
 - `/tournament leaderboard name:<name>` — see standings
 
+  Both keep one post per tournament in the channel and update it as results come
+  in. Asking again while it's still in view gets a private link to it instead of
+  another post.
+
 ## Local CLI (no Discord needed)
 
 `cli.py` is a terminal REPL that drives the exact same `db.py`/`bracket.py`/`csv_import.py`

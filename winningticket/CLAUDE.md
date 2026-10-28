@@ -45,6 +45,7 @@ Concepts that span several files:
 - **Bans** are checked by `common.turn_away_if_banned`: `bot.WinningTicketTree` runs it before every slash command and autocomplete, and every button view and form runs it through its `BotView`/`BotModal` base class, so a ban also stops views already open. New views and forms must subclass those. The CLI checks in `onecmd`.
 - **Feedback stays anonymous:** the `feedback` table has no user column and stores only the date. Keep it that way; the `/feedback` cooldown (`FeedbackCooldown`) is the only thing that knows who sent what, and it lives in memory.
 - **Select menus** hold at most 25 options, so match choices go through `common.MatchPicker`, which pages.
+- **Live posts:** `/tournament bracket` and `/tournament leaderboard` keep one post per tournament in the channel (`live_posts` table). A loop in `cogs/tournament.py` re-renders each every 5 seconds and edits it when it changed, so nothing that changes results, names or status has to refresh it. Asking again while the post is among the channel's last few messages gets a private link to it instead of a new post. The loop remembers what it showed per message, not per tournament, because a new post can replace the live one mid-refresh.
 - **Menus go out of date:** a menu can sit open while someone else changes the bracket, so anything picked from one is checked against `db.match_now` (and `common.outdated_pick_message`) right before it's saved, with no `await` in between.
 
 ## Deployment

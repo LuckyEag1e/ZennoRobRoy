@@ -130,6 +130,16 @@ CREATE TABLE IF NOT EXISTS predictions (
 CREATE INDEX IF NOT EXISTS idx_predictions_user ON predictions(tournament_id, user_id);
 CREATE INDEX IF NOT EXISTS idx_predictions_match ON predictions(match_id);
 
+-- The latest bracket or leaderboard posted in a channel for each tournament, which the
+-- bot keeps up to date so people can be pointed at it instead of getting a new post.
+CREATE TABLE IF NOT EXISTS live_posts (
+    tournament_id   INTEGER NOT NULL REFERENCES tournaments(id) ON DELETE CASCADE,
+    kind            TEXT NOT NULL CHECK (kind IN ('bracket', 'leaderboard')),
+    channel_id      INTEGER NOT NULL,
+    message_id      INTEGER NOT NULL,
+    PRIMARY KEY (tournament_id, kind)
+);
+
 -- Users an admin has blocked from using the bot in a server.
 CREATE TABLE IF NOT EXISTS bans (
     guild_id    INTEGER NOT NULL,
@@ -582,6 +592,33 @@ def clear_user_predictions(conn: sqlite3.Connection, tournament_id: int, user_id
         "DELETE FROM predictions WHERE tournament_id = ? AND user_id = ?",
         (tournament_id, user_id),
     )
+    conn.commit()
+
+
+# -- live posts -------------------------------------------------------------------
+
+def set_live_post(conn: sqlite3.Connection, tournament_id: int, kind: str, channel_id: int, message_id: int) -> None:
+    conn.execute(
+        """INSERT INTO live_posts (tournament_id, kind, channel_id, message_id) VALUES (?, ?, ?, ?)
+           ON CONFLICT(tournament_id, kind) DO UPDATE SET
+               channel_id = excluded.channel_id, message_id = excluded.message_id""",
+        (tournament_id, kind, channel_id, message_id),
+    )
+    conn.commit()
+
+
+def get_live_post(conn: sqlite3.Connection, tournament_id: int, kind: str) -> sqlite3.Row | None:
+    return conn.execute(
+        "SELECT * FROM live_posts WHERE tournament_id = ? AND kind = ?", (tournament_id, kind)
+    ).fetchone()
+
+
+def get_live_posts(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    return conn.execute("SELECT * FROM live_posts").fetchall()
+
+
+def delete_live_post(conn: sqlite3.Connection, tournament_id: int, kind: str) -> None:
+    conn.execute("DELETE FROM live_posts WHERE tournament_id = ? AND kind = ?", (tournament_id, kind))
     conn.commit()
 
 
