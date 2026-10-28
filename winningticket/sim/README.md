@@ -118,8 +118,12 @@ own lines, so they never mix.
   through `/admin setresult`'s confirmation. The check wraps `db.record_result` for the run, so
   it fires at the moment of writing and can't be blamed on another step running at once.
 - **Pointers to posts out of view:** a private "it's just above" link from `/tournament
-  bracket` or `/tournament leaderboard` that points at a post that wasn't in view when the
-  member asked.
+  bracket` or `/tournament leaderboard` that points at a post that wasn't in view, either when
+  the member asked or when the reply reached them, or that was deleted before the bot started
+  answering. A post replaced while the answer is on its way doesn't count, since no bot can
+  prevent that. Linking a post that another request had already replaced, before it got around
+  to deleting it, looks the same from Discord's side, so `tests/test_live_posts.py` covers that
+  race instead.
 - **Channel noise:** a member's burst of commands putting more than 2 new public posts in the
   channel (the `spam` scenario).
 - **Bans on open views:** a member banned while their feedback form or stats menu is open must

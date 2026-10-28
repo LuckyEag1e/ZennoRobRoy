@@ -150,6 +150,9 @@ class FakeResponse:
 
     async def send_message(self, content: Optional[str] = None, *, embed: Optional[discord.Embed] = None,
                            view: Optional[discord.ui.View] = None, ephemeral: bool = False) -> None:
+        # What was gone when the bot started answering. Anything deleted while the answer is
+        # on its way is news the bot couldn't have had.
+        self._interaction.deleted_before_answer = {m.id for m in self._interaction.channel.messages if m.deleted}
         await self._interaction.channel.network()
         self._answer("message")
         interaction = self._interaction
@@ -231,6 +234,7 @@ class FakeInteraction:
         # How many messages the channel had when this interaction began, for checks about
         # what the member could see at that moment.
         self.messages_before = len(channel.messages)
+        self.deleted_before_answer: set[int] = set()
 
     @property
     def permissions(self) -> FakePermissions:

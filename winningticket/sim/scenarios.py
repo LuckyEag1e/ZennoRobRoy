@@ -226,13 +226,17 @@ class TournamentRun:
         message_id = int(pointer.group(1))
         # Messages that arrive while the bot is answering can push the post up a little, and
         # someone else's request can replace it with a newer one. Either is fine: the post
-        # has to be in view when they asked or when the reply reached them.
+        # has to be in view when they asked or when the reply reached them. It mustn't have
+        # been deleted before the bot started answering, though being replaced while the
+        # answer is on its way is something no bot can prevent.
         messages = self.sim.channel.messages
         reply_index = messages.index(reply.sent) if reply.sent in messages else len(messages)
-        in_view = {
-            m.id for window in (messages[:reply.messages_before], messages[:reply_index])
-            for m in [m for m in window[::-1] if m.public and not m.deleted][:LIVE_POST_IN_VIEW]
-        }
+
+        def showing(window: list) -> list[int]:
+            visible = [m.id for m in window[::-1] if m.public and m.id not in reply.deleted_before_answer]
+            return visible[:LIVE_POST_IN_VIEW]
+
+        in_view = set(showing(messages[:reply.messages_before])) | set(showing(messages[:reply_index]))
         if message_id not in in_view:
             self.sim._problem(f"the bot pointed {player.user.display_name} at a {kind} post that isn't in view")
 
