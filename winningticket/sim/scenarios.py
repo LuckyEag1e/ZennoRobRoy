@@ -23,6 +23,7 @@ from sim.actors import (
     CHAOTIC,
     DILIGENT,
     SLOPPY,
+    SPAMMER,
     Competence,
     Organizer,
     OrganizerStyle,
@@ -34,6 +35,10 @@ from sim.discord_fakes import FakeAttachment
 from sim.harness import GUILD_ID, Simulation
 
 CONFIRM_BRACKET = "Confirm & Save Bracket"
+# A spammer's burst: about as many commands as one person can fire before Discord slows them.
+SPAM_BURST = 10
+# The most new public messages one member should be able to cause in a burst; more fills the channel.
+NOISE_LIMIT = 2
 START_OVER = "Start Over"
 NAMES = [
     "Ace", "Blaze", "Comet", "Dash", "Echo", "Flint", "Gale", "Haze", "Iris", "Jinx", "Kite", "Lumen", "Mist",
@@ -68,6 +73,8 @@ SCENARIOS = {
                  crowded=True, simultaneous=True, co_organizer=True),
         Scenario("large", "40 players and 3 guests at once, for a 64-line bracket and long menus.",
                  ((DILIGENT, 10), (CASUAL, 25), (CHAOTIC, 5)), CAREFUL, guests=3, turns_per_stage=2, crowded=True, simultaneous=True),
+        Scenario("spam", "Ordinary players at once, plus one member firing public-posting commands as fast as they can.",
+                 ((CASUAL, 6), (SPAMMER, 1)), CAREFUL, guests=1, turns_per_stage=2, crowded=True, simultaneous=True),
         Scenario("csv", "8 named teams uploaded as a CSV, with two organizers recording results together.",
                  ((DILIGENT, 3), (CASUAL, 3), (CHAOTIC, 2)), SLOPPY, guests=8, entry="csv", co_organizer=True),
     ]
@@ -198,6 +205,22 @@ class TournamentRun:
         if menu is not None:
             await self.sim.choose(player.user, message, self.rng.choice(menu.options).value)
 
+    async def spam_burst(self, player: Player) -> None:
+        """Fire public-posting commands as fast as possible, then check how much of the
+        channel it took over."""
+        before = self.sim.public_posts[player.user.id]
+        for _ in range(SPAM_BURST):
+            if self.status() == "registration":
+                command = "unregister" if self.is_registered(player) else "register"
+                await self.sim.run(player.user, command, tournament=self.name)
+            else:
+                command = self.rng.choice(["tournament bracket", "tournament leaderboard"])
+                await self.sim.run(player.user, command, name=self.name)
+        caused = self.sim.public_posts[player.user.id] - before
+        if caused > NOISE_LIMIT:
+            self.sim._problem(f"{player.user.display_name} put {caused} public posts in the channel "
+                              f"with a burst of {SPAM_BURST} commands")
+
     async def send_feedback(self, player: Player) -> None:
         opened = await self.sim.run(player.user, "feedback")
         if opened.response.modal is None:
@@ -281,8 +304,9 @@ class TournamentRun:
     async def _housekeeping(self) -> None:
         """What an organizer does between stages: read and clear feedback, and deal with
         whoever keeps poking at admin commands."""
-        # Stages are hours apart on a real server, so any feedback wait has long run out.
-        self.sim.cogs["FeedbackCog"].cooldown.last_sent.clear()
+        # Stages are hours apart on a real server, so every per-member wait has long run out.
+        self.sim.cogs["FeedbackCog"].cooldown.clear()
+        self.sim.cogs["TournamentCog"].public_lookups.clear()
         org = self.organizer.user
         reply = await self.sim.run(org, "admin feedback")
         newest = reply.sent.embed.fields if reply.sent is not None and reply.sent.embed is not None else []

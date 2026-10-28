@@ -28,6 +28,7 @@ class Competence:
     pokes_admin: float      # tries organizer commands
     feedback: float         # sends feedback (and sometimes a blank form)
     guess_noise: float      # how far off their read of who'll win is, in rating points
+    spam: float = 0.0       # fires a burst of public-posting commands as fast as they can
 
 
 DILIGENT = Competence("diligent", typo=0.0, off_script=0.02, double_click=0.0, abandon=0.0, curiosity=0.3,
@@ -36,6 +37,8 @@ CASUAL = Competence("casual", typo=0.05, off_script=0.1, double_click=0.05, aban
                     skips_predicting=0.2, pokes_admin=0.02, feedback=0.05, guess_noise=350)
 CHAOTIC = Competence("chaotic", typo=0.3, off_script=0.4, double_click=0.3, abandon=0.3, curiosity=0.8,
                      skips_predicting=0.1, pokes_admin=0.25, feedback=0.3, guess_noise=600)
+SPAMMER = Competence("spammer", typo=0.0, off_script=0.0, double_click=0.0, abandon=0.0, curiosity=0.2,
+                     skips_predicting=0.0, pokes_admin=0.0, feedback=0.0, guess_noise=300, spam=1.0)
 
 
 @dataclass(frozen=True)
@@ -78,6 +81,8 @@ class Player:
             await self._poke_admin(run)
         if rng.random() < c.feedback:
             await run.send_feedback(self)
+        if rng.random() < c.spam:
+            await run.spam_burst(self)
 
     async def _registration_turn(self, run: TournamentRun) -> None:
         if not run.is_registered(self):
@@ -154,6 +159,6 @@ def entrant_count(run: TournamentRun) -> int:
     conn = db.get_connection()
     try:
         tournament = db.get_tournament_by_name(conn, 1, run.name)
-        return len({e["team_id"] for e in db.get_entrants(conn, tournament["id"])}) if tournament else 0
+        return db.entrant_count(conn, tournament["id"]) if tournament else 0
     finally:
         conn.close()

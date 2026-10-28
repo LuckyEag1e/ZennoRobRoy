@@ -74,7 +74,8 @@ class Issue:
     problem: str
 
     def __str__(self) -> str:
-        return f"step {self.step} ({self.actor}: {self.action}): {self.problem}"
+        where = f"{self.actor}: {self.action}" if self.action else self.actor
+        return f"step {self.step} ({where}): {self.problem}"
 
 
 @dataclass
@@ -86,6 +87,7 @@ class Step:
     number: int
     actor: str
     action: str
+    user_id: Optional[int] = None
     lines: list[str] = field(default_factory=list)
     messages: list[FakeMessage] = field(default_factory=list)
 
@@ -114,7 +116,10 @@ class Simulation:
     # When set, every Discord call also pauses for the network, so the bot handles several
     # interactions at once and they interleave inside its own code, not only between steps.
     simultaneous: bool = False
+    # How many new public messages each member's actions caused, by user id.
+    public_posts: Counter = field(default_factory=Counter)
     _undo: list = field(default_factory=list)  # (module, attribute, original value) to put back in close()
+    _seen_messages: set = field(default_factory=set)
 
     @classmethod
     async def create(cls, db_path: Path) -> Simulation:
@@ -329,7 +334,8 @@ class Simulation:
 
     def _begin(self, user: Optional[FakeUser], action: str) -> None:
         self.step += 1
-        step = Step(self.step, user.display_name if user is not None else "(bot)", action)
+        step = Step(self.step, user.display_name if user is not None else "(bot)", action,
+                    user.id if user is not None else None)
         step.lines.append(f"{step.number:4} {step.actor}: {action}")
         _current_step.set(step)
 
@@ -350,6 +356,10 @@ class Simulation:
         step = _current_step.get()
         if step is not None and message not in step.messages:
             step.messages.append(message)
+        if message.id not in self._seen_messages:
+            self._seen_messages.add(message.id)
+            if message.public and step is not None and step.user_id is not None:
+                self.public_posts[step.user_id] += 1
         for problem in checks.message_problems(message):
             self._problem(f"{problem}: {_summary(message)}")
         for problem in checks.organizer_commands_named(message, self.organizer_commands):
