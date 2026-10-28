@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import sqlite3
+import time
 from dataclasses import dataclass
 from typing import Awaitable, Callable
 
@@ -113,9 +114,10 @@ async def team_name_autocomplete(interaction: discord.Interaction, current: str)
     ][:MAX_SELECT_OPTIONS]
 
 
-def signups_message(tournament: sqlite3.Row) -> str:
+def signups_message(tournament: sqlite3.Row, entrants: int) -> str:
     """The sign-ups announcement as the tournament now stands. It's posted when sign-ups
-    open and rewritten when they close, so its countdown doesn't keep running."""
+    open and rewritten as people sign up and when sign-ups close, so the channel gets one
+    message that stays current instead of a post per sign-up."""
     name = tournament["name"]
     if tournament["status"] != "registration":
         return f"📝 Sign-ups for **{name}** are closed."
@@ -124,7 +126,8 @@ def signups_message(tournament: sqlite3.Row) -> str:
         f"Sign-ups close <t:{int(db.from_db_time(closes_at).timestamp())}:R>."
         if closes_at is not None else "An organizer will close sign-ups."
     )
-    return f"📝 Sign-ups are open for **{name}**! Run `/register tournament:{name}` to enter. {closing}"
+    return (f"📝 Sign-ups are open for **{name}**! Run `/register tournament:{name}` to enter. {closing} "
+            f"**{entrants}** entered so far.")
 
 
 async def edit_signups_message(client: discord.Client, tournament: sqlite3.Row, content: str) -> None:
@@ -146,6 +149,27 @@ def load_bracket_embed(conn: sqlite3.Connection, tournament: sqlite3.Row) -> dis
     return render_bracket_embed(
         tournament["name"], tournament["status"], matches_by_id, feeders, slots, results_by_match, teams_by_id
     )
+
+
+class MemberCooldown:
+    """When each member last did something, kept only in memory, for limits like "once a
+    minute". Nothing is written down, so it can't be traced back to anyone later."""
+
+    def __init__(self, seconds: float) -> None:
+        self.seconds = seconds
+        self._last: dict[tuple[int, int], float] = {}
+
+    def seconds_left(self, interaction: discord.Interaction) -> float:
+        last = self._last.get((interaction.guild_id, interaction.user.id), float("-inf"))
+        return last + self.seconds - time.monotonic()
+
+    def record(self, interaction: discord.Interaction) -> None:
+        now = time.monotonic()
+        self._last = {key: when for key, when in self._last.items() if now - when < self.seconds}
+        self._last[(interaction.guild_id, interaction.user.id)] = now
+
+    def clear(self) -> None:
+        self._last.clear()
 
 
 async def turn_away_if_banned(interaction: discord.Interaction) -> bool:

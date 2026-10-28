@@ -8,6 +8,7 @@ from discord.ext import commands
 
 import db
 from common import (
+    MemberCooldown,
     load_bracket_embed,
     requires_manage_server,
     resolve_emoji,
@@ -18,13 +19,30 @@ from csv_import import CsvValidationError, import_tournament, parse_csv
 from embeds import render_final_results_embed, render_leaderboard_embed
 
 
+# How often one member can put a bracket or leaderboard in the channel.
+PUBLIC_LOOKUP_COOLDOWN_SECONDS = 60
+
+
 class TournamentCog(commands.Cog):
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
+        self.public_lookups = MemberCooldown(PUBLIC_LOOKUP_COOLDOWN_SECONDS)
 
     group = app_commands.Group(
         name="tournament", description="Manage bracket prediction tournaments", guild_only=True
     )
+
+    async def _post_lookup(self, interaction: discord.Interaction, embed: discord.Embed) -> None:
+        """Post a bracket or leaderboard in the channel, where everyone can see it, unless
+        this member posted one in the last minute; then it's shown just to them, so no one
+        can fill the channel with them."""
+        if self.public_lookups.seconds_left(interaction) > 0:
+            await interaction.response.send_message(
+                "Shown just to you, since you posted one in the channel a moment ago.", embed=embed, ephemeral=True
+            )
+            return
+        self.public_lookups.record(interaction)
+        await interaction.response.send_message(embed=embed)
 
     @staticmethod
     async def _resolve_for_next_status(interaction: discord.Interaction, conn: sqlite3.Connection,
@@ -149,7 +167,7 @@ class TournamentCog(commands.Cog):
             tournament = await resolve_tournament(interaction, conn, name)
             if tournament is None:
                 return
-            await interaction.response.send_message(embed=load_bracket_embed(conn, tournament))
+            await self._post_lookup(interaction, load_bracket_embed(conn, tournament))
         finally:
             conn.close()
 
@@ -162,8 +180,7 @@ class TournamentCog(commands.Cog):
             tournament = await resolve_tournament(interaction, conn, name)
             if tournament is None:
                 return
-            embed = render_leaderboard_embed(name, db.load_scores(conn, tournament["id"]))
-            await interaction.response.send_message(embed=embed)
+            await self._post_lookup(interaction, render_leaderboard_embed(name, db.load_scores(conn, tournament["id"])))
         finally:
             conn.close()
 

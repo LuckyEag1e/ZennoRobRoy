@@ -354,6 +354,10 @@ def get_entrant_team_id(conn: sqlite3.Connection, tournament_id: int, user_id: i
     return row["team_id"] if row is not None else None
 
 
+def entrant_count(conn: sqlite3.Connection, tournament_id: int) -> int:
+    return conn.execute("SELECT COUNT(*) FROM teams WHERE tournament_id = ?", (tournament_id,)).fetchone()[0]
+
+
 def get_entrants(conn: sqlite3.Connection, tournament_id: int) -> list[sqlite3.Row]:
     """The tournament's teams with their members' user ids, in sign-up order. A team with
     no Discord account behind it has one row, with user_id None."""
