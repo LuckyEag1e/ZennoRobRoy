@@ -65,7 +65,7 @@ def _forbidden():
     return discord.Forbidden(response, "Missing Permissions")
 
 
-def test_a_replaced_post_points_at_the_new_one_and_is_forgotten(world):
+def test_a_replaced_post_is_deleted_and_forgotten(world):
     sim, organizer, player, old = world
 
     async def play():
@@ -75,8 +75,7 @@ def test_a_replaced_post_points_at_the_new_one_and_is_forgotten(world):
 
     new = asyncio.run(play())
     assert new is not old and new.embed is not None
-    assert "moved to a newer post" in old.content and old.embed is None
-    assert str(new.id) in old.content
+    assert old.deleted
     assert old.id not in _cog(sim).last_shown
     assert [live["message_id"] for live in _live_posts(sim)] == [new.id]
 
@@ -128,7 +127,7 @@ def test_an_idle_refresh_does_no_work(world, monkeypatch):
 
 def test_a_post_retired_mid_refresh_stays_retired(world):
     """A refresh pass and a member's request that replaces the live post, run at the same
-    instant across many interleavings: the old post must end as just the link."""
+    instant across many interleavings: the old post must end up deleted."""
     sim, organizer, player, first = world
     sim.simultaneous = True
     cog = _cog(sim)
@@ -148,15 +147,14 @@ def test_a_post_retired_mid_refresh_stays_retired(world):
     for seed in range(30):
         asyncio.run(round_of(seed))
         live_ids = {live["message_id"] for live in _live_posts(sim)}
-        for message in sim.channel.messages:
-            if message.content and "moved to a newer post" in message.content:
-                assert message.embed is None, f"seed {seed}: a retired post got its embed back"
-        assert set(cog.last_shown) <= live_ids, f"seed {seed}: a retired post is still remembered"
+        showing = [m.id for m in sim.channel.messages if m.public and not m.deleted and m.embed is not None]
+        assert set(showing) == live_ids, f"seed {seed}: a replaced post is still in the channel"
+        assert set(cog.last_shown) <= live_ids, f"seed {seed}: a replaced post is still remembered"
 
 
 def test_two_members_asking_at_once_leave_one_live_post(world):
     """Two members ask for the bracket at the same instant with it out of view: both may
-    post a copy, but every copy except the live one must end as a link to it."""
+    post a copy, but every copy except the live one must end up deleted."""
     sim, organizer, player, first = world
     sim.simultaneous = True
     other = sim.add_user(3, "Other player")
@@ -171,5 +169,5 @@ def test_two_members_asking_at_once_leave_one_live_post(world):
         asyncio.run(round_of(seed))
         [live] = [row["message_id"] for row in _live_posts(sim) if row["kind"] == "bracket"]
         still_showing = [m.id for m in sim.channel.messages
-                         if m.public and m.embed is not None and m.embed.title.startswith("Bracket")]
+                         if m.public and not m.deleted and m.embed is not None and m.embed.title.startswith("Bracket")]
         assert still_showing == [live], f"seed {seed}: copies left showing the bracket: {still_showing}"

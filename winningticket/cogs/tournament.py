@@ -121,13 +121,10 @@ class TournamentCog(commands.Cog):
             except discord.HTTPException:
                 log.warning("Couldn't update the %s post for tournament %s yet", live["kind"], live["tournament_id"])
                 return False
-            replacement = db.get_live_post(conn, live["tournament_id"], live["kind"])
-            if replacement is None or replacement["message_id"] != message_id:
-                # Replaced while the edit was on its way. Whichever edit Discord applied
-                # last, put the link back so the old post ends as the link.
-                if replacement is not None:
-                    await self._retire(live, live["kind"], _jump_url(tournament["guild_id"], replacement["channel_id"],
-                                                                     replacement["message_id"]))
+            if not self._still_live(conn, live):
+                # Replaced while the edit was on its way, and its replacement may have deleted
+                # it before or after the edit landed; deleting again makes sure it's gone.
+                await self._retire(live)
                 return True
             self.last_shown[message_id] = shown
         if tournament["status"] == "concluded":
@@ -167,21 +164,18 @@ class TournamentCog(commands.Cog):
         db.set_live_post(conn, tournament["id"], kind, interaction.channel_id, message.id)
         self.last_shown[message.id] = embed.to_dict()
         if previous is not None:
-            await self._retire(previous, kind, _jump_url(interaction.guild_id, interaction.channel_id, message.id))
+            await self._retire(previous)
 
-    async def _retire(self, old: sqlite3.Row, kind: str, new_url: str) -> None:
-        """Turn a replaced live post into a pointer to the new one, so it doesn't sit in the
-        channel showing results that will never update again."""
+    async def _retire(self, old: sqlite3.Row) -> None:
+        """Delete a replaced live post, so the channel only ever holds the current one."""
         self.last_shown.pop(old["message_id"], None)
         channel = self.bot.get_channel(old["channel_id"])
         if channel is None:
             return
         try:
-            await channel.get_partial_message(old["message_id"]).edit(
-                content=f"This {kind} has moved to a newer post: {new_url}", embed=None
-            )
+            await channel.get_partial_message(old["message_id"]).delete()
         except discord.HTTPException:
-            pass  # deleted or out of reach; nothing else to tidy
+            pass  # already deleted, or out of reach; nothing else to tidy
 
     @staticmethod
     async def _in_view(channel, live: sqlite3.Row) -> bool:
