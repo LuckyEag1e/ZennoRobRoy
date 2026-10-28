@@ -15,11 +15,13 @@ from bracket import (
     assign_played_rounds,
     build_feeder_index,
     compute_leaderboard,
+    decided_matches,
     final_match,
     podium,
     resolve_slot,
     stale_results,
 )
+from ratings import PlayedMatch
 
 DB_PATH = Path(__file__).parent / "data" / "tourney.db"
 
@@ -34,6 +36,8 @@ STATUSES = ("registration", "setup", "predictions_open", "in_progress", "complet
 # way than closing registration would leave a tournament with no bracket.
 FORCEABLE_STATUSES = tuple(status for status in STATUSES if status not in ("registration", "concluded"))
 _STATUS_SQL_LIST = ", ".join(f"'{status}'" for status in STATUSES)
+# How closing registration orders the entrants: by Elo from past tournaments, or at random.
+SEEDING_MODES = ("auto", "random")
 
 
 def to_db_time(moment: datetime) -> str:
@@ -64,7 +68,8 @@ CREATE TABLE IF NOT EXISTS {table_name} (
     channel_id  INTEGER,
     registration_closes_at TEXT,
     -- The sign-ups announcement, edited once sign-ups close so its countdown stops.
-    announcement_message_id INTEGER
+    announcement_message_id INTEGER,
+    seeding_mode TEXT NOT NULL CHECK (seeding_mode IN ('auto', 'random')) DEFAULT 'random'
 );
 """
 
@@ -174,7 +179,7 @@ def get_connection(path: Path | None = None) -> sqlite3.Connection:
 
 
 # Bump when an older database needs migrating, and add the migration to init_db().
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 
 def init_db(conn: sqlite3.Connection) -> None:
@@ -240,13 +245,14 @@ def create_tournament(conn: sqlite3.Connection, guild_id: int, name: str, create
 
 
 def open_registration(conn: sqlite3.Connection, guild_id: int, name: str, created_by: int,
-                      channel_id: int | None, closes_at: str | None) -> int:
+                      channel_id: int | None, closes_at: str | None, seeding_mode: str = "auto") -> int:
     """Create a tournament that takes sign-ups. `closes_at` is a UTC time in the same
     format as created_at, or None to close it by hand."""
     cur = conn.execute(
-        """INSERT INTO tournaments (guild_id, name, created_by, status, channel_id, registration_closes_at)
-           VALUES (?, ?, ?, 'registration', ?, ?)""",
-        (guild_id, name, created_by, channel_id, closes_at),
+        """INSERT INTO tournaments (guild_id, name, created_by, status, channel_id, registration_closes_at,
+                                    seeding_mode)
+           VALUES (?, ?, ?, 'registration', ?, ?, ?)""",
+        (guild_id, name, created_by, channel_id, closes_at, seeding_mode),
     )
     conn.commit()
     return cur.lastrowid
@@ -275,6 +281,21 @@ def has_concluded_tournament(conn: sqlite3.Connection, guild_id: int, name: str)
 
 def get_tournament(conn: sqlite3.Connection, tournament_id: int) -> sqlite3.Row:
     return conn.execute("SELECT * FROM tournaments WHERE id = ?", (tournament_id,)).fetchone()
+
+
+def get_concluded_tournaments(conn: sqlite3.Connection, guild_id: int) -> list[sqlite3.Row]:
+    """The server's concluded tournaments, newest first. Their names can repeat, so
+    commands that work on them pick one by id."""
+    return conn.execute(
+        "SELECT * FROM tournaments WHERE guild_id = ? AND status = 'concluded' ORDER BY created_at DESC, id DESC",
+        (guild_id,),
+    ).fetchall()
+
+
+def get_concluded_tournament(conn: sqlite3.Connection, guild_id: int, tournament_id: int) -> sqlite3.Row | None:
+    return conn.execute(
+        "SELECT * FROM tournaments WHERE id = ? AND guild_id = ? AND status = 'concluded'", (tournament_id, guild_id)
+    ).fetchone()
 
 
 def get_tournament_names(conn: sqlite3.Connection, guild_id: int, status: str | None = None) -> list[str]:
@@ -389,6 +410,36 @@ def get_entrants(conn: sqlite3.Connection, tournament_id: int) -> list[sqlite3.R
     ).fetchall()
 
 
+def get_members_by_team(conn: sqlite3.Connection, tournament_id: int) -> dict[int, list[int]]:
+    """Each team's Discord users, an empty list for a team with no account behind it."""
+    members: dict[int, list[int]] = {}
+    for entrant in get_entrants(conn, tournament_id):
+        members.setdefault(entrant["team_id"], [])
+        if entrant["user_id"] is not None:
+            members[entrant["team_id"]].append(entrant["user_id"])
+    return members
+
+
+def link_team_member(conn: sqlite3.Connection, tournament_id: int, team_id: int, user_id: int) -> bool:
+    """Record that a Discord user played on a team, such as one imported from a CSV before
+    they could be linked. False if they're already on a team in that tournament."""
+    try:
+        with conn:
+            conn.execute(
+                "INSERT INTO team_members (team_id, tournament_id, user_id) VALUES (?, ?, ?)",
+                (team_id, tournament_id, user_id),
+            )
+    except sqlite3.IntegrityError:
+        return False
+    return True
+
+
+def set_team_seeds(conn: sqlite3.Connection, ordered_team_ids: list[int]) -> None:
+    """Number teams 1, 2, 3... in the order given, without committing."""
+    conn.executemany("UPDATE teams SET seed = ? WHERE id = ?",
+                     [(seed, team_id) for seed, team_id in enumerate(ordered_team_ids, start=1)])
+
+
 def delete_team(conn: sqlite3.Connection, team_id: int) -> None:
     conn.execute("DELETE FROM teams WHERE id = ?", (team_id,))
     conn.commit()
@@ -485,6 +536,27 @@ def load_final_results(conn: sqlite3.Connection, tournament_id: int) -> tuple[Po
     results_by_match = get_results(conn, tournament_id)
     scores = compute_leaderboard(matches_by_id, results_by_match, get_all_predictions(conn, tournament_id))
     return podium(matches_by_id, feeders_by_target, results_by_match), teams_by_id, scores
+
+
+def load_match_history(conn: sqlite3.Connection, guild_id: int) -> list[PlayedMatch]:
+    """Every decided game in the server's concluded tournaments, oldest first, as the
+    Discord users on each side. Ratings are worked out from this."""
+    timed_games = []
+    for tournament in get_concluded_tournaments(conn, guild_id):
+        matches_by_id, feeders = _load_matches(conn, tournament["id"])
+        recorded_at = {
+            r["match_id"]: r["recorded_at"] for r in conn.execute(
+                """SELECT mr.match_id, mr.recorded_at FROM match_results mr
+                   JOIN matches m ON m.id = mr.match_id WHERE m.tournament_id = ?""",
+                (tournament["id"],),
+            )
+        }
+        members = get_members_by_team(conn, tournament["id"])
+        for match, winner, loser in decided_matches(matches_by_id, feeders, get_results(conn, tournament["id"])):
+            game = PlayedMatch(tuple(members.get(winner, [])), tuple(members.get(loser, [])))
+            timed_games.append((recorded_at[match.id], game))
+    timed_games.sort(key=lambda timed: timed[0])
+    return [game for _, game in timed_games]
 
 
 # -- results ------------------------------------------------------------------

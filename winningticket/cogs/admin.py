@@ -11,14 +11,17 @@ from common import (
     MatchPicker,
     TournamentSession,
     WinnerPicker,
+    concluded_team_autocomplete,
+    concluded_tournament_autocomplete,
     edit_signups_message,
     outdated_pick_message,
+    resolve_concluded_tournament,
     resolve_tournament,
     team_name_autocomplete,
     tournament_name_autocomplete,
 )
 from embeds import EMBED_DESCRIPTION_LIMIT, mention
-from labels import ban_lines, dropped_results_note, feedback_page, join_within, team_label
+from labels import ban_lines, concluded_label, dropped_results_note, feedback_page, join_within, team_label
 
 STATUS_CHOICES = [app_commands.Choice(name=status, value=status) for status in db.FORCEABLE_STATUSES]
 
@@ -87,6 +90,56 @@ class AdminCog(commands.Cog):
         await interaction.response.send_message(f"🗑️ Deleted tournament **{tournament}** and all its data.", ephemeral=True)
         if tournament_row["status"] == "registration":
             await edit_signups_message(self.bot, tournament_row, f"📝 Sign-ups for **{tournament}** were cancelled.")
+
+    @group.command(name="linkteam", description="Link a team in a concluded tournament to a member, so it counts for their rating")
+    @app_commands.describe(tournament="Concluded tournament", team="Team the member played on", user="Member to link")
+    @app_commands.autocomplete(tournament=concluded_tournament_autocomplete, team=concluded_team_autocomplete)
+    async def linkteam(self, interaction: discord.Interaction, tournament: str, team: str, user: discord.Member) -> None:
+        conn = db.get_connection()
+        try:
+            tournament_row = await resolve_concluded_tournament(interaction, conn, tournament)
+            if tournament_row is None:
+                return
+            label = concluded_label(tournament_row)
+            team_row = db.get_team_by_name(conn, tournament_row["id"], team)
+            if team_row is None:
+                await interaction.response.send_message(f"No team named '{team}' in **{label}**.", ephemeral=True)
+                return
+            linked = db.link_team_member(conn, tournament_row["id"], team_row["id"], user.id)
+        finally:
+            conn.close()
+        if not linked:
+            await interaction.response.send_message(
+                f"{user.mention} is already on a team in **{label}**.", ephemeral=True
+            )
+            return
+        await interaction.response.send_message(
+            f"🔗 Linked {user.mention} to **{team}** in **{label}**. Their games there against other linked members now count for their rating.",
+            ephemeral=True,
+        )
+
+    @group.command(name="removehistory", description="Delete a concluded tournament so it no longer counts for ratings")
+    @app_commands.describe(tournament="Concluded tournament",
+                           confirm_name="Retype the tournament name to confirm deletion")
+    @app_commands.autocomplete(tournament=concluded_tournament_autocomplete)
+    async def removehistory(self, interaction: discord.Interaction, tournament: str, confirm_name: str) -> None:
+        conn = db.get_connection()
+        try:
+            tournament_row = await resolve_concluded_tournament(interaction, conn, tournament)
+            if tournament_row is None:
+                return
+            if confirm_name != tournament_row["name"]:
+                await interaction.response.send_message(
+                    "Confirmation name didn't match. No changes made.", ephemeral=True
+                )
+                return
+            db.delete_tournament(conn, tournament_row["id"])
+        finally:
+            conn.close()
+        await interaction.response.send_message(
+            f"🗑️ Deleted **{concluded_label(tournament_row)}**. Its games no longer count for anyone's rating.",
+            ephemeral=True,
+        )
 
     @group.command(name="editteam", description="Fix a team's name or seed")
     @app_commands.describe(tournament="Tournament name", team="Team to edit", new_name="New name (optional)", new_seed="New seed (optional)")

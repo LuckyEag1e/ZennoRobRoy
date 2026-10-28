@@ -9,6 +9,7 @@ sqlite file (data/cli.db) so it never touches a real bot's data.
 from __future__ import annotations
 
 import cmd
+import re
 import shlex
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -36,7 +37,9 @@ from labels import (
     CURRENT_FEATURES,
     PLANNED_FEATURES,
     ban_lines,
+    concluded_label,
     crowd_verdict,
+    draw_description,
     dropped_results_note,
     entrant_lines,
     feedback_page,
@@ -45,9 +48,11 @@ from labels import (
     pick_share,
     pickem_podium_lines,
     podium_lines,
+    rating_lines,
     score_label,
     team_label,
 )
+from ratings import compute_ratings
 
 CLI_DB_PATH = Path(__file__).parent / "data" / "cli.db"
 GUILD_ID = 1  # single pretend guild for local testing
@@ -58,6 +63,23 @@ ALLOWED_WHEN_BANNED = {"as", "whoami", "help", "exit", "quit", "EOF"}
 def user_label(user_id: int) -> str:
     """How the CLI names a Discord user, standing in for a mention."""
     return f"user {user_id}"
+
+
+def take_option(arg: str, flag: str) -> tuple[str, str | None]:
+    """Remove `flag VALUE` from a command line. Returns the rest of the line and VALUE,
+    which is None when the flag isn't there and "" when it has no value."""
+    found = re.search(rf"(?:^|\s){re.escape(flag)}(?:\s+(\S+))?", arg)
+    if found is None:
+        return arg.strip(), None
+    return (arg[:found.start()] + arg[found.end():]).strip(), found.group(1) or ""
+
+
+def check_seeding(seeding: str | None) -> bool:
+    """False, after saying so, if a --seeding value was given but isn't a seeding mode."""
+    if seeding is not None and seeding not in db.SEEDING_MODES:
+        print(f"--seeding must be one of: {', '.join(db.SEEDING_MODES)}")
+        return False
+    return True
 
 
 class WinningTicketCLI(cmd.Cmd):
@@ -99,7 +121,7 @@ class WinningTicketCLI(cmd.Cmd):
                 # This runs before every command, so a close that keeps failing mustn't take the CLI down with it.
                 print(f"Registration for '{name}' couldn't close automatically: {e!r}")
                 continue
-            print(f"Registration for '{name}' closed automatically; {count} entrants drawn into the bracket.")
+            print(f"Registration for '{name}' closed automatically; {count} entrants {draw_description(tournament['seeding_mode'])}.")
 
     def _update_prompt(self) -> None:
         self.prompt = f"(tourney:{self.user_name}) "
@@ -217,14 +239,16 @@ class WinningTicketCLI(cmd.Cmd):
     # -- registration --------------------------------------------------------
 
     def do_regopen(self, arg: str) -> None:
-        "Create a tournament that takes sign-ups, closing automatically after --closes-in hours if given: regopen <name> [--closes-in HOURS]"
-        name, _, hours = arg.partition("--closes-in")
-        name = name.strip()
+        "Create a tournament that takes sign-ups, closing automatically after --closes-in hours if given: regopen <name> [--closes-in HOURS] [--seeding auto|random]"
+        rest, seeding = take_option(arg, "--seeding")
+        name, hours = take_option(rest, "--closes-in")
         if not name:
-            print("usage: regopen <name> [--closes-in HOURS]")
+            print("usage: regopen <name> [--closes-in HOURS] [--seeding auto|random]")
+            return
+        if not check_seeding(seeding):
             return
         closes_at = None
-        if hours.strip():
+        if hours:
             low, high = tournament_builder.MIN_CLOSES_IN_HOURS, tournament_builder.MAX_CLOSES_IN_HOURS
             try:
                 closes_in = float(hours)
@@ -239,7 +263,7 @@ class WinningTicketCLI(cmd.Cmd):
             print(f"A tournament named '{name}' already exists.")
             return
         db.open_registration(self.conn, GUILD_ID, name, self.user_id, None,
-                             db.to_db_time(closes_at) if closes_at is not None else None)
+                             db.to_db_time(closes_at) if closes_at is not None else None, seeding or "auto")
         closing = f" Sign-ups close at {closes_at:%H:%M:%S} UTC." if closes_at is not None else ""
         print(f"Sign-ups open for '{name}'.{closing} Use 'as' to switch users, then 'register {name}'.")
 
@@ -314,17 +338,35 @@ class WinningTicketCLI(cmd.Cmd):
         print(f"Withdrew {parts[1]}.")
 
     def do_regclose(self, arg: str) -> None:
-        "Close sign-ups and draw the bracket: regclose <name>"
-        tournament = self._require_registration(arg.strip())
+        "Close sign-ups and draw the bracket, optionally overriding how it's seeded: regclose <name> [--seeding auto|random]"
+        name, seeding = take_option(arg, "--seeding")
+        if not check_seeding(seeding):
+            return
+        tournament = self._require_registration(name)
         if tournament is None:
             return
+        seeding = seeding or tournament["seeding_mode"]
         try:
-            count = tournament_builder.close_registration(self.conn, tournament["id"])
+            count = tournament_builder.close_registration(self.conn, tournament["id"], seeding_mode=seeding)
         except BracketError as e:
             print(f"Couldn't close registration: {e}")
             return
-        print(f"Registration closed; {count} entrants drawn into the bracket.\n")
+        print(f"Registration closed; {count} entrants {draw_description(seeding)}.\n")
         self.do_bracket(tournament["name"])
+
+    def do_rating(self, arg: str) -> None:
+        "Show a user's singles and team Elo (yours if no user_id): rating [user_id]"
+        user_id = self.user_id
+        if arg.strip():
+            try:
+                user_id = int(arg)
+            except ValueError:
+                print("user_id must be an integer")
+                return
+        ratings = compute_ratings(db.load_match_history(self.conn, GUILD_ID))
+        print(f"Elo rating: {user_label(user_id)}")
+        for line in rating_lines(user_id, ratings):
+            print(f"  {line.replace('**', '')}")
 
     # -- predictions ---------------------------------------------------------
 
@@ -487,6 +529,42 @@ class WinningTicketCLI(cmd.Cmd):
             return
         db.update_team(self.conn, team_row["id"], new_name, new_seed, seed_given)
         print("Updated.")
+
+    def do_admin_linkteam(self, arg: str) -> None:
+        "Link a team in a concluded tournament to a user, so it counts for their rating: admin_linkteam <name> <team> <user_id>"
+        parts = shlex.split(arg)
+        if len(parts) != 3:
+            print("usage: admin_linkteam <name> <team> <user_id>")
+            return
+        name, team, user_id = parts
+        try:
+            user_id = int(user_id)
+        except ValueError:
+            print("user_id must be an integer")
+            return
+        tournament = self._choose_concluded(name)
+        if tournament is None:
+            return
+        team_row = db.get_team_by_name(self.conn, tournament["id"], team)
+        if team_row is None:
+            print(f"No team named '{team}' in {concluded_label(tournament)}.")
+            return
+        if not db.link_team_member(self.conn, tournament["id"], team_row["id"], user_id):
+            print(f"{user_label(user_id)} is already on a team in {concluded_label(tournament)}.")
+            return
+        print(f"Linked {user_label(user_id)} to {team} in {concluded_label(tournament)}.")
+
+    def do_admin_removehistory(self, arg: str) -> None:
+        "Delete a concluded tournament so it stops counting for ratings (asks you to retype the name): admin_removehistory <name>"
+        name = arg.strip()
+        tournament = self._choose_concluded(name)
+        if tournament is None:
+            return
+        if input(f"Type '{name}' again to confirm permanent deletion: ").strip() != name:
+            print("Confirmation didn't match. Cancelled.")
+            return
+        db.delete_tournament(self.conn, tournament["id"])
+        print(f"Deleted {concluded_label(tournament)}. Its games no longer count for anyone's rating.")
 
     def do_admin_setresult(self, arg: str) -> None:
         "Force/overwrite any known matchup's result: admin_setresult <name>"
@@ -663,6 +741,23 @@ class WinningTicketCLI(cmd.Cmd):
                   f"'entrants' shows who's in, and 'regclose' draws the bracket.")
             return None
         return tournament
+
+    def _choose_concluded(self, name: str):
+        """The concluded tournament called `name`, asking which one if several share it,
+        or None after saying why not."""
+        found = [t for t in db.get_concluded_tournaments(self.conn, GUILD_ID) if t["name"] == name]
+        if not found:
+            print(f"No concluded tournament named '{name}'.")
+            return None
+        if len(found) == 1:
+            return found[0]
+        for number, tournament in enumerate(found, start=1):
+            print(f"[{number}] {concluded_label(tournament)}")
+        choice = input("Which one? ").strip()
+        if not choice.isdigit() or not 1 <= int(choice) <= len(found):
+            print("Invalid choice.")
+            return None
+        return found[int(choice) - 1]
 
     def _choose_match(self, matches: list, slots: dict, teams_by_id: dict, results_by_match: dict | None = None):
         """Print a numbered list of matches and return the one the user picks, or None."""

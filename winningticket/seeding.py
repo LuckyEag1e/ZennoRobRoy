@@ -1,13 +1,15 @@
-"""Turning an ordered list of entrants into round-1 pairs.
+"""Putting entrants in seed order, and turning that order into round-1 pairs.
 
 No discord.py or sqlite3 imports here, like bracket.py, so it can be unit tested on its own.
 """
 
 from __future__ import annotations
 
+import random
 from typing import Optional
 
 from bracket import BracketError
+from ratings import BASE_RATING, Ratings, entrant_rating
 
 
 def bracket_positions(size: int) -> list[int]:
@@ -34,3 +36,25 @@ def seeded_pairs(ordered_team_ids: list[int]) -> list[tuple[Optional[int], Optio
         for seed in bracket_positions(size)
     ]
     return list(zip(lines[::2], lines[1::2]))
+
+
+def place_new_entrants(rated: dict[int, float], unrated: list[int], rng: random.Random) -> list[int]:
+    """Every entrant, best seed first, given the ratings of those who have played before.
+    Where players with no rating yet belong is still up to the club; until it decides,
+    they count as an average player. Equal ratings are put in random order."""
+    rating_of = dict(rated) | {team_id: BASE_RATING for team_id in unrated}
+    tiebreak = {team_id: rng.random() for team_id in sorted(rating_of)}
+    return sorted(rating_of, key=lambda team_id: (-rating_of[team_id], tiebreak[team_id]))
+
+
+def rating_order(members_by_team: dict[int, list[int]], ratings: Ratings, rng: random.Random) -> list[int]:
+    """Teams best seed first by Elo. `members_by_team` lists each team's Discord users,
+    empty for an entrant with no account."""
+    rated, unrated = {}, []
+    for team_id, member_ids in sorted(members_by_team.items()):
+        rating = entrant_rating(member_ids, ratings)
+        if rating is None:
+            unrated.append(team_id)
+        else:
+            rated[team_id] = rating
+    return place_new_entrants(rated, unrated, rng)

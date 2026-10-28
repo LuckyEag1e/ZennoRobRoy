@@ -26,6 +26,7 @@ class HelpCog(commands.Cog):
         embed = _command_list_embed("Player commands", [
             ("/register tournament:<name>", "Sign up for a tournament that's taking entrants (`/unregister` to withdraw)."),
             ("/registration entrants name:<name>", "See who has signed up."),
+            ("/rating [user:<member>]", "See your Elo rating from past tournaments, which decides your seed."),
             ("/predict tournament:<name>", "Fill out your bracket prediction, round by round."),
             ("/mypicks tournament:<name>", "See your saved picks and current score."),
             ("/tournament bracket name:<name>", "See the real tournament bracket's progress."),
@@ -44,7 +45,8 @@ class HelpCog(commands.Cog):
              "Take sign-ups:\n"
              "`/registration open name:<name> closes_in_hours:<hours>`\n"
              "Players enter with `/register` and can see who's in with `/registration entrants`. "
-             "Leave out `closes_in_hours` to close sign-ups by hand. `/registration add` signs up "
+             "Leave out `closes_in_hours` to close sign-ups by hand, and add `seeding:Random draw` "
+             "to skip seeding by rating. `/registration add` signs up "
              "a member for them, or an entrant with no Discord account, and `/registration remove` "
              "withdraws anyone.\n"
              "Or build it from a bracket CSV:\n"
@@ -54,9 +56,11 @@ class HelpCog(commands.Cog):
              "Leave one side blank to give that entrant a bye. A CSV tournament skips step 2."),
             ("2. Close sign-ups",
              "`/registration close name:<name>`\n"
-             "This happens automatically once `closes_in_hours` passes. The entrants are drawn "
-             "into a bracket at random, with byes filling it out, and the bracket is posted "
-             "to the channel where sign-ups opened."),
+             "This happens automatically once `closes_in_hours` passes. Entrants are seeded by "
+             "their Elo rating from past tournaments, and the top seeds get any byes. Players "
+             "who haven't played yet count as average. Give `seeding:` here to override the "
+             "choice made when sign-ups opened. The bracket is posted to the channel where "
+             "sign-ups opened."),
             ("3. Open predictions",
              "`/tournament open name:<name>`\n"
              "Lets players start filling out brackets with `/predict`."),
@@ -76,9 +80,9 @@ class HelpCog(commands.Cog):
             ("7. Conclude it",
              "`/tournament conclude name:<name>`\n"
              "Once the final is recorded, this posts the podium and the top pick'em scorers "
-             "to the channel. The tournament's results are kept, but it's removed from every "
-             "command and its name is free for a new tournament. Only a completed tournament "
-             "can be concluded."),
+             "to the channel. The tournament's results are kept and count toward players' "
+             "ratings, but it's removed from every other command and its name is free for a "
+             "new tournament. Only a completed tournament can be concluded."),
             ("Fixing mistakes",
              "Wrong result, bad team name, etc.? See `/help admin`."),
         ])
@@ -94,6 +98,8 @@ class HelpCog(commands.Cog):
             ("/admin editteam tournament:<name> team:<name>", "Fix a team's name or seed after import."),
             ("/admin clearpredictions tournament:<name> user:<member>", "Wipe one user's saved predictions."),
             ("/admin deletetournament tournament:<name> confirm_name:<name>", "Permanently delete a tournament and all its data."),
+            ("/admin linkteam tournament:<concluded> team:<name> user:<member>", "Link a team in a concluded tournament to the member who played it, so its games count for their rating."),
+            ("/admin removehistory tournament:<concluded> confirm_name:<name>", "Delete a concluded tournament that shouldn't count for ratings, such as a test."),
             ("/admin feedback [page:<n>]", "Read anonymous feedback, newest first. `/admin deletefeedback number:<n>` removes one."),
             ("/admin ban user:<member> [reason:<text>]", "Block a member from using the bot. `/admin unban` undoes it, and `/admin bans` lists everyone banned."),
         ])

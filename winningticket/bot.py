@@ -24,6 +24,7 @@ log = logging.getLogger("winningticket")
 INITIAL_COGS = (
     "cogs.tournament",
     "cogs.registration",
+    "cogs.rating",
     "cogs.predictions",
     "cogs.results",
     "cogs.admin",

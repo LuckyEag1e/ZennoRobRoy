@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Callable, Optional
 
 from bracket import Match, Podium, UserScore, byes_in_round, effective_winner, matches_in_round, rounds, top_places
+from ratings import Ratings
 
 MEDALS = {1: "🥇", 2: "🥈", 3: "🥉"}
 
@@ -84,6 +85,17 @@ def pickem_podium_lines(scores: list[UserScore], player_label: Callable[[int], s
     return [f"{MEDALS[place]} {player_label(s.user_id)} — {score_label(s)}" for place, s in placed]
 
 
+def concluded_label(tournament) -> str:
+    """A concluded tournament's name with when it was created, since a name can be reused."""
+    created = tournament["created_at"]
+    return f"{tournament['name']} ({created[:10]} {created[11:16]} UTC)"
+
+
+def draw_description(seeding_mode: str) -> str:
+    """How closing registration put the entrants into the bracket."""
+    return "seeded into the bracket by rating" if seeding_mode == "auto" else "drawn into the bracket at random"
+
+
 def entrant_lines(entrants: list, player_label: Callable[[int], str]) -> list[str]:
     """A numbered sign-up list, with `player_label` naming each entrant's user by id."""
     lines = []
@@ -91,6 +103,17 @@ def entrant_lines(entrants: list, player_label: Callable[[int], str]) -> list[st
         account = "no Discord account" if entrant["user_id"] is None else player_label(entrant["user_id"])
         lines.append(f"{number}. {entrant['name']} ({account})")
     return lines
+
+
+def rating_lines(user_id: int, ratings: Ratings) -> list[str]:
+    """A member's singles and team Elo, saying which ones they haven't earned by playing yet."""
+    singles = f"Singles: **{ratings.singles_rating(user_id):.0f}**"
+    if user_id not in ratings.singles:
+        singles += " (provisional: no singles games yet)"
+    team = f"Team: **{ratings.team_rating(user_id):.0f}**"
+    if user_id not in ratings.team:
+        team += " (provisional: no team games yet" + (", so it starts from singles)" if user_id in ratings.singles else ")")
+    return [singles, team]
 
 
 def ban_lines(bans: list, player_label: Callable[[int], str]) -> list[str]:
@@ -121,6 +144,8 @@ CURRENT_FEATURES = [
     "picks score more in later rounds, and a live leaderboard tracks everyone.",
     "**Sign-ups:** players register themselves, and the bracket is drawn automatically when "
     "sign-ups close. Organizers can still build a bracket from a CSV instead.",
+    "**Automatic seeding:** each player's Elo rating from past tournaments decides their "
+    "seed, so the strongest players don't meet early. `/rating` shows yours.",
     "**Live results:** organizers record results as games finish, the bot announces who "
     "advances, and anyone can check the bracket or see how the pool picked each matchup.",
     "**Final results:** concluding a tournament posts the podium and the top predictors, "
@@ -128,7 +153,6 @@ CURRENT_FEATURES = [
     "**Anonymous feedback** for the organizers.",
 ]
 PLANNED_FEATURES = [
-    "**Automatic seeding** from each player's past results.",
     "**Self-reported results:** both players confirm a match result, and organizers only "
     "step in when they disagree.",
     "**More formats:** double elimination and round robin.",

@@ -18,6 +18,7 @@ import discord
 import db
 from bracket import bracket_order, final_match, is_bye, resolve_all_slots, resolve_slot
 from labels import team_label
+from ratings import compute_ratings, entrant_rating
 from sim.actors import (
     CAREFUL,
     CASUAL,
@@ -60,6 +61,7 @@ class Scenario:
     crowded: bool = False          # players act at the same time, so their steps interleave
     simultaneous: bool = False     # and the bot handles their interactions at the same instant
     co_organizer: bool = False     # a second organizer records results alongside the first
+    tournaments: int = 1           # played one after another by the same people, so later ones are seeded by rating
     format: str = "single_elim"    # the only format the bot supports so far
 
 
@@ -78,6 +80,8 @@ SCENARIOS = {
                  ((CASUAL, 6), (SPAMMER, 1)), CAREFUL, guests=1, turns_per_stage=2, crowded=True, simultaneous=True),
         Scenario("csv", "8 named teams uploaded as a CSV, with two organizers recording results together.",
                  ((DILIGENT, 3), (CASUAL, 3), (CHAOTIC, 2)), SLOPPY, guests=8, entry="csv", co_organizer=True),
+        Scenario("season", "Two tournaments in a row: a guest joins Discord in between, and the second is seeded by rating.",
+                 ((DILIGENT, 4), (CASUAL, 3), (CHAOTIC, 1)), SLOPPY, guests=2, tournaments=2),
     ]
 }
 
@@ -339,6 +343,7 @@ class TournamentRun:
             self.guest_skill["Guest One"] = self.guest_skill["Guest 1"]
         await self._player_turns()
         await self._close_signups()
+        self.check_seeds()
 
     async def _create_from_csv(self) -> None:
         names = [f"Team {chr(ord('A') + n)}" for n in range(self.scenario.guests)]
@@ -514,6 +519,49 @@ class TournamentRun:
 
     # -- the final comparison ------------------------------------------------------------
 
+    def check_seeds(self) -> None:
+        """A tournament seeded by rating must list its rated entrants best first. Where
+        unrated ones go is a club decision, so they aren't checked."""
+        conn = db.get_connection()
+        try:
+            tournament = db.get_tournament(conn, self.tournament_id)
+            if tournament["status"] == "registration" or tournament["seeding_mode"] != "auto":
+                return
+            ratings = compute_ratings(db.load_match_history(conn, GUILD_ID))
+            members_by_team = db.get_members_by_team(conn, self.tournament_id)
+            seeds = {team_id: team["seed"] for team_id, team in db.get_teams(conn, self.tournament_id).items()}
+        finally:
+            conn.close()
+        if sorted(seeds.values(), key=str) != sorted(range(1, len(seeds) + 1), key=str):
+            self.sim._problem(f"a tournament seeded by rating has seeds {sorted(seeds.values(), key=str)}")
+            return
+        rated = [entrant_rating(members_by_team[team_id], ratings) for team_id in sorted(seeds, key=seeds.get)]
+        rated = [rating for rating in rated if rating is not None]
+        if rated != sorted(rated, reverse=True):
+            self.sim._problem(f"seeds don't follow the entrants' ratings: {[round(r) for r in rated]}")
+
+    async def welcome_a_guest(self) -> Optional[Player]:
+        """After a tournament: a guest who played without a Discord account joins, and the
+        organizer links their old entry to them so it counts for their rating."""
+        org, style = self.organizer.user, self.organizer.style
+        [picked, *_] = await self.sim.autocomplete(org, "admin linkteam", "tournament", self.name[:2])
+        teams = await self.sim.autocomplete(org, "admin linkteam", "team", "Gu", tournament=picked)
+        guest = next((team for team in teams if team in self.guest_skill), None)
+        if guest is None:
+            return None
+        newcomer = Player(self.sim.add_user(900 + len(self.players), f"Newcomer {len(self.players)}"),
+                          CASUAL, self.guest_skill[guest])
+        if self.rng.random() < style.wrong_order:
+            # Starts removing the old tournament by mistake, but mistypes the name, which must stop it.
+            reply = await self.sim.run(org, "admin removehistory", tournament=picked, confirm_name=self.name.lower())
+            if reply.sent is None or "didn't match" not in (reply.sent.content or ""):
+                self.sim._problem("/admin removehistory went ahead without the name retyped exactly")
+        reply = await self.sim.run(org, "admin linkteam", tournament=picked, team=guest, user=newcomer.user)
+        if reply.sent is None or "Linked" not in (reply.sent.content or ""):
+            self.sim._problem(f"/admin linkteam couldn't link {guest}, a guest with no account")
+        await self.sim.run(newcomer.user, "rating")
+        return newcomer
+
     def check_final_state(self) -> None:
         self.sim._begin(None, "final checks")
         try:
@@ -602,8 +650,14 @@ async def _play(sim: Simulation, scenario: Scenario, rng: random.Random) -> None
             players.append(Player(sim.add_user(user_id, name), competence, rng.gauss(1500, 200)))
     if scenario.duplicate_names and len(players) > 1:
         players[1].user.display_name = players[0].user.display_name
-    run = TournamentRun(sim, scenario, rng, organizer, players)
-    if scenario.co_organizer:
-        run.co_organizer = Organizer(sim.add_user(2, "Co-organizer", organizer=True), scenario.organizer)
-    await run.play()
-    run.check_final_state()
+    co_organizer = Organizer(sim.add_user(2, "Co-organizer", organizer=True), scenario.organizer) if scenario.co_organizer else None
+    for number in range(scenario.tournaments):
+        run = TournamentRun(sim, scenario, rng, organizer, players, co_organizer=co_organizer)
+        await run.play()
+        run.check_final_state()
+        if number + 1 < scenario.tournaments:
+            newcomer = await run.welcome_a_guest()
+            if newcomer is not None:
+                players.append(newcomer)
+            for player in players:
+                player.unfinished_bracket = None  # that tournament's /predict steps are gone

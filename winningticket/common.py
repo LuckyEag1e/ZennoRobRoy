@@ -14,7 +14,7 @@ from discord import app_commands
 import db
 from bracket import Match, resolve_all_slots
 from embeds import render_bracket_embed
-from labels import matchup_label, team_label
+from labels import concluded_label, matchup_label, team_label
 
 log = logging.getLogger("winningticket")
 
@@ -112,6 +112,60 @@ async def team_name_autocomplete(interaction: discord.Interaction, current: str)
         for team in teams_by_id.values()
         if current.lower() in team["name"].lower()
     ][:MAX_SELECT_OPTIONS]
+
+
+async def concluded_tournament_autocomplete(
+    interaction: discord.Interaction, current: str
+) -> list[app_commands.Choice[str]]:
+    """Concluded tournaments, which every other command skips. Each is picked by id,
+    because two of them can share a name."""
+    conn = db.get_connection()
+    try:
+        tournaments = db.get_concluded_tournaments(conn, interaction.guild_id)
+    finally:
+        conn.close()
+    return [
+        app_commands.Choice(name=concluded_label(t), value=str(t["id"]))
+        for t in tournaments
+        if current.lower() in t["name"].lower()
+    ][:MAX_SELECT_OPTIONS]
+
+
+async def concluded_team_autocomplete(interaction: discord.Interaction, current: str) -> list[app_commands.Choice[str]]:
+    """Teams in the concluded tournament picked in the same command's `tournament` option."""
+    conn = db.get_connection()
+    try:
+        tournament_row = _picked_concluded_tournament(conn, interaction, getattr(interaction.namespace, "tournament", None))
+        teams_by_id = db.get_teams(conn, tournament_row["id"]) if tournament_row is not None else {}
+    finally:
+        conn.close()
+    return [
+        app_commands.Choice(name=team["name"], value=team["name"])
+        for team in teams_by_id.values()
+        if current.lower() in team["name"].lower()
+    ][:MAX_SELECT_OPTIONS]
+
+
+def _picked_concluded_tournament(conn: sqlite3.Connection, interaction: discord.Interaction,
+                                 picked: str | None) -> sqlite3.Row | None:
+    """The concluded tournament whose id concluded_tournament_autocomplete gave as `picked`."""
+    try:
+        return db.get_concluded_tournament(conn, interaction.guild_id, int(picked))
+    except (TypeError, ValueError):
+        return None
+
+
+async def resolve_concluded_tournament(interaction: discord.Interaction, conn: sqlite3.Connection,
+                                       picked: str) -> sqlite3.Row | None:
+    """The concluded tournament picked from concluded_tournament_autocomplete, or None
+    after saying so, such as when a name was typed instead of picked from the list."""
+    tournament = _picked_concluded_tournament(conn, interaction, picked)
+    if tournament is None:
+        await interaction.response.send_message(
+            "Pick the tournament from the list that appears as you type: concluded tournaments can share a name.",
+            ephemeral=True,
+        )
+    return tournament
 
 
 def signups_message(tournament: sqlite3.Row, entrants: int) -> str:

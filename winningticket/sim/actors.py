@@ -98,13 +98,13 @@ class Player:
         """Checks something that makes sense at this stage of the tournament."""
         status = run.status()
         if status == "registration":
-            options = ["entrants", "features", "help"]
+            options = ["entrants", "features", "help", "rating"]
         elif status == "predictions_open":
-            options = ["entrants", "bracket", "stats", "features"] + (["mypicks"] if run.has_predicted(self) else [])
+            options = ["entrants", "bracket", "stats", "features", "rating"] + (["mypicks"] if run.has_predicted(self) else [])
         elif status in ("in_progress", "completed"):
             options = ["bracket", "leaderboard", "stats"] + (["mypicks"] if run.has_predicted(self) else [])
         else:
-            options = ["leaderboard"]  # after it's over, people still look for the standings
+            options = ["leaderboard", "rating"]  # after it's over, people look for the standings and their rating
         choice = run.rng.choice(options)
         if choice in ("bracket", "leaderboard"):
             await run.look_up(self, choice)
@@ -117,6 +117,9 @@ class Player:
                               name=await run.tournament_name(self, "registration entrants", "name"))
         elif choice == "features":
             await run.sim.run(self.user, "features")
+        elif choice == "rating":
+            # Their own, or sizing up someone else.
+            await run.sim.run(self.user, "rating", user=run.rng.choice([None, run.rng.choice(run.players).user]))
         else:
             await run.sim.run(self.user, "help players")
 
