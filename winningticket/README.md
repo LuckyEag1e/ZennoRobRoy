@@ -142,6 +142,12 @@ python -m sim --scenario chaos --seed 3 --transcript   # replay one run step by 
 python -m sim --coverage                     # which commands ran at which stage
 ```
 
+Scenarios can be `crowded` (players act at once, so their clicks and forms
+interleave), `simultaneous` (the bot also handles their interactions at the same
+instant, interleaving inside its own code wherever it waits on Discord), and have
+a `co_organizer` recording results alongside the organizer. The order is chosen by
+the seed, so any run replays exactly.
+
 Scenarios, competence profiles and organizer styles live in `sim/scenarios.py`
 and `sim/actors.py`. Buttons on real Discord still get a manual check before release.
 

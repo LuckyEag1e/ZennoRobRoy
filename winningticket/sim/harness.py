@@ -9,6 +9,7 @@ import os
 import random
 import traceback
 from collections import Counter
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -77,6 +78,24 @@ class Issue:
 
 
 @dataclass
+class Step:
+    """One Discord action in progress. When the bot handles several at once, their pieces
+    interleave, so each step keeps its own transcript lines and messages and writes them
+    out together when it ends."""
+
+    number: int
+    actor: str
+    action: str
+    lines: list[str] = field(default_factory=list)
+    messages: list[FakeMessage] = field(default_factory=list)
+
+
+# The step the running task is in. Each asyncio task has its own, so steps that run at the
+# same time can't mix up each other's lines.
+_current_step: ContextVar[Optional[Step]] = ContextVar("sim_step", default=None)
+
+
+@dataclass
 class Simulation:
     """One server with one channel, the bot's cogs, and a throwaway database."""
 
@@ -91,16 +110,17 @@ class Simulation:
     # The tournament's status, kept current by the scenario, and how often each command ran in each.
     stage: str = "-"
     coverage: Counter = field(default_factory=Counter)
-    _first_new_message: int = 0
     crowd: Optional[Crowd] = None
-    _results_seen: dict = field(default_factory=dict)  # tournament id -> {match id: winner} after the last step
-    _actor: str = ""
-    _action: str = ""
+    # When set, every Discord call also pauses for the network, so the bot handles several
+    # interactions at once and they interleave inside its own code, not only between steps.
+    simultaneous: bool = False
+    _undo: list = field(default_factory=list)  # (module, attribute, original value) to put back in close()
 
     @classmethod
     async def create(cls, db_path: Path) -> Simulation:
         """Load the bot's cogs against a new database at `db_path`. This points the db
-        module at it; run_scenario puts the old path back afterwards."""
+        module at it, and close() puts everything back."""
+        undo = [(db, "DB_PATH", db.DB_PATH), (db, "record_result", db.record_result)]
         db.DB_PATH = db_path
         conn = db.get_connection()
         db.init_db(conn)
@@ -118,10 +138,17 @@ class Simulation:
                     commands[command.qualified_name] = (command, cog)
         organizer_commands = {name for name, (command, _) in commands.items() if _organizer_only(command)}
 
-        sim = cls(fake_bot, None, fake_bot.cogs, commands, organizer_commands)
-        sim.channel = FakeChannel(sim._on_message)
+        sim = cls(fake_bot, None, fake_bot.cogs, commands, organizer_commands, _undo=undo)
+        sim.channel = FakeChannel(sim._on_message, sim._network)
         fake_bot.channels[sim.channel.id] = sim.channel
+        db.record_result = sim._checked_record_result(db.record_result)
         return sim
+
+    def close(self) -> None:
+        """Undo what create() changed outside the simulation."""
+        for module, attribute, original in reversed(self._undo):
+            setattr(module, attribute, original)
+        self._undo = []
 
     # -- people -------------------------------------------------------------------
 
@@ -149,6 +176,10 @@ class Simulation:
         if self.crowd is not None and asyncio.current_task() in self.crowd.members:
             await self.crowd.wait_turn()
 
+    async def _network(self) -> None:
+        if self.simultaneous:
+            await self._turn()
+
     async def run(self, user: FakeUser, name: str, /, **options) -> FakeInteraction:
         """Run a slash command as `user`. Returns the interaction, whose `sent` is the reply."""
         await self._turn()
@@ -164,6 +195,7 @@ class Simulation:
         if root is not None and root.default_permissions is not None and not user.guild_permissions.manage_guild:
             # Discord hides the whole group from members without its default permissions.
             self._note("(Discord doesn't show this command to them)")
+            self._after_step()
             return interaction
 
         async def invoke() -> None:
@@ -232,6 +264,7 @@ class Simulation:
         if text_input.required and not text.strip():
             # Discord trims the text and refuses a required field that ends up empty, with its own vague error.
             self._problem("Discord refused the form: a required field held only spaces")
+            self._after_step()
             return None
         text_input._value = text
         interaction = FakeInteraction(bot=self.bot, user=user, channel=self.channel, guild_id=GUILD_ID,
@@ -277,7 +310,7 @@ class Simulation:
             self._note(_summary(interaction.message))
         elif interaction.response.kind == "modal":
             self._note("(a form opens)")
-        self._after_step(shown=interaction.sent)
+        self._after_step(shown=interaction.sent if interaction.sent is not None else interaction.message)
 
     @staticmethod
     async def _submit(modal: discord.ui.Modal, interaction: FakeInteraction) -> None:
@@ -296,27 +329,36 @@ class Simulation:
 
     def _begin(self, user: Optional[FakeUser], action: str) -> None:
         self.step += 1
-        self._actor = user.display_name if user is not None else "(bot)"
-        self._action = action
-        self._first_new_message = len(self.channel.messages)
-        self.transcript.append(f"{self.step:4} {self._actor}: {action}")
+        step = Step(self.step, user.display_name if user is not None else "(bot)", action)
+        step.lines.append(f"{step.number:4} {step.actor}: {action}")
+        _current_step.set(step)
 
     def _note(self, text: str) -> None:
-        self.transcript.append(f"       -> {text}")
+        step = _current_step.get()
+        (step.lines if step is not None else self.transcript).append(f"       -> {text}")
 
     def _problem(self, problem: str) -> None:
-        self.issues.append(Issue(self.step, self._actor, self._action, problem))
-        self.transcript.append(f"       !! {problem.splitlines()[0]}")
+        step = _current_step.get()
+        if step is None:
+            self.issues.append(Issue(self.step, "(simulation)", "", problem))
+            self.transcript.append(f"       !! {problem.splitlines()[0]}")
+            return
+        self.issues.append(Issue(step.number, step.actor, step.action, problem))
+        step.lines.append(f"       !! {problem.splitlines()[0]}")
 
     def _on_message(self, message: FakeMessage) -> None:
+        step = _current_step.get()
+        if step is not None and message not in step.messages:
+            step.messages.append(message)
         for problem in checks.message_problems(message):
             self._problem(f"{problem}: {_summary(message)}")
         for problem in checks.organizer_commands_named(message, self.organizer_commands):
             self._problem(f"{problem}: {_summary(message)}")
 
     def _after_step(self, shown: Optional[FakeMessage] = None) -> None:
-        # Anything else the step posted, like a result announcement or a follow-up.
-        for message in self.channel.messages[self._first_new_message:]:
+        step = _current_step.get()
+        # Anything else the step posted or edited, like a result announcement or a follow-up.
+        for message in step.messages:
             if message is not shown:
                 self._note(_summary(message))
         for user in self.bot.users.values():
@@ -326,21 +368,26 @@ class Simulation:
         try:
             for problem in checks.database_problems(conn, GUILD_ID):
                 self._problem(problem)
-            self._check_result_changes(conn)
         finally:
             conn.close()
+        self.transcript.extend(step.lines)
+        _current_step.set(None)
 
-    def _check_result_changes(self, conn) -> None:
-        """A recorded result may only change to a different winner through /admin
-        setresult's confirmation; anything else overwrote someone's result unasked."""
-        for row in conn.execute("SELECT id FROM tournaments WHERE guild_id = ?", (GUILD_ID,)).fetchall():
-            now = db.get_results(conn, row["id"])
-            before = self._results_seen.get(row["id"], {})
-            confirmed = self._action.startswith("clicks [Confirm]")
-            for match_id, winner in now.items():
-                if before.get(match_id, winner) != winner and not confirmed:
-                    self._problem(f"match {match_id}'s recorded winner changed without /admin setresult's confirmation")
-            self._results_seen[row["id"]] = now
+    def _checked_record_result(self, record_result):
+        """db.record_result, also checking the rule that a match with a result is only
+        recorded again through /admin setresult's confirmation, even with the same winner
+        (that would announce the result twice). It's checked as the write happens, so it
+        can't be blamed on another step running at the same time."""
+
+        def checked(conn, tournament_id, match_id, winner_team_id, recorded_by):
+            already_recorded = match_id in db.get_results(conn, tournament_id)
+            step = _current_step.get()
+            confirmed = step is not None and step.action.startswith("clicks [Confirm]")
+            if already_recorded and not confirmed:
+                self._problem(f"match {match_id} was recorded again without /admin setresult's confirmation")
+            return record_result(conn, tournament_id, match_id, winner_team_id, recorded_by)
+
+        return checked
 
 
 class _CogCollector(FakeBot):

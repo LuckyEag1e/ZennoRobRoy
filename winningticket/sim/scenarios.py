@@ -52,6 +52,7 @@ class Scenario:
     turns_per_stage: int = 3
     duplicate_names: bool = False  # two players share a display name
     crowded: bool = False          # players act at the same time, so their steps interleave
+    simultaneous: bool = False     # and the bot handles their interactions at the same instant
     co_organizer: bool = False     # a second organizer records results alongside the first
     format: str = "single_elim"    # the only format the bot supports so far
 
@@ -61,12 +62,12 @@ SCENARIOS = {
         Scenario("smooth", "8 diligent players and a careful organizer: nothing should go wrong.",
                  ((DILIGENT, 8),), CAREFUL),
         Scenario("typical", "A realistic mix acting at the same time, with a couple of chaotic players.",
-                 ((DILIGENT, 4), (CASUAL, 6), (CHAOTIC, 2)), CAREFUL, guests=1, duplicate_names=True, crowded=True),
+                 ((DILIGENT, 4), (CASUAL, 6), (CHAOTIC, 2)), CAREFUL, guests=1, duplicate_names=True, crowded=True, simultaneous=True),
         Scenario("chaos", "Mostly chaotic players at once, and two sloppy organizers recording results together.",
                  ((DILIGENT, 2), (CASUAL, 3), (CHAOTIC, 7)), SLOPPY, guests=2, duplicate_names=True,
-                 crowded=True, co_organizer=True),
+                 crowded=True, simultaneous=True, co_organizer=True),
         Scenario("large", "40 players and 3 guests at once, for a 64-line bracket and long menus.",
-                 ((DILIGENT, 10), (CASUAL, 25), (CHAOTIC, 5)), CAREFUL, guests=3, turns_per_stage=2, crowded=True),
+                 ((DILIGENT, 10), (CASUAL, 25), (CHAOTIC, 5)), CAREFUL, guests=3, turns_per_stage=2, crowded=True, simultaneous=True),
         Scenario("csv", "8 named teams uploaded as a CSV, with two organizers recording results together.",
                  ((DILIGENT, 3), (CASUAL, 3), (CHAOTIC, 2)), SLOPPY, guests=8, entry="csv", co_organizer=True),
     ]
@@ -479,33 +480,40 @@ def _menu(message) -> Optional[discord.ui.Select]:
 async def run_scenario(scenario: Scenario, seed: int) -> Simulation:
     """Play one tournament from start to finish and return the simulation, with its issues and transcript."""
     rng = random.Random(seed)
-    # The run points db at a throwaway database and seeds the random module, which closing
-    # sign-ups draws the bracket with. Both are put back afterwards so nothing else sees them.
-    saved_db_path, saved_random_state = db.DB_PATH, random.getstate()
+    # Closing sign-ups draws the bracket with the random module, so it's seeded too, and put
+    # back afterwards so nothing else sees the change.
+    saved_random_state = random.getstate()
     random.seed(seed)
     try:
         return await _play_scenario(scenario, rng)
     finally:
-        db.DB_PATH = saved_db_path
         random.setstate(saved_random_state)
 
 
 async def _play_scenario(scenario: Scenario, rng: random.Random) -> Simulation:
     with tempfile.TemporaryDirectory() as directory:
         sim = await Simulation.create(Path(directory) / "sim.db")
-        organizer = Organizer(sim.add_user(1, "Organizer", organizer=True), scenario.organizer)
-        players = []
-        names = iter(NAMES * 3)
-        for competence, count in scenario.players:
-            for _ in range(count):
-                user_id = 100 + len(players)
-                name = next(names) if user_id < 100 + len(NAMES) else f"Player {user_id}"
-                players.append(Player(sim.add_user(user_id, name), competence, rng.gauss(1500, 200)))
-        if scenario.duplicate_names and len(players) > 1:
-            players[1].user.display_name = players[0].user.display_name
-        run = TournamentRun(sim, scenario, rng, organizer, players)
-        if scenario.co_organizer:
-            run.co_organizer = Organizer(sim.add_user(2, "Co-organizer", organizer=True), scenario.organizer)
-        await run.play()
-        run.check_final_state()
+        try:
+            await _play(sim, scenario, rng)
+        finally:
+            sim.close()
     return sim
+
+
+async def _play(sim: Simulation, scenario: Scenario, rng: random.Random) -> None:
+    sim.simultaneous = scenario.simultaneous
+    organizer = Organizer(sim.add_user(1, "Organizer", organizer=True), scenario.organizer)
+    players = []
+    names = iter(NAMES * 3)
+    for competence, count in scenario.players:
+        for _ in range(count):
+            user_id = 100 + len(players)
+            name = next(names) if user_id < 100 + len(NAMES) else f"Player {user_id}"
+            players.append(Player(sim.add_user(user_id, name), competence, rng.gauss(1500, 200)))
+    if scenario.duplicate_names and len(players) > 1:
+        players[1].user.display_name = players[0].user.display_name
+    run = TournamentRun(sim, scenario, rng, organizer, players)
+    if scenario.co_organizer:
+        run.co_organizer = Organizer(sim.add_user(2, "Co-organizer", organizer=True), scenario.organizer)
+    await run.play()
+    run.check_final_state()

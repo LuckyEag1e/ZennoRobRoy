@@ -68,6 +68,7 @@ class FakeMessage:
         return self.embeds[0] if self.embeds else None
 
     async def edit(self, *, content: Any = _UNSET, embed: Any = _UNSET, embeds: Any = _UNSET, view: Any = _UNSET) -> FakeMessage:
+        await self.channel.network()
         if self.deleted:
             raise _not_found("Unknown Message")
         if content is not _UNSET:
@@ -83,6 +84,7 @@ class FakeMessage:
         return self
 
     async def delete(self) -> None:
+        await self.channel.network()
         if self.deleted:
             raise _not_found("Unknown Message")
         self.deleted = True
@@ -98,11 +100,13 @@ class FakeMessage:
 
 
 class FakeChannel:
-    def __init__(self, on_change) -> None:
+    def __init__(self, on_change, network) -> None:
         self.id = next(_ids)
         self.messages: list[FakeMessage] = []
         # Called with every message sent or edited, so checks see each one as it happens.
         self.on_change = on_change
+        # Awaited before every call to Discord, standing in for the wait on its reply.
+        self.network = network
 
     def post(self, content, embeds, view, visible_to) -> FakeMessage:
         message = FakeMessage(next(_ids), self, content, list(embeds), view, visible_to)
@@ -112,6 +116,7 @@ class FakeChannel:
 
     async def send(self, content: Optional[str] = None, *, embed: Optional[discord.Embed] = None,
                    view: Optional[discord.ui.View] = None) -> FakeMessage:
+        await self.network()
         return self.post(content, [embed] if embed else [], view, None)
 
     def get_partial_message(self, message_id: int) -> FakeMessage:
@@ -137,6 +142,7 @@ class FakeResponse:
 
     async def send_message(self, content: Optional[str] = None, *, embed: Optional[discord.Embed] = None,
                            view: Optional[discord.ui.View] = None, ephemeral: bool = False) -> None:
+        await self._interaction.channel.network()
         self._answer("message")
         interaction = self._interaction
         interaction.sent = interaction.channel.post(
@@ -144,14 +150,17 @@ class FakeResponse:
         )
 
     async def edit_message(self, *, content: Any = _UNSET, embed: Any = _UNSET, view: Any = _UNSET) -> None:
+        await self._interaction.channel.network()
         self._answer("edit")
         await self._interaction.message.edit(content=content, embed=embed, view=view)
 
     async def send_modal(self, modal: discord.ui.Modal) -> None:
+        await self._interaction.channel.network()
         self._answer("modal")
         self.modal = modal
 
     async def defer(self, **kwargs) -> None:
+        await self._interaction.channel.network()
         self._answer("defer")
 
 
@@ -162,6 +171,7 @@ class FakeFollowup:
     async def send(self, content: Optional[str] = None, *, embed: Optional[discord.Embed] = None,
                    view: Optional[discord.ui.View] = None, ephemeral: bool = False) -> FakeMessage:
         interaction = self._interaction
+        await interaction.channel.network()
         if not interaction.response.is_done():
             raise _not_found("Unknown Webhook")  # Discord has no follow-up channel until the first answer
         return interaction.channel.post(content, [embed] if embed else [], view,
@@ -216,6 +226,7 @@ class FakeInteraction:
         return self.user.guild_permissions
 
     async def original_response(self) -> FakeMessage:
+        await self.channel.network()
         if self.sent is None:
             raise _not_found("Unknown Message")
         return self.sent
@@ -235,6 +246,9 @@ class FakeBot:
         return self.users.get(user_id)
 
     async def fetch_user(self, user_id: int) -> FakeUser:
+        for channel in self.channels.values():
+            await channel.network()  # an HTTP call like any other
+            break
         if user_id not in self.users:
             raise _not_found("Unknown User")
         return self.users[user_id]

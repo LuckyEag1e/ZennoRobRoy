@@ -18,8 +18,6 @@ BRACKET = b"team_a,team_b\nAce,Blaze\nComet,Dash\n"
 @pytest.fixture
 def world(tmp_path):
     """A locked 4-team tournament and two organizers, run through the real cogs."""
-    path_before = db.DB_PATH
-
     async def build():
         sim = await Simulation.create(tmp_path / "test.db")
         first = sim.add_user(1, "First organizer", organizer=True)
@@ -29,8 +27,9 @@ def world(tmp_path):
         await sim.run(first, "tournament lock", name="Cup")
         return sim, first, second
 
-    yield asyncio.run(build())
-    db.DB_PATH = path_before
+    sim, first, second = asyncio.run(build())
+    yield sim, first, second
+    sim.close()
 
 
 def _results(sim) -> dict[str, str]:
