@@ -7,6 +7,7 @@ champion and every true result. It checks the bot's final state against them.
 from __future__ import annotations
 
 import random
+import re
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -31,6 +32,7 @@ from sim.actors import (
     entrant_count,
     guessed_winner,
 )
+from cogs.tournament import LIVE_POST_IN_VIEW, render_live_post
 from sim.discord_fakes import FakeAttachment
 from sim.harness import GUILD_ID, Simulation
 
@@ -205,6 +207,41 @@ class TournamentRun:
         if menu is not None:
             await self.sim.choose(player.user, message, self.rng.choice(menu.options).value)
 
+    async def look_up(self, player: Player, kind: str) -> None:
+        """Ask for the bracket or leaderboard. If the bot points at its live post instead of
+        posting one, check the post it points at exists and really is in view."""
+        command = f"tournament {kind}"
+        name = await self.tournament_name(player, command, "name")
+        reply = await self.sim.run(player.user, command, name=name)
+        # Messages that arrive while the bot is answering can push the post up a little;
+        # what matters is it was in view when they asked.
+        existing = self.sim.channel.messages[:reply.messages_before]
+        pointer = re.search(r"kept up to date: \S+/(\d+)$", (reply.sent.content or "") if reply.sent else "")
+        if pointer is None:
+            return
+        message_id = int(pointer.group(1))
+        in_view = [m.id for m in existing[::-1] if m.public and not m.deleted][:LIVE_POST_IN_VIEW]
+        if message_id not in in_view:
+            self.sim._problem(f"the bot pointed {player.user.display_name} at a {kind} post that isn't in view")
+
+    async def refresh_live_posts(self) -> None:
+        """Run the live-post refresh as the bot would."""
+        cog = self.sim.cogs["TournamentCog"]
+        await self.sim.run_background("live posts refresh", lambda: cog.refresh_live_posts.coro(cog))
+
+    def check_live_posts(self) -> None:
+        """Every live post should show its tournament as it is now. Run right after a refresh,
+        while nothing else is changing."""
+        conn = db.get_connection()
+        try:
+            for live in db.get_live_posts(conn):
+                tournament = db.get_tournament(conn, live["tournament_id"])
+                message = self.sim.channel.get_partial_message(live["message_id"])
+                if message.embed is None or message.embed.to_dict() != render_live_post(conn, tournament, live["kind"]).to_dict():
+                    self.sim._problem(f"the live {live['kind']} post is out of date after a refresh")
+        finally:
+            conn.close()
+
     async def spam_burst(self, player: Player) -> None:
         """Fire public-posting commands as fast as possible, then check how much of the
         channel it took over."""
@@ -214,8 +251,7 @@ class TournamentRun:
                 command = "unregister" if self.is_registered(player) else "register"
                 await self.sim.run(player.user, command, tournament=self.name)
             else:
-                command = self.rng.choice(["tournament bracket", "tournament leaderboard"])
-                await self.sim.run(player.user, command, name=self.name)
+                await self.look_up(player, self.rng.choice(["bracket", "leaderboard"]))
         caused = self.sim.public_posts[player.user.id] - before
         if caused > NOISE_LIMIT:
             self.sim._problem(f"{player.user.display_name} put {caused} public posts in the channel "
@@ -260,10 +296,12 @@ class TournamentRun:
         await self._play_matches()
         await self._housekeeping()
         await self.sim.run(org, "tournament conclude", name=self.name)
+        await self.refresh_live_posts()
+        self.check_live_posts()
         self.status()
         for player in self.players:
             if self.rng.random() < player.competence.curiosity:
-                await self.sim.run(player.user, "tournament leaderboard", name=self.name)
+                await self.look_up(player, "leaderboard")
 
     async def _run_signups(self) -> None:
         org, style = self.organizer.user, self.organizer.style
@@ -306,7 +344,6 @@ class TournamentRun:
         whoever keeps poking at admin commands."""
         # Stages are hours apart on a real server, so every per-member wait has long run out.
         self.sim.cogs["FeedbackCog"].cooldown.clear()
-        self.sim.cogs["TournamentCog"].public_lookups.clear()
         org = self.organizer.user
         reply = await self.sim.run(org, "admin feedback")
         newest = reply.sent.embed.fields if reply.sent is not None and reply.sent.embed is not None else []
@@ -342,7 +379,11 @@ class TournamentRun:
 
     async def _player_turns(self) -> None:
         for _ in range(self.scenario.turns_per_stage):
-            await self._all_at_once([player.take_turn(self) for player in self.rng.sample(self.players, len(self.players))])
+            # The bot's refresh loop runs alongside everyone, then a quiet refresh is checked.
+            await self._all_at_once([player.take_turn(self) for player in self.rng.sample(self.players, len(self.players))]
+                                    + [self.refresh_live_posts()])
+            await self.refresh_live_posts()
+            self.check_live_posts()
 
     async def _all_at_once(self, flows: list) -> None:
         """Run flows together if the scenario is crowded, otherwise one after another."""
@@ -378,7 +419,10 @@ class TournamentRun:
         while self.status() == "in_progress":
             found_a_match = []
             onlookers = [p.take_turn(self) for p in self.rng.sample(self.players, min(2, len(self.players)))]
-            await self._all_at_once([self._organizer_round(o, found_a_match) for o in organizers] + onlookers)
+            await self._all_at_once([self._organizer_round(o, found_a_match) for o in organizers] + onlookers
+                                    + [self.refresh_live_posts()])
+            await self.refresh_live_posts()
+            self.check_live_posts()
             if not found_a_match and self.status() == "in_progress":
                 self.sim._problem("no organizer could record any result, so the tournament can't finish")
                 return

@@ -56,6 +56,7 @@ class FakeMessage:
     view: Optional[discord.ui.View]
     # Who can see it: None for everyone, or the one user a private reply went to.
     visible_to: Optional[int] = None
+    author_id: Optional[int] = None  # None for the bot; a member's id for something they typed
     deleted: bool = False
     edits: int = 0
 
@@ -108,8 +109,8 @@ class FakeChannel:
         # Awaited before every call to Discord, standing in for the wait on its reply.
         self.network = network
 
-    def post(self, content, embeds, view, visible_to) -> FakeMessage:
-        message = FakeMessage(next(_ids), self, content, list(embeds), view, visible_to)
+    def post(self, content, embeds, view, visible_to, author_id: Optional[int] = None) -> FakeMessage:
+        message = FakeMessage(next(_ids), self, content, list(embeds), view, visible_to, author_id=author_id)
         self.messages.append(message)
         self.on_change(message)
         return message
@@ -118,6 +119,13 @@ class FakeChannel:
                    view: Optional[discord.ui.View] = None) -> FakeMessage:
         await self.network()
         return self.post(content, [embed] if embed else [], view, None)
+
+    async def history(self, limit: int):
+        """The channel's newest messages first, as everyone sees them (private replies aren't in it)."""
+        await self.network()
+        shown = [m for m in reversed(self.messages) if m.public and not m.deleted]
+        for message in shown[:limit]:
+            yield message
 
     def get_partial_message(self, message_id: int) -> FakeMessage:
         message = next((m for m in self.messages if m.id == message_id), None)
@@ -220,6 +228,9 @@ class FakeInteraction:
         self.response = FakeResponse(self)
         self.followup = FakeFollowup(self)
         self.sent: Optional[FakeMessage] = None
+        # How many messages the channel had when this interaction began, for checks about
+        # what the member could see at that moment.
+        self.messages_before = len(channel.messages)
 
     @property
     def permissions(self) -> FakePermissions:

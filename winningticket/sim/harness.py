@@ -277,6 +277,13 @@ class Simulation:
         await self._dispatch(interaction, lambda: self._submit(modal, interaction))
         return interaction
 
+    async def chat(self, user: FakeUser, text: str) -> None:
+        """Have a member type an ordinary message in the channel, which pushes older posts up."""
+        await self._turn()
+        self._begin(user, f"says {text!r}")
+        self.channel.post(text, [], None, None, author_id=user.id)
+        self._after_step()
+
     async def run_background(self, label: str, work) -> None:
         """Run something the bot does on its own, like the sign-ups loop."""
         await self._turn()
@@ -358,7 +365,7 @@ class Simulation:
             step.messages.append(message)
         if message.id not in self._seen_messages:
             self._seen_messages.add(message.id)
-            if message.public and step is not None and step.user_id is not None:
+            if message.public and message.author_id is None and step is not None and step.user_id is not None:
                 self.public_posts[step.user_id] += 1
         for problem in checks.message_problems(message):
             self._problem(f"{problem}: {_summary(message)}")

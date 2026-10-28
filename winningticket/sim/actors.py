@@ -29,6 +29,7 @@ class Competence:
     feedback: float         # sends feedback (and sometimes a blank form)
     guess_noise: float      # how far off their read of who'll win is, in rating points
     spam: float = 0.0       # fires a burst of public-posting commands as fast as they can
+    chat: float = 0.3       # says something in the channel, pushing older posts up
 
 
 DILIGENT = Competence("diligent", typo=0.0, off_script=0.02, double_click=0.0, abandon=0.0, curiosity=0.3,
@@ -83,6 +84,8 @@ class Player:
             await run.send_feedback(self)
         if rng.random() < c.spam:
             await run.spam_burst(self)
+        if rng.random() < c.chat:
+            await run.sim.chat(self.user, rng.choice(["gl everyone", "who's your pick?", "lol", "nice match", "brb"]))
 
     async def _registration_turn(self, run: TournamentRun) -> None:
         if not run.is_registered(self):
@@ -104,11 +107,8 @@ class Player:
         else:
             options = ["leaderboard"]  # after it's over, people still look for the standings
         choice = run.rng.choice(options)
-        if choice == "bracket":
-            await run.sim.run(self.user, "tournament bracket", name=await run.tournament_name(self, "tournament bracket", "name"))
-        elif choice == "leaderboard":
-            await run.sim.run(self.user, "tournament leaderboard",
-                              name=await run.tournament_name(self, "tournament leaderboard", "name"))
+        if choice in ("bracket", "leaderboard"):
+            await run.look_up(self, choice)
         elif choice == "mypicks":
             await run.sim.run(self.user, "mypicks", tournament=await run.tournament_name(self, "mypicks"))
         elif choice == "stats":
