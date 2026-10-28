@@ -44,6 +44,11 @@ class TournamentCog(commands.Cog):
         # changed. It's by message: a new post can replace the live one mid-refresh, and an
         # edit to the old message mustn't mark the new one as current.
         self.last_shown: dict[int, dict] = {}
+        # Kept open only to ask SQLite whether anything was written since the last refresh
+        # (PRAGMA data_version counts other connections' commits), so an idle bot doesn't
+        # rebuild every post every few seconds.
+        self._watch: sqlite3.Connection | None = None
+        self._seen_version: int | None = None
 
     group = app_commands.Group(
         name="tournament", description="Manage bracket prediction tournaments", guild_only=True
@@ -54,17 +59,23 @@ class TournamentCog(commands.Cog):
 
     async def cog_unload(self) -> None:
         self.refresh_live_posts.cancel()
+        if self._watch is not None:
+            self._watch.close()
+            self._watch = None
 
     # Every change to a tournament shows up in its live posts within a few seconds, whatever
     # caused it, so nothing that changes results, names or status needs to remember to refresh them.
     @tasks.loop(seconds=5)
     async def refresh_live_posts(self) -> None:
         try:
+            if not self._database_changed():
+                return
             conn = db.get_connection()
             try:
                 for live in db.get_live_posts(conn):
                     try:
-                        await self._refresh(conn, live)
+                        if not await self._refresh(conn, live):
+                            self._seen_version = None  # try again next time, even if nothing else changes
                     except Exception:
                         log.exception("Couldn't refresh the %s post for tournament %s", live["kind"], live["tournament_id"])
             finally:
@@ -76,22 +87,41 @@ class TournamentCog(commands.Cog):
     async def _wait_until_ready(self) -> None:
         await self.bot.wait_until_ready()
 
-    async def _refresh(self, conn: sqlite3.Connection, live: sqlite3.Row) -> None:
-        tournament = db.get_tournament(conn, live["tournament_id"])
+    def _database_changed(self) -> bool:
+        if self._watch is None:
+            self._watch = db.get_connection()
+        version = self._watch.execute("PRAGMA data_version").fetchone()[0]
+        changed = version != self._seen_version
+        self._seen_version = version
+        return changed
+
+    async def _refresh(self, conn: sqlite3.Connection, live: sqlite3.Row) -> bool:
+        """Bring one live post up to date. False if it should be tried again next time."""
         message_id = live["message_id"]
-        shown = render_live_post(conn, tournament, live["kind"])
+        tournament = db.get_tournament(conn, live["tournament_id"])
         channel = self.bot.get_channel(live["channel_id"])
-        if self.last_shown.get(message_id) != shown.to_dict() and channel is not None:
+        if tournament is None or channel is None:
+            # Deleted while the loop was running, or the channel is gone.
+            self._forget(conn, live)
+            return True
+        embed = render_live_post(conn, tournament, live["kind"])
+        shown = embed.to_dict()
+        if self.last_shown.get(message_id) != shown:
             try:
-                await channel.get_partial_message(message_id).edit(embed=shown)
-                self.last_shown[message_id] = shown.to_dict()
-            except discord.NotFound:
-                # Deleted by someone; the next request posts a new one.
+                await channel.get_partial_message(message_id).edit(embed=embed)
+            except (discord.NotFound, discord.Forbidden):
+                # Deleted, or the bot can't edit it any more; the next request posts a fresh one.
+                log.warning("Stopped updating the %s post for tournament %s", live["kind"], live["tournament_id"])
                 self._forget(conn, live)
-                return
+                return True
+            except discord.HTTPException:
+                log.warning("Couldn't update the %s post for tournament %s yet", live["kind"], live["tournament_id"])
+                return False
+            self.last_shown[message_id] = shown
         if tournament["status"] == "concluded":
             # Its final state is shown; nothing will change it again.
             self._forget(conn, live)
+        return True
 
     def _forget(self, conn: sqlite3.Connection, live: sqlite3.Row) -> None:
         # Only if it's still the live post: a newer one may have replaced it meanwhile.
@@ -117,6 +147,22 @@ class TournamentCog(commands.Cog):
         message = await interaction.original_response()
         db.set_live_post(conn, tournament["id"], kind, interaction.channel_id, message.id)
         self.last_shown[message.id] = embed.to_dict()
+        if live is not None:
+            await self._retire(live, kind, _jump_url(interaction.guild_id, interaction.channel_id, message.id))
+
+    async def _retire(self, old: sqlite3.Row, kind: str, new_url: str) -> None:
+        """Turn a replaced live post into a pointer to the new one, so it doesn't sit in the
+        channel showing results that will never update again."""
+        self.last_shown.pop(old["message_id"], None)
+        channel = self.bot.get_channel(old["channel_id"])
+        if channel is None:
+            return
+        try:
+            await channel.get_partial_message(old["message_id"]).edit(
+                content=f"This {kind} has moved to a newer post: {new_url}", embed=None
+            )
+        except discord.HTTPException:
+            pass  # deleted or out of reach; nothing else to tidy
 
     @staticmethod
     async def _in_view(channel, live: sqlite3.Row) -> bool:

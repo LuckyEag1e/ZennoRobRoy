@@ -208,6 +208,9 @@ def outdated_pick_message(now: db.MatchNow | None, teams: tuple[int, int]) -> st
     it still can. `teams` are the two teams the menu showed."""
     if now is None:
         return "That tournament no longer exists."
+    if now.status == "concluded":
+        # Saving would also reset its status, since a decided final means "completed".
+        return "That tournament has concluded, so its results can't change any more."
     if set(now.teams) != set(teams):
         return "This matchup has changed since the menu was opened, because an earlier result was edited. Run the command again."
     return None

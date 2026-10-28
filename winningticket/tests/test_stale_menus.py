@@ -140,3 +140,42 @@ def test_clearing_a_result_twice_says_it_was_already_cleared(world):
     assert "already cleared" in second_clear.message.content
     assert _results(sim) == {}
 
+
+def test_clearing_a_result_that_changed_since_the_menu_opened_is_refused(world):
+    sim, first, second = world
+
+    async def play():
+        match = _first_option((await sim.run(first, "match result", tournament="Cup")).sent)
+        await _record(sim, first, match, "Ace")
+        clear_menu = (await sim.run(second, "admin clearresult", tournament="Cup")).sent  # shows Ace as the winner
+        await sim.choose(second, clear_menu, match)
+        # Meanwhile the first organizer corrects it: Blaze won.
+        fix_menu = (await sim.run(first, "admin setresult", tournament="Cup")).sent
+        await sim.choose(first, fix_menu, match)
+        await sim.click(first, fix_menu, "Blaze")
+        await sim.click(first, fix_menu, "Confirm")
+        return await sim.click(second, clear_menu, "Confirm")
+
+    refused = asyncio.run(play())
+    assert "has changed" in refused.message.content
+    assert list(_results(sim).values()) == ["Blaze"]
+
+
+def test_a_concluded_tournament_cant_be_changed_from_an_old_menu(world):
+    sim, first, second = world
+
+    async def play():
+        for winner in ("Ace", "Comet", "Ace"):  # both semi-finals, then the final
+            await _record(sim, first, _first_option((await sim.run(first, "match result", tournament="Cup")).sent), winner)
+        old_menu = (await sim.run(second, "admin setresult", tournament="Cup")).sent
+        await sim.run(first, "tournament conclude", name="Cup")
+        await sim.choose(second, old_menu, _first_option(old_menu))
+        return await sim.click(second, old_menu, "Blaze")
+
+    refused = asyncio.run(play())
+    assert "has concluded" in refused.message.content
+    conn = db.get_connection()
+    try:
+        assert db.get_tournament(conn, 1)["status"] == "concluded"
+    finally:
+        conn.close()

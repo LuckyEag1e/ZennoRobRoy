@@ -214,15 +214,21 @@ class AdminCog(commands.Cog):
             async def clear(confirm_interaction: discord.Interaction) -> None:
                 conn = db.get_connection()
                 try:
+                    # Only clear the result this menu showed: someone may have cleared it,
+                    # re-recorded it, or changed the matchup since it opened.
                     now = db.match_now(conn, session.tournament_id, match.id)
-                    if now is not None and now.winner is not None:
+                    refusal = outdated_pick_message(now, slots[match.id])
+                    if refusal is None and now.winner is None:
+                        refusal = "That result was already cleared."
+                    elif refusal is None and now.winner != results_by_match[match.id]:
+                        refusal = (f"That result has changed since the menu was opened: "
+                                   f"**{team_label(session.teams_by_id, now.winner)}** won. Run the command again.")
+                    if refusal is None:
                         dropped = db.clear_result(conn, session.tournament_id, match.id)
                 finally:
                     conn.close()
-                if now is None or now.winner is None:
-                    # Someone else cleared it, or deleted the tournament, since the menu opened.
-                    gone = "That tournament no longer exists." if now is None else "That result was already cleared."
-                    await confirm_interaction.response.edit_message(content=gone, view=None)
+                if refusal is not None:
+                    await confirm_interaction.response.edit_message(content=refusal, view=None)
                     return
                 await confirm_interaction.response.edit_message(
                     content=f"✅ Result cleared.{dropped_results_note(dropped)}", view=None
