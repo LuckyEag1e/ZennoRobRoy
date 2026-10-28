@@ -7,7 +7,6 @@ import random
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-import db
 from sim.discord_fakes import FakeUser
 
 if TYPE_CHECKING:
@@ -153,12 +152,3 @@ def guessed_winner(player: Player, run: TournamentRun, team_a: int, team_b: int,
     a = run.skill_of(team_a) + rng.gauss(0, noise)
     b = run.skill_of(team_b) + rng.gauss(0, noise)
     return team_a if a >= b else team_b
-
-
-def entrant_count(run: TournamentRun) -> int:
-    conn = db.get_connection()
-    try:
-        tournament = db.get_tournament_by_name(conn, 1, run.name)
-        return db.entrant_count(conn, tournament["id"]) if tournament else 0
-    finally:
-        conn.close()

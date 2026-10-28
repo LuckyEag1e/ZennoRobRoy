@@ -29,7 +29,6 @@ from sim.actors import (
     Organizer,
     OrganizerStyle,
     Player,
-    entrant_count,
     guessed_winner,
 )
 from cogs.tournament import LIVE_POST_IN_VIEW, render_live_post
@@ -121,6 +120,14 @@ class TournamentRun:
         try:
             tournament = self._tournament(conn)
             return tournament is not None and db.get_entrant_team_id(conn, tournament["id"], player.user.id) is not None
+        finally:
+            conn.close()
+
+    def entrant_count(self) -> int:
+        conn = db.get_connection()
+        try:
+            tournament = self._tournament(conn)
+            return db.entrant_count(conn, tournament["id"]) if tournament else 0
         finally:
             conn.close()
 
@@ -395,7 +402,7 @@ class TournamentRun:
 
     async def _close_signups(self) -> None:
         org = self.organizer.user
-        if entrant_count(self) < 2:
+        if self.entrant_count() < 2:
             await self.sim.run(org, "registration add", tournament=self.name, user=None, name="Stand-in")
             self.guest_skill["Stand-in"] = 1500
         if self.organizer.style.uses_deadline:
@@ -500,6 +507,12 @@ class TournamentRun:
 
     def check_final_state(self) -> None:
         self.sim._begin(None, "final checks")
+        try:
+            self._compare_final_state()
+        finally:
+            self.sim._after_step()
+
+    def _compare_final_state(self) -> None:
         conn = db.get_connection()
         try:
             tournament = db.get_tournament(conn, self.tournament_id)
@@ -564,7 +577,7 @@ async def _play_scenario(scenario: Scenario, rng: random.Random) -> Simulation:
         try:
             await _play(sim, scenario, rng)
         finally:
-            sim.close()
+            await sim.close()
     return sim
 
 

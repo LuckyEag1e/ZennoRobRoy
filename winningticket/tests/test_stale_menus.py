@@ -29,11 +29,11 @@ def world(tmp_path):
 
     sim, first, second = asyncio.run(build())
     yield sim, first, second
-    sim.close()
+    asyncio.run(sim.close())
 
 
 def _results(sim) -> dict[str, str]:
-    """Stored results as {loser's first-round opponent pairing: winner}, by team name."""
+    """Stored results as {match id: the winner's team name}."""
     conn = db.get_connection()
     try:
         teams = {team_id: row["name"] for team_id, row in db.get_teams(conn, 1).items()}
@@ -139,3 +139,4 @@ def test_clearing_a_result_twice_says_it_was_already_cleared(world):
     second_clear = asyncio.run(play())
     assert "already cleared" in second_clear.message.content
     assert _results(sim) == {}
+

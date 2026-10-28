@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib
+import logging
 import os
 import random
 import traceback
@@ -120,6 +121,7 @@ class Simulation:
     public_posts: Counter = field(default_factory=Counter)
     _undo: list = field(default_factory=list)  # (module, attribute, original value) to put back in close()
     _seen_messages: set = field(default_factory=set)
+    _log_watcher: Optional[logging.Handler] = None
 
     @classmethod
     async def create(cls, db_path: Path) -> Simulation:
@@ -147,10 +149,18 @@ class Simulation:
         sim.channel = FakeChannel(sim._on_message, sim._network)
         fake_bot.channels[sim.channel.id] = sim.channel
         db.record_result = sim._checked_record_result(db.record_result)
+        # The bot logs errors it recovers from (a failed refresh, a bracket that couldn't be
+        # drawn) instead of failing the command, so they'd pass unnoticed without this.
+        sim._log_watcher = _ErrorsAsProblems(sim)
+        logging.getLogger("winningticket").addHandler(sim._log_watcher)
         return sim
 
-    def close(self) -> None:
-        """Undo what create() changed outside the simulation."""
+    async def close(self) -> None:
+        """Stop the cogs the way the bot does on shutdown, and undo what create() changed
+        outside the simulation."""
+        for cog in self.cogs.values():
+            await cog.cog_unload()
+        logging.getLogger("winningticket").removeHandler(self._log_watcher)
         for module, attribute, original in reversed(self._undo):
             setattr(module, attribute, original)
         self._undo = []
@@ -405,6 +415,18 @@ class Simulation:
             return record_result(conn, tournament_id, match_id, winner_team_id, recorded_by)
 
         return checked
+
+
+class _ErrorsAsProblems(logging.Handler):
+    """Records every error the bot logs as a problem in the step that caused it."""
+
+    def __init__(self, sim: Simulation) -> None:
+        super().__init__(level=logging.ERROR)
+        self.sim = sim
+
+    def emit(self, record: logging.LogRecord) -> None:
+        cause = f" ({record.exc_info[1]!r})" if record.exc_info else ""
+        self.sim._problem(f"the bot logged an error: {record.getMessage()}{cause}")
 
 
 class _CogCollector(FakeBot):
