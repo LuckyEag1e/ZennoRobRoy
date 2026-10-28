@@ -2,6 +2,7 @@
 
 import asyncio
 import os
+import random
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -123,3 +124,52 @@ def test_an_idle_refresh_does_no_work(world, monkeypatch):
     asyncio.run(_refresh(sim))
     assert renders  # a change gets picked up
     assert "Ace" in posted.text()
+
+
+def test_a_post_retired_mid_refresh_stays_retired(world):
+    """A refresh pass and a member's request that replaces the live post, run at the same
+    instant across many interleavings: the old post must end as just the link."""
+    sim, organizer, player, first = world
+    sim.simultaneous = True
+    cog = _cog(sim)
+
+    async def round_of(seed):
+        # A change each round, so the refresh pass has an edit to make while the post is replaced.
+        old_name, new_name = ("Dash", "Dash II") if seed % 2 == 0 else ("Dash II", "Dash")
+        await sim.run(organizer, "admin editteam", tournament="Cup", team=old_name, new_name=new_name)
+        await sim.run(player, "tournament leaderboard", name="Cup")  # a second live post in the pass's list
+        for _ in range(tournament_cog.LIVE_POST_IN_VIEW):
+            await sim.chat(player, "pushing it up")  # so the request posts a fresh one
+        before = {m.id for m in sim.channel.messages}
+        await sim.together([cog.refresh_live_posts.coro(cog),
+                            sim.run(player, "tournament bracket", name="Cup")], random.Random(seed))
+        return before
+
+    for seed in range(30):
+        asyncio.run(round_of(seed))
+        live_ids = {live["message_id"] for live in _live_posts(sim)}
+        for message in sim.channel.messages:
+            if message.content and "moved to a newer post" in message.content:
+                assert message.embed is None, f"seed {seed}: a retired post got its embed back"
+        assert set(cog.last_shown) <= live_ids, f"seed {seed}: a retired post is still remembered"
+
+
+def test_two_members_asking_at_once_leave_one_live_post(world):
+    """Two members ask for the bracket at the same instant with it out of view: both may
+    post a copy, but every copy except the live one must end as a link to it."""
+    sim, organizer, player, first = world
+    sim.simultaneous = True
+    other = sim.add_user(3, "Other player")
+
+    async def round_of(seed):
+        for _ in range(tournament_cog.LIVE_POST_IN_VIEW):
+            await sim.chat(player, "pushing it up")
+        await sim.together([sim.run(player, "tournament bracket", name="Cup"),
+                            sim.run(other, "tournament bracket", name="Cup")], random.Random(seed))
+
+    for seed in range(30):
+        asyncio.run(round_of(seed))
+        [live] = [row["message_id"] for row in _live_posts(sim) if row["kind"] == "bracket"]
+        still_showing = [m.id for m in sim.channel.messages
+                         if m.public and m.embed is not None and m.embed.title.startswith("Bracket")]
+        assert still_showing == [live], f"seed {seed}: copies left showing the bracket: {still_showing}"

@@ -107,6 +107,10 @@ class TournamentCog(commands.Cog):
         embed = render_live_post(conn, tournament, live["kind"])
         shown = embed.to_dict()
         if self.last_shown.get(message_id) != shown:
+            # Checked right before the edit, with no wait in between: a request may have
+            # replaced this post since the pass read its list, and it's now just a link.
+            if not self._still_live(conn, live):
+                return True
             try:
                 await channel.get_partial_message(message_id).edit(embed=embed)
             except (discord.NotFound, discord.Forbidden):
@@ -117,16 +121,28 @@ class TournamentCog(commands.Cog):
             except discord.HTTPException:
                 log.warning("Couldn't update the %s post for tournament %s yet", live["kind"], live["tournament_id"])
                 return False
+            replacement = db.get_live_post(conn, live["tournament_id"], live["kind"])
+            if replacement is None or replacement["message_id"] != message_id:
+                # Replaced while the edit was on its way. Whichever edit Discord applied
+                # last, put the link back so the old post ends as the link.
+                if replacement is not None:
+                    await self._retire(live, live["kind"], _jump_url(tournament["guild_id"], replacement["channel_id"],
+                                                                     replacement["message_id"]))
+                return True
             self.last_shown[message_id] = shown
         if tournament["status"] == "concluded":
             # Its final state is shown; nothing will change it again.
             self._forget(conn, live)
         return True
 
+    @staticmethod
+    def _still_live(conn: sqlite3.Connection, live: sqlite3.Row) -> bool:
+        current = db.get_live_post(conn, live["tournament_id"], live["kind"])
+        return current is not None and current["message_id"] == live["message_id"]
+
     def _forget(self, conn: sqlite3.Connection, live: sqlite3.Row) -> None:
         # Only if it's still the live post: a newer one may have replaced it meanwhile.
-        current = db.get_live_post(conn, live["tournament_id"], live["kind"])
-        if current is not None and current["message_id"] == live["message_id"]:
+        if self._still_live(conn, live):
             db.delete_live_post(conn, live["tournament_id"], live["kind"])
         self.last_shown.pop(live["message_id"], None)
 
@@ -145,10 +161,13 @@ class TournamentCog(commands.Cog):
         embed = render_live_post(conn, tournament, kind)
         await interaction.response.send_message(embed=embed)
         message = await interaction.original_response()
+        # Read again right before taking over, with no wait in between: another request may
+        # have posted its own copy while this one was sending, and that copy needs retiring.
+        previous = db.get_live_post(conn, tournament["id"], kind)
         db.set_live_post(conn, tournament["id"], kind, interaction.channel_id, message.id)
         self.last_shown[message.id] = embed.to_dict()
-        if live is not None:
-            await self._retire(live, kind, _jump_url(interaction.guild_id, interaction.channel_id, message.id))
+        if previous is not None:
+            await self._retire(previous, kind, _jump_url(interaction.guild_id, interaction.channel_id, message.id))
 
     async def _retire(self, old: sqlite3.Row, kind: str, new_url: str) -> None:
         """Turn a replaced live post into a pointer to the new one, so it doesn't sit in the
