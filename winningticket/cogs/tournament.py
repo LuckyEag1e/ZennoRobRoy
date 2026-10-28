@@ -151,12 +151,17 @@ class TournamentCog(commands.Cog):
         view in this channel, privately, so the channel doesn't fill up with copies.
         Otherwise post a fresh one, which becomes the live post."""
         live = db.get_live_post(conn, tournament["id"], kind)
-        if live is not None and await self._in_view(interaction.channel, live):
-            url = _jump_url(interaction.guild_id, live["channel_id"], live["message_id"])
-            await interaction.response.send_message(
-                f"The {kind} is just above, and it's kept up to date: {url}", ephemeral=True
-            )
-            return
+        while live is not None and await self._in_view(interaction.channel, live):
+            # Read again after looking: another request may have replaced (and deleted) the
+            # post meanwhile, and then it's the replacement that needs checking.
+            current = db.get_live_post(conn, tournament["id"], kind)
+            if current is not None and current["message_id"] == live["message_id"]:
+                url = _jump_url(interaction.guild_id, live["channel_id"], live["message_id"])
+                await interaction.response.send_message(
+                    f"The {kind} is just above, and it's kept up to date: {url}", ephemeral=True
+                )
+                return
+            live = current
         embed = render_live_post(conn, tournament, kind)
         await interaction.response.send_message(embed=embed)
         message = await interaction.original_response()

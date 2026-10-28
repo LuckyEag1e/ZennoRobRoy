@@ -171,6 +171,44 @@ def test_two_members_asking_at_once_leave_one_live_post(world):
         assert still_showing == [live], f"seed {seed}: copies left showing the bracket: {still_showing}"
 
 
+def test_a_member_is_never_pointed_at_a_post_replaced_while_looking(world, monkeypatch):
+    """Two members post fresh copies while a third asks at the same instant. The third may
+    find a copy in view and then see it replaced while looking. The link they get must be
+    to the post that's live when the bot writes it. It can still be replaced while the
+    reply is on its way, which nothing can prevent."""
+    sim, organizer, player, first = world
+    sim.simultaneous = True
+    posters = [player, sim.add_user(3, "Second player")]
+    asker = sim.add_user(4, "Third player")
+    linked = []  # (linked message id, live message id) as each link is written
+    original_jump_url = tournament_cog._jump_url
+
+    def jump_url(guild_id, channel_id, message_id):
+        [live] = [row["message_id"] for row in _live_posts(sim) if row["kind"] == "bracket"]
+        linked.append((message_id, live))
+        return original_jump_url(guild_id, channel_id, message_id)
+
+    monkeypatch.setattr(tournament_cog, "_jump_url", jump_url)
+
+    async def round_of(seed):
+        for _ in range(tournament_cog.LIVE_POST_IN_VIEW):
+            await sim.chat(player, "pushing it up")
+        before = len(sim.channel.messages)
+
+        async def ask_once_a_copy_is_up():
+            while not any(m.public and m.embed is not None for m in sim.channel.messages[before:]):
+                await sim._turn()
+            await sim.run(asker, "tournament bracket", name="Cup")
+
+        await sim.together([sim.run(p, "tournament bracket", name="Cup") for p in posters]
+                           + [ask_once_a_copy_is_up()], random.Random(seed))
+
+    for seed in range(120):  # the race needs the right interleaving, about one round in thirteen
+        asyncio.run(round_of(seed))
+    assert linked  # otherwise the race was never set up
+    assert all(message_id == live for message_id, live in linked), "linked a post that had been replaced"
+
+
 def test_a_restart_leaves_an_unchanged_post_alone(world):
     """The bot restarting mustn't edit a post that's already current: Discord would mark it
     "(edited)" for nothing."""

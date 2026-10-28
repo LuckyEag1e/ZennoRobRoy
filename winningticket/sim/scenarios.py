@@ -220,14 +220,19 @@ class TournamentRun:
         command = f"tournament {kind}"
         name = await self.tournament_name(player, command, "name")
         reply = await self.sim.run(player.user, command, name=name)
-        # Messages that arrive while the bot is answering can push the post up a little;
-        # what matters is it was in view when they asked.
-        existing = self.sim.channel.messages[:reply.messages_before]
         pointer = re.search(r"kept up to date: \S+/(\d+)$", (reply.sent.content or "") if reply.sent else "")
         if pointer is None:
             return
         message_id = int(pointer.group(1))
-        in_view = [m.id for m in existing[::-1] if m.public and not m.deleted][:LIVE_POST_IN_VIEW]
+        # Messages that arrive while the bot is answering can push the post up a little, and
+        # someone else's request can replace it with a newer one. Either is fine: the post
+        # has to be in view when they asked or when the reply reached them.
+        messages = self.sim.channel.messages
+        reply_index = messages.index(reply.sent) if reply.sent in messages else len(messages)
+        in_view = {
+            m.id for window in (messages[:reply.messages_before], messages[:reply_index])
+            for m in [m for m in window[::-1] if m.public and not m.deleted][:LIVE_POST_IN_VIEW]
+        }
         if message_id not in in_view:
             self.sim._problem(f"the bot pointed {player.user.display_name} at a {kind} post that isn't in view")
 
