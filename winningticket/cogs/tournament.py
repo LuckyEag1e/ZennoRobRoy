@@ -111,7 +111,7 @@ class TournamentCog(commands.Cog):
         shown = _fingerprint(embed)
         if live["shown"] != shown:
             # Checked right before the edit, with no wait in between: a request may have
-            # replaced this post since the pass read its list, and it's now just a link.
+            # replaced this post since the pass read its list, and it's been deleted.
             if not self._still_live(conn, live):
                 return True
             try:
