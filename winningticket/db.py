@@ -137,6 +137,9 @@ CREATE TABLE IF NOT EXISTS live_posts (
     kind            TEXT NOT NULL CHECK (kind IN ('bracket', 'leaderboard')),
     channel_id      INTEGER NOT NULL,
     message_id      INTEGER NOT NULL,
+    -- A fingerprint of what the post shows, so a restart doesn't re-edit (and mark as
+    -- "edited") a post that's already current.
+    shown           TEXT,
     PRIMARY KEY (tournament_id, kind)
 );
 
@@ -181,7 +184,14 @@ def init_db(conn: sqlite3.Connection) -> None:
         conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
     else:
         _rebuild_tournaments_table(conn)
+        _add_column_if_missing(conn, "live_posts", "shown", "TEXT")
     conn.commit()
+
+
+def _add_column_if_missing(conn: sqlite3.Connection, table: str, column: str, definition: str) -> None:
+    """For a new column on a table that has no constraint changes, which SQLite can add in place."""
+    if column not in {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
 
 def _rebuild_tournaments_table(conn: sqlite3.Connection) -> None:
@@ -597,12 +607,22 @@ def clear_user_predictions(conn: sqlite3.Connection, tournament_id: int, user_id
 
 # -- live posts -------------------------------------------------------------------
 
-def set_live_post(conn: sqlite3.Connection, tournament_id: int, kind: str, channel_id: int, message_id: int) -> None:
+def set_live_post(conn: sqlite3.Connection, tournament_id: int, kind: str, channel_id: int, message_id: int,
+                  shown: str) -> None:
     conn.execute(
-        """INSERT INTO live_posts (tournament_id, kind, channel_id, message_id) VALUES (?, ?, ?, ?)
+        """INSERT INTO live_posts (tournament_id, kind, channel_id, message_id, shown) VALUES (?, ?, ?, ?, ?)
            ON CONFLICT(tournament_id, kind) DO UPDATE SET
-               channel_id = excluded.channel_id, message_id = excluded.message_id""",
-        (tournament_id, kind, channel_id, message_id),
+               channel_id = excluded.channel_id, message_id = excluded.message_id, shown = excluded.shown""",
+        (tournament_id, kind, channel_id, message_id, shown),
+    )
+    conn.commit()
+
+
+def set_live_post_shown(conn: sqlite3.Connection, tournament_id: int, kind: str, message_id: int, shown: str) -> None:
+    """Record what a live post now shows, unless a newer post has replaced it meanwhile."""
+    conn.execute(
+        "UPDATE live_posts SET shown = ? WHERE tournament_id = ? AND kind = ? AND message_id = ?",
+        (shown, tournament_id, kind, message_id),
     )
     conn.commit()
 

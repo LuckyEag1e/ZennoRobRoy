@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 import sqlite3
 
@@ -33,6 +35,11 @@ def render_live_post(conn: sqlite3.Connection, tournament: sqlite3.Row, kind: st
     return render_leaderboard_embed(tournament["name"], db.load_scores(conn, tournament["id"]))
 
 
+def _fingerprint(embed: discord.Embed) -> str:
+    """A short stand-in for everything an embed shows, to tell whether a post needs editing."""
+    return hashlib.sha256(json.dumps(embed.to_dict(), sort_keys=True).encode()).hexdigest()
+
+
 def _jump_url(guild_id: int, channel_id: int, message_id: int) -> str:
     return f"https://discord.com/channels/{guild_id}/{channel_id}/{message_id}"
 
@@ -40,10 +47,6 @@ def _jump_url(guild_id: int, channel_id: int, message_id: int) -> str:
 class TournamentCog(commands.Cog):
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
-        # What each live post's message last showed, so the refresh loop only edits ones that
-        # changed. It's by message: a new post can replace the live one mid-refresh, and an
-        # edit to the old message mustn't mark the new one as current.
-        self.last_shown: dict[int, dict] = {}
         # Kept open only to ask SQLite whether anything was written since the last refresh
         # (PRAGMA data_version counts other connections' commits), so an idle bot doesn't
         # rebuild every post every few seconds.
@@ -105,8 +108,8 @@ class TournamentCog(commands.Cog):
             self._forget(conn, live)
             return True
         embed = render_live_post(conn, tournament, live["kind"])
-        shown = embed.to_dict()
-        if self.last_shown.get(message_id) != shown:
+        shown = _fingerprint(embed)
+        if live["shown"] != shown:
             # Checked right before the edit, with no wait in between: a request may have
             # replaced this post since the pass read its list, and it's now just a link.
             if not self._still_live(conn, live):
@@ -126,7 +129,7 @@ class TournamentCog(commands.Cog):
                 # it before or after the edit landed; deleting again makes sure it's gone.
                 await self._retire(live)
                 return True
-            self.last_shown[message_id] = shown
+            db.set_live_post_shown(conn, live["tournament_id"], live["kind"], message_id, shown)
         if tournament["status"] == "concluded":
             # Its final state is shown; nothing will change it again.
             self._forget(conn, live)
@@ -141,7 +144,6 @@ class TournamentCog(commands.Cog):
         # Only if it's still the live post: a newer one may have replaced it meanwhile.
         if self._still_live(conn, live):
             db.delete_live_post(conn, live["tournament_id"], live["kind"])
-        self.last_shown.pop(live["message_id"], None)
 
     async def _show_live_post(self, interaction: discord.Interaction, conn: sqlite3.Connection,
                               tournament: sqlite3.Row, kind: str) -> None:
@@ -161,14 +163,12 @@ class TournamentCog(commands.Cog):
         # Read again right before taking over, with no wait in between: another request may
         # have posted its own copy while this one was sending, and that copy needs retiring.
         previous = db.get_live_post(conn, tournament["id"], kind)
-        db.set_live_post(conn, tournament["id"], kind, interaction.channel_id, message.id)
-        self.last_shown[message.id] = embed.to_dict()
+        db.set_live_post(conn, tournament["id"], kind, interaction.channel_id, message.id, _fingerprint(embed))
         if previous is not None:
             await self._retire(previous)
 
     async def _retire(self, old: sqlite3.Row) -> None:
         """Delete a replaced live post, so the channel only ever holds the current one."""
-        self.last_shown.pop(old["message_id"], None)
         channel = self.bot.get_channel(old["channel_id"])
         if channel is None:
             return

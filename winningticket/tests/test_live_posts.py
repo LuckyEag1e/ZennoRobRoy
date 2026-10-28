@@ -76,7 +76,6 @@ def test_a_replaced_post_is_deleted_and_forgotten(world):
     new = asyncio.run(play())
     assert new is not old and new.embed is not None
     assert old.deleted
-    assert old.id not in _cog(sim).last_shown
     assert [live["message_id"] for live in _live_posts(sim)] == [new.id]
 
 
@@ -149,7 +148,6 @@ def test_a_post_retired_mid_refresh_stays_retired(world):
         live_ids = {live["message_id"] for live in _live_posts(sim)}
         showing = [m.id for m in sim.channel.messages if m.public and not m.deleted and m.embed is not None]
         assert set(showing) == live_ids, f"seed {seed}: a replaced post is still in the channel"
-        assert set(cog.last_shown) <= live_ids, f"seed {seed}: a replaced post is still remembered"
 
 
 def test_two_members_asking_at_once_leave_one_live_post(world):
@@ -171,3 +169,32 @@ def test_two_members_asking_at_once_leave_one_live_post(world):
         still_showing = [m.id for m in sim.channel.messages
                          if m.public and not m.deleted and m.embed is not None and m.embed.title.startswith("Bracket")]
         assert still_showing == [live], f"seed {seed}: copies left showing the bracket: {still_showing}"
+
+
+def test_a_restart_leaves_an_unchanged_post_alone(world):
+    """The bot restarting mustn't edit a post that's already current: Discord would mark it
+    "(edited)" for nothing."""
+    sim, organizer, player, posted = world
+    asyncio.run(_refresh(sim))
+    edits_before = posted.edits
+    restarted = tournament_cog.TournamentCog(sim.bot)
+    try:
+        asyncio.run(restarted.refresh_live_posts.coro(restarted))
+    finally:
+        asyncio.run(restarted.cog_unload())
+    assert posted.edits == edits_before
+
+
+def test_a_database_from_before_fingerprints_gets_the_column(tmp_path):
+    conn = db.get_connection(tmp_path / "old.db")
+    db.init_db(conn)
+    conn.executescript("""
+        DROP TABLE live_posts;
+        CREATE TABLE live_posts (tournament_id INTEGER NOT NULL, kind TEXT NOT NULL,
+            channel_id INTEGER NOT NULL, message_id INTEGER NOT NULL, PRIMARY KEY (tournament_id, kind));
+        INSERT INTO live_posts VALUES (1, 'bracket', 2, 3);
+    """)
+    db.init_db(conn)
+    [row] = db.get_live_posts(conn)
+    assert row["message_id"] == 3 and row["shown"] is None
+    conn.close()
