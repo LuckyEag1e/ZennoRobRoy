@@ -170,6 +170,10 @@ class AdminCog(commands.Cog):
                 refusal = outdated_pick_message(now, (winner_id, loser_id))
                 if refusal is not None:
                     await winner_interaction.response.edit_message(content=refusal, view=None)
+                elif now.winner == winner_id:
+                    await winner_interaction.response.edit_message(
+                        content=f"**{winner_label}** already won this match, so there's nothing to change.", view=None
+                    )
                 elif now.winner is not None:
                     await winner_interaction.response.edit_message(
                         content=f"This match already has a recorded result. Overwrite with **{winner_label}**? "

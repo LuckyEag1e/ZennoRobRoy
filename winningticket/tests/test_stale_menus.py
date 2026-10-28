@@ -179,3 +179,19 @@ def test_a_concluded_tournament_cant_be_changed_from_an_old_menu(world):
         assert db.get_tournament(conn, 1)["status"] == "concluded"
     finally:
         conn.close()
+
+
+def test_setting_the_winner_a_match_already_has_changes_nothing(world):
+    sim, first, second = world
+
+    async def play():
+        match = _first_option((await sim.run(first, "match result", tournament="Cup")).sent)
+        await _record(sim, first, match, "Ace")
+        menu = (await sim.run(second, "admin setresult", tournament="Cup")).sent
+        await sim.choose(second, menu, match)
+        return await sim.click(second, menu, "Ace")
+
+    reply = asyncio.run(play())
+    assert "already won this match" in reply.message.content
+    assert reply.message.view is None  # no "Overwrite?" confirmation
+    assert list(_results(sim).values()) == ["Ace"]

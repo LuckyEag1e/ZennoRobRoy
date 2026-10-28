@@ -704,17 +704,19 @@ class WinningTicketCLI(cmd.Cmd):
         a_label = team_label(teams_by_id, team_a)
         b_label = team_label(teams_by_id, team_b)
 
-        if match.id in results_by_match:
-            if input("This match already has a result. Overwrite? [y/N] ").strip().lower() != "y":
-                print("Cancelled.")
-                return
-
         winner_choice = input(f"Winner: [1] {a_label}  [2] {b_label}  > ").strip()
         if winner_choice not in ("1", "2"):
             print("Invalid choice.")
             return
         winner_id = team_a if winner_choice == "1" else team_b
         loser_id = team_b if winner_choice == "1" else team_a
+        if results_by_match.get(match.id) == winner_id:
+            print(f"{team_label(teams_by_id, winner_id)} already won this match, so there's nothing to change.")
+            return
+        if match.id in results_by_match:
+            if input("This match already has a different result. Overwrite? [y/N] ").strip().lower() != "y":
+                print("Cancelled.")
+                return
         dropped = db.record_result(self.conn, tournament["id"], match.id, winner_id, self.user_id)
 
         winner_label = team_label(teams_by_id, winner_id)
