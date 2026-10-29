@@ -19,6 +19,7 @@ import db
 from bracket import bracket_order, final_match, is_bye, resolve_all_slots, resolve_slot
 from labels import team_label
 from ratings import BASE_RATING, compute_ratings, entrant_rating
+from seeding import seeded_pairs
 from sim.actors import (
     CAREFUL,
     CASUAL,
@@ -325,8 +326,10 @@ class TournamentRun:
 
     async def _run_signups(self) -> None:
         org, style = self.organizer.user, self.organizer.style
+        # Leaving seeding out tries the default.
+        seeding = self.rng.choice([{}, {"seeding": "slide"}, {"seeding": "random"}])
         await self.sim.run(org, "registration open", name=self.name,
-                           closes_in_hours=1.0 if style.uses_deadline else None)
+                           closes_in_hours=1.0 if style.uses_deadline else None, **seeding)
         self._remember_tournament_id()
         if self.rng.random() < style.wrong_order:
             await self.sim.run(org, "registration close", name=self.name)  # far too early
@@ -521,15 +524,16 @@ class TournamentRun:
 
     def check_seeds(self) -> None:
         """A tournament seeded by rating must list its entrants best first, counting
-        unrated ones as the starting rating."""
+        unrated ones as the starting rating, and pair them in round 1 as its seeding says."""
         conn = db.get_connection()
         try:
             tournament = db.get_tournament(conn, self.tournament_id)
-            if tournament["status"] == "registration" or tournament["seeding_mode"] != "auto":
+            if tournament["status"] == "registration" or tournament["seeding_mode"] == "random":
                 return
             ratings = compute_ratings(db.load_match_history(conn, GUILD_ID))
             members_by_team = db.get_members_by_team(conn, self.tournament_id)
             seeds = {team_id: team["seed"] for team_id, team in db.get_teams(conn, self.tournament_id).items()}
+            matches_by_id = db.get_matches(conn, self.tournament_id)
         finally:
             conn.close()
         if sorted(seeds.values(), key=str) != sorted(range(1, len(seeds) + 1), key=str):
@@ -539,6 +543,11 @@ class TournamentRun:
         by_seed = [BASE_RATING if rating is None else rating for rating in by_seed]
         if by_seed != sorted(by_seed, reverse=True):
             self.sim._problem(f"seeds don't follow the entrants' ratings: {[round(rating) for rating in by_seed]}")
+        first_round = [(m.team_a_id, m.team_b_id) for m in sorted(matches_by_id.values(), key=lambda m: m.slot_index)
+                       if m.round == 1]
+        expected = seeded_pairs(sorted(seeds, key=seeds.get), slide=tournament["seeding_mode"] == "slide")
+        if first_round != expected:
+            self.sim._problem(f"round 1 isn't paired for {tournament['seeding_mode']} seeding")
 
     async def welcome_a_guest(self) -> Optional[Player]:
         """After a tournament: a guest who played without a Discord account joins, and the

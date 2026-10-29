@@ -36,8 +36,11 @@ STATUSES = ("registration", "setup", "predictions_open", "in_progress", "complet
 # way than closing registration would leave a tournament with no bracket.
 FORCEABLE_STATUSES = tuple(status for status in STATUSES if status not in ("registration", "concluded"))
 _STATUS_SQL_LIST = ", ".join(f"'{status}'" for status in STATUSES)
-# How closing registration orders the entrants: by Elo from past tournaments, or at random.
-SEEDING_MODES = ("auto", "random")
+# How closing registration places the entrants: seeded by Elo from past tournaments, with
+# the top seeds facing the lowest (standard) or the middle of the field (slide), or drawn
+# at random. seeding.seeded_pairs shows the difference.
+SEEDING_MODES = ("standard", "slide", "random")
+_SEEDING_SQL_LIST = ", ".join(f"'{mode}'" for mode in SEEDING_MODES)
 
 
 def to_db_time(moment: datetime) -> str:
@@ -69,7 +72,7 @@ CREATE TABLE IF NOT EXISTS {table_name} (
     registration_closes_at TEXT,
     -- The sign-ups announcement, edited once sign-ups close so its countdown stops.
     announcement_message_id INTEGER,
-    seeding_mode TEXT NOT NULL CHECK (seeding_mode IN ('auto', 'random')) DEFAULT 'random'
+    seeding_mode TEXT NOT NULL CHECK (seeding_mode IN ({_SEEDING_SQL_LIST})) DEFAULT 'random'
 );
 """
 
@@ -179,7 +182,7 @@ def get_connection(path: Path | None = None) -> sqlite3.Connection:
 
 
 # Bump when an older database needs migrating, and add the migration to init_db().
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 
 def init_db(conn: sqlite3.Connection) -> None:
@@ -213,10 +216,13 @@ def _rebuild_tournaments_table(conn: sqlite3.Connection) -> None:
         conn.execute("BEGIN")
         conn.execute(_tournaments_table_sql("tournaments_new"))
         old_columns = {row["name"] for row in conn.execute("PRAGMA table_info(tournaments)")}
-        columns = ", ".join(
+        columns = [
             row["name"] for row in conn.execute("PRAGMA table_info(tournaments_new)") if row["name"] in old_columns
-        )
-        conn.execute(f"INSERT INTO tournaments_new ({columns}) SELECT {columns} FROM tournaments")
+        ]
+        # Version 4 called standard seeding 'auto'.
+        values = ["CASE seeding_mode WHEN 'auto' THEN 'standard' ELSE seeding_mode END" if column == "seeding_mode"
+                  else column for column in columns]
+        conn.execute(f"INSERT INTO tournaments_new ({', '.join(columns)}) SELECT {', '.join(values)} FROM tournaments")
         # Keep the id counter, so ids of deleted tournaments aren't handed out again.
         conn.execute("DELETE FROM sqlite_sequence WHERE name = 'tournaments_new'")
         conn.execute("""INSERT INTO sqlite_sequence (name, seq)
@@ -245,7 +251,7 @@ def create_tournament(conn: sqlite3.Connection, guild_id: int, name: str, create
 
 
 def open_registration(conn: sqlite3.Connection, guild_id: int, name: str, created_by: int,
-                      channel_id: int | None, closes_at: str | None, seeding_mode: str = "auto") -> int:
+                      channel_id: int | None, closes_at: str | None, seeding_mode: str = "standard") -> int:
     """Create a tournament that takes sign-ups. `closes_at` is a UTC time in the same
     format as created_at, or None to close it by hand."""
     cur = conn.execute(

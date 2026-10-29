@@ -24,7 +24,7 @@ def conn(tmp_path):
     conn.close()
 
 
-def _signups(conn, entrants: list[tuple[str, int | None]], seeding_mode: str = "auto", guild: int = GUILD) -> int:
+def _signups(conn, entrants: list[tuple[str, int | None]], seeding_mode: str = "standard", guild: int = GUILD) -> int:
     tournament_id = db.open_registration(conn, guild, "Cup", 99, 555, None, seeding_mode)
     for name, user_id in entrants:
         db.register_entrant(conn, tournament_id, name, user_id)
@@ -92,9 +92,20 @@ def test_closing_by_rating_writes_seeds_in_rating_order(conn):
     assert {db.get_teams(conn, tournament_id)[team]["seed"] for team in byes} == {1, 2, 3}
 
 
+def test_slide_seeding_pairs_the_top_half_with_the_bottom_half_in_order(conn):
+    _concluded(conn, [("Ace", 1), ("Blaze", 2), ("Comet", 3), ("Dash", 4)])  # Ace wins every game
+    tournament_id = _signups(conn, [("Dash", 4), ("Ace", 1), ("Comet", 3), ("Blaze", 2)], seeding_mode="slide")
+    close_registration(conn, tournament_id, random.Random(0))
+    teams = db.get_teams(conn, tournament_id)
+    matches_by_id, _, _ = db.load_bracket(conn, tournament_id)
+    first_round = {frozenset(teams[team]["seed"] for team in (m.team_a_id, m.team_b_id))
+                   for m in matches_by_id.values() if m.round == 1}
+    assert first_round == {frozenset({1, 3}), frozenset({2, 4})}
+
+
 def test_closing_can_override_the_seeding_chosen_at_opening(conn):
     _concluded(conn, [("Ace", 1), ("Blaze", 2)])
-    tournament_id = _signups(conn, [("Ace", 1), ("Blaze", 2), ("Comet", 3)], seeding_mode="auto")
+    tournament_id = _signups(conn, [("Ace", 1), ("Blaze", 2), ("Comet", 3)], seeding_mode="standard")
     close_registration(conn, tournament_id, random.Random(0), seeding_mode="random")
     assert all(team["seed"] is None for team in db.get_teams(conn, tournament_id).values())
 
@@ -139,5 +150,22 @@ def test_version_3_database_gets_random_seeding_for_existing_tournaments(tmp_pat
 
     db.init_db(conn)
     assert db.get_tournament_by_name(conn, 1, "Open")["seeding_mode"] == "random"
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == db.SCHEMA_VERSION
+    conn.close()
+
+
+def test_version_4_database_keeps_standard_seeding_under_its_new_name(tmp_path):
+    conn = db.get_connection(tmp_path / "v4.db")
+    v4_table = db._tournaments_table_sql("tournaments").replace(
+        db._SEEDING_SQL_LIST, "'auto', 'random'"
+    )
+    conn.executescript(v4_table + "PRAGMA user_version = 4;")
+    conn.execute("""INSERT INTO tournaments (guild_id, name, created_by, status, seeding_mode)
+                    VALUES (1, 'Seeded', 99, 'registration', 'auto'), (1, 'Drawn', 99, 'registration', 'random')""")
+    conn.commit()
+
+    db.init_db(conn)
+    assert db.get_tournament_by_name(conn, 1, "Seeded")["seeding_mode"] == "standard"
+    assert db.get_tournament_by_name(conn, 1, "Drawn")["seeding_mode"] == "random"
     assert conn.execute("PRAGMA user_version").fetchone()[0] == db.SCHEMA_VERSION
     conn.close()

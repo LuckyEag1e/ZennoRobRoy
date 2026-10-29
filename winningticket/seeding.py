@@ -22,20 +22,30 @@ def bracket_positions(size: int) -> list[int]:
     return order
 
 
-def seeded_pairs(ordered_team_ids: list[int]) -> list[tuple[Optional[int], Optional[int]]]:
-    """Round-1 pairs for teams listed best seed first. The bracket is padded up to a power
-    of two, and the empty lines become byes for the top seeds."""
-    if len(ordered_team_ids) < 2:
+def seeded_pairs(ordered_team_ids: list[int], slide: bool = False) -> list[tuple[Optional[int], Optional[int]]]:
+    """Round-1 pairs for entrants listed best seed first. The bracket is padded up to a
+    power of two, and the top seeds get the byes. The rest are paired top half against
+    bottom half: standard pairs the best with the worst (1v8, 2v7 in a field of 8), and
+    `slide` pairs them in order (1v5, 2v6), so the lowest seeds don't open against the
+    best. Either way, seeds 1 and 2 can only meet in the final."""
+    count = len(ordered_team_ids)
+    if count < 2:
         signed_up = "nobody has signed up yet" if not ordered_team_ids else "only 1 has signed up so far"
         raise BracketError(f"A bracket needs at least 2 entrants, and {signed_up}.")
     size = 2
-    while size < len(ordered_team_ids):
+    while size < count:
         size *= 2
-    lines = [
-        ordered_team_ids[seed - 1] if seed <= len(ordered_team_ids) else None
-        for seed in bracket_positions(size)
-    ]
-    return list(zip(lines[::2], lines[1::2]))
+    byes = size - count
+
+    def opponent(seed: int) -> Optional[int]:
+        if seed <= byes:
+            return None
+        return seed + size // 2 - byes if slide else size + 1 - seed
+
+    def entrant(seed: Optional[int]) -> Optional[int]:
+        return ordered_team_ids[seed - 1] if seed is not None else None
+
+    return [(entrant(seed), entrant(opponent(seed))) for seed in bracket_positions(size // 2)]
 
 
 def place_new_entrants(rated: dict[int, float], unrated: list[int], rng: random.Random) -> list[int]:

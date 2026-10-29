@@ -34,7 +34,8 @@ from tournament_builder import (
 log = logging.getLogger("winningticket")
 
 SEEDING_CHOICES = [
-    app_commands.Choice(name="By rating from past tournaments", value="auto"),
+    app_commands.Choice(name="By rating: top seeds play the lowest seeds first", value="standard"),
+    app_commands.Choice(name="By rating: top seeds play mid-ranked seeds first (slide)", value="slide"),
     app_commands.Choice(name="Random draw", value="random"),
 ]
 
@@ -135,13 +136,13 @@ class RegistrationCog(commands.Cog):
     @app_commands.describe(
         name="Tournament name",
         closes_in_hours="Close sign-ups automatically after this many hours (leave blank to close by hand)",
-        seeding="How entrants are placed in the bracket when sign-ups close (default: by rating)",
+        seeding="How entrants are placed in the bracket when sign-ups close (default: by rating, top seeds play the lowest)",
     )
     @app_commands.choices(seeding=SEEDING_CHOICES)
     @requires_manage_server
     async def open_signups(self, interaction: discord.Interaction, name: str,
                    closes_in_hours: app_commands.Range[float, MIN_CLOSES_IN_HOURS, MAX_CLOSES_IN_HOURS] | None = None,
-                   seeding: str = "auto") -> None:
+                   seeding: str = "standard") -> None:
         closes_at = None
         if closes_in_hours is not None:
             closes_at = datetime.now(timezone.utc) + timedelta(hours=closes_in_hours)

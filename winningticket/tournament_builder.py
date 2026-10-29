@@ -42,8 +42,9 @@ def build_matches(conn: sqlite3.Connection, tournament_id: int,
 def close_registration(conn: sqlite3.Connection, tournament_id: int, rng: random.Random | None = None,
                        seeding_mode: str | None = None) -> int:
     """Draw the signed-up teams into a bracket and move the tournament on to setup.
-    `seeding_mode` overrides the one chosen when sign-ups opened: "auto" seeds teams by
-    their Elo from past tournaments, and "random" draws them in random order with no seeds.
+    `seeding_mode` overrides the one chosen when sign-ups opened: "standard" and "slide"
+    seed entrants by their Elo from past tournaments (see seeding.seeded_pairs), and
+    "random" draws them in random order with no seeds.
     Returns how many teams were drawn. Raises BracketError if too few signed up, and
     RegistrationClosedError if it was already closed. On any error nothing is saved, so
     closing can simply be tried again."""
@@ -53,13 +54,14 @@ def close_registration(conn: sqlite3.Connection, tournament_id: int, rng: random
             raise RegistrationClosedError(f"Registration for tournament {tournament_id} has already closed.")
         tournament = db.get_tournament(conn, tournament_id)
         members_by_team = db.get_members_by_team(conn, tournament_id)
-        if (seeding_mode or tournament["seeding_mode"]) == "auto":
+        seeding_mode = seeding_mode or tournament["seeding_mode"]
+        if seeding_mode == "random":
+            order = rng.sample(sorted(members_by_team), len(members_by_team))
+        else:
             ratings = compute_ratings(db.load_match_history(conn, tournament["guild_id"]))
             order = rating_order(members_by_team, ratings, rng)
             db.set_team_seeds(conn, order)
-        else:
-            order = rng.sample(sorted(members_by_team), len(members_by_team))
-        build_matches(conn, tournament_id, seeded_pairs(order))
+        build_matches(conn, tournament_id, seeded_pairs(order, slide=seeding_mode == "slide"))
     return len(order)
 
 

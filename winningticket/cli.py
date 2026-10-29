@@ -239,11 +239,11 @@ class WinningTicketCLI(cmd.Cmd):
     # -- registration --------------------------------------------------------
 
     def do_regopen(self, arg: str) -> None:
-        "Create a tournament that takes sign-ups, closing automatically after --closes-in hours if given: regopen <name> [--closes-in HOURS] [--seeding auto|random]"
+        "Create a tournament that takes sign-ups, closing automatically after --closes-in hours if given: regopen <name> [--closes-in HOURS] [--seeding standard|slide|random]"
         rest, seeding = take_option(arg, "--seeding")
         name, hours = take_option(rest, "--closes-in")
         if not name:
-            print("usage: regopen <name> [--closes-in HOURS] [--seeding auto|random]")
+            print("usage: regopen <name> [--closes-in HOURS] [--seeding standard|slide|random]")
             return
         if not check_seeding(seeding):
             return
@@ -263,7 +263,7 @@ class WinningTicketCLI(cmd.Cmd):
             print(f"A tournament named '{name}' already exists.")
             return
         db.open_registration(self.conn, GUILD_ID, name, self.user_id, None,
-                             db.to_db_time(closes_at) if closes_at is not None else None, seeding or "auto")
+                             db.to_db_time(closes_at) if closes_at is not None else None, seeding or "standard")
         closing = f" Sign-ups close at {closes_at:%H:%M:%S} UTC." if closes_at is not None else ""
         print(f"Sign-ups open for '{name}'.{closing} Use 'as' to switch users, then 'register {name}'.")
 
@@ -338,7 +338,7 @@ class WinningTicketCLI(cmd.Cmd):
         print(f"Withdrew {parts[1]}.")
 
     def do_regclose(self, arg: str) -> None:
-        "Close sign-ups and draw the bracket, optionally overriding how it's seeded: regclose <name> [--seeding auto|random]"
+        "Close sign-ups and draw the bracket, optionally overriding how it's seeded: regclose <name> [--seeding standard|slide|random]"
         name, seeding = take_option(arg, "--seeding")
         if not check_seeding(seeding):
             return

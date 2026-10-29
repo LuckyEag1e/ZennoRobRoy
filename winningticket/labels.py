@@ -93,7 +93,11 @@ def concluded_label(tournament) -> str:
 
 def draw_description(seeding_mode: str) -> str:
     """How closing registration put the entrants into the bracket."""
-    return "seeded into the bracket by rating" if seeding_mode == "auto" else "drawn into the bracket at random"
+    if seeding_mode == "random":
+        return "drawn into the bracket at random"
+    if seeding_mode == "slide":
+        return "seeded into the bracket by rating, with the top seeds playing mid-ranked seeds first"
+    return "seeded into the bracket by rating"
 
 
 def entrant_lines(entrants: list, player_label: Callable[[int], str]) -> list[str]:
