@@ -59,7 +59,8 @@ Admin:
   (or with `/registration close name:<name>`), and then the entrants are drawn into a
   bracket at random, with byes filling it out to a power of two.
 - `/registration add tournament:<name> [user:<member>] [name:<text>]`: sign up a member
-  for them, or an entrant with no Discord account. `/registration remove` withdraws anyone.
+  for them (by name only, unless they've agreed to link their data), or an entrant with no
+  Discord account. `/registration remove` withdraws anyone.
 - `/tournament create name:<name> csv_file:<attach bracket.csv>`
 - `/tournament open name:<name>` — let members start `/predict`
 - `/tournament lock name:<name>` — stop prediction submissions, start recording real results
@@ -81,7 +82,9 @@ Everyone:
 - `/features`: a short summary of what the bot does and what's planned
 - `/feedback`: send the organizers anonymous feedback (once every 5 minutes)
 - `/register tournament:<name>` / `/unregister tournament:<name>`: sign up for, or withdraw
-  from, a tournament that's taking entrants
+  from, a tournament that's taking entrants. The first time, a private notice asks whether to
+  link your entries, results and rating to your account, or enter by name only
+- `/optout confirm:opt out`: unlink your entries, results and rating from your account
 - `/registration entrants name:<name>`: see who has signed up
 - `/predict tournament:<name>` — click through and fill out your bracket (round 2+
   options are built from your own picks, just like ESPN/Yahoo bracket pools)

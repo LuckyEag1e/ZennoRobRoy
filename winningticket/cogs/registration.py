@@ -12,6 +12,7 @@ from discord.ext import commands, tasks
 import db
 from bracket import BracketError
 from common import (
+    BotView,
     edit_signups_message,
     load_bracket_embed,
     refuse_taken_name,
@@ -23,7 +24,7 @@ from common import (
     tournament_name_autocomplete,
 )
 from embeds import EMBED_DESCRIPTION_LIMIT, mention
-from labels import draw_description, entrant_lines, join_within
+from labels import CONSENT_NOTICE, OPTED_OUT_NOTE, draw_description, entrant_lines, join_within
 from tournament_builder import (
     MAX_CLOSES_IN_HOURS,
     MIN_CLOSES_IN_HOURS,
@@ -71,6 +72,60 @@ async def _require_registration(interaction: discord.Interaction, tournament: sq
         f"**{tournament['name']}** isn't taking sign-ups (status: {tournament['status']}).", ephemeral=True
     )
     return False
+
+
+class ConsentView(BotView):
+    """Agree or Opt out, shown privately to a member signing up who hasn't agreed yet."""
+
+    def __init__(self, cog: RegistrationCog, tournament_id: int) -> None:
+        super().__init__(timeout=600)
+        self.cog = cog
+        self.tournament_id = tournament_id
+
+    @discord.ui.button(label="Agree", style=discord.ButtonStyle.success)
+    async def agree(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await self._sign_up(interaction, linked=True)
+
+    @discord.ui.button(label="Opt out", style=discord.ButtonStyle.secondary)
+    async def opt_out(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await self._sign_up(interaction, linked=False)
+
+    async def _sign_up(self, interaction: discord.Interaction, linked: bool) -> None:
+        user = interaction.user
+        conn = db.get_connection()
+        try:
+            # The notice can sit open while sign-ups close or a double-click signs them up.
+            tournament = db.get_tournament(conn, self.tournament_id)
+            if tournament is None or tournament["status"] != "registration":
+                await interaction.response.edit_message(content="Sign-ups for that tournament have closed.", view=None)
+                return
+            name = tournament["name"]
+            if db.get_entrant_team_id(conn, self.tournament_id, user.id) is not None:
+                await interaction.response.edit_message(content=f"You're already signed up for **{name}**.", view=None)
+                return
+            if linked:
+                db.record_agreement(conn, interaction.guild_id, user.id)
+                db.register_entrant(conn, self.tournament_id, user.display_name, user.id)
+                content = (f"✅ You're signed up for **{name}** ({db.entrant_count(conn, self.tournament_id)} entered "
+                           f"so far). If you change your mind, `/optout` unlinks your data.")
+            else:
+                db.opt_out(conn, interaction.guild_id, user.id)  # unlinks entries from before consent was asked
+                # A name-only entry can't be told apart from another with the same name, so it
+                # mustn't get a number added the way a linked one would.
+                if db.get_team_by_name(conn, self.tournament_id, user.display_name) is not None:
+                    await interaction.response.edit_message(
+                        content=f"Someone is already signed up for **{name}** as {user.display_name}. If that's you, "
+                                f"you're in. If not, ask an organizer to add you under another name.",
+                        view=None,
+                    )
+                    return
+                db.register_entrant(conn, self.tournament_id, user.display_name, None)
+                content = (f"✅ You're signed up for **{name}** as {user.display_name} "
+                           f"({db.entrant_count(conn, self.tournament_id)} entered so far). {OPTED_OUT_NOTE}")
+            await interaction.response.edit_message(content=content, view=None)
+            await self.cog._refresh_signups_message(conn, self.tournament_id)
+        finally:
+            conn.close()
 
 
 class RegistrationCog(commands.Cog):
@@ -232,12 +287,16 @@ class RegistrationCog(commands.Cog):
                     f"{user.display_name} is already signed up for **{tournament}**.", ephemeral=True
                 )
                 return
+            # A member's entry is only linked to them once they've agreed to it themselves.
+            linked = user is not None and db.has_agreed(conn, interaction.guild_id, user.id)
             _, entrant_name = db.register_entrant(
-                conn, tournament_row["id"], name or user.display_name, user.id if user is not None else None
+                conn, tournament_row["id"], name or user.display_name, user.id if linked else None
             )
-            who = f"{entrant_name} ({user.mention})" if user is not None else entrant_name
+            who = f"{entrant_name} ({user.mention})" if linked else entrant_name
+            note = (f" They haven't agreed to link their data to their account, so they're entered by name only."
+                    if user is not None and not linked else "")
             await interaction.response.send_message(
-                f"✅ Signed up {who} for **{tournament}** ({db.entrant_count(conn, tournament_row['id'])} entered so far).",
+                f"✅ Signed up {who} for **{tournament}** ({db.entrant_count(conn, tournament_row['id'])} entered so far).{note}",
                 ephemeral=True,
             )
             await self._refresh_signups_message(conn, tournament_row["id"])
@@ -281,6 +340,11 @@ class RegistrationCog(commands.Cog):
                     f"You're already signed up for **{tournament}**.", ephemeral=True
                 )
                 return
+            if not db.has_agreed(conn, interaction.guild_id, interaction.user.id):
+                await interaction.response.send_message(
+                    CONSENT_NOTICE, view=ConsentView(self, tournament_row["id"]), ephemeral=True
+                )
+                return
             db.register_entrant(conn, tournament_row["id"], interaction.user.display_name, interaction.user.id)
             await interaction.response.send_message(
                 f"✅ You're signed up for **{tournament}** ({db.entrant_count(conn, tournament_row['id'])} entered so far).",
@@ -301,7 +365,11 @@ class RegistrationCog(commands.Cog):
             if tournament_row is None or not await _require_registration(interaction, tournament_row):
                 return
             if not db.unregister_entrant(conn, tournament_row["id"], interaction.user.id):
-                await interaction.response.send_message(f"You aren't signed up for **{tournament}**.", ephemeral=True)
+                await interaction.response.send_message(
+                    f"You aren't signed up for **{tournament}** under your account. If you opted out when "
+                    f"signing up, ask an organizer to withdraw you.",
+                    ephemeral=True,
+                )
                 return
             await interaction.response.send_message(f"You withdrew from **{tournament}**.", ephemeral=True)
             await self._refresh_signups_message(conn, tournament_row["id"])

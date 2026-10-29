@@ -34,7 +34,10 @@ from bracket import (
     rounds,
 )
 from labels import (
+    CONSENT_NOTICE,
     CURRENT_FEATURES,
+    OPT_OUT_CONFIRMATION,
+    OPTED_OUT_NOTE,
     PLANNED_FEATURES,
     ban_lines,
     crowd_verdict,
@@ -45,6 +48,7 @@ from labels import (
     history_line,
     matchup_label,
     name_taken_message,
+    opted_out_message,
     pick_review_lines,
     pick_share,
     pickem_podium_lines,
@@ -58,8 +62,8 @@ from ratings import compute_ratings
 
 CLI_DB_PATH = Path(__file__).parent / "data" / "cli.db"
 GUILD_ID = 1  # single pretend guild for local testing
-# What a banned user can still do: switch user, look around the CLI, and leave.
-ALLOWED_WHEN_BANNED = {"as", "whoami", "help", "exit", "quit", "EOF"}
+# What a banned user can still do: switch user, look around the CLI, opt out, and leave.
+ALLOWED_WHEN_BANNED = {"as", "whoami", "help", "exit", "quit", "EOF", "optout"}
 
 
 def user_label(user_id: int) -> str:
@@ -307,8 +311,26 @@ class WinningTicketCLI(cmd.Cmd):
         if db.get_entrant_team_id(self.conn, tournament["id"], self.user_id) is not None:
             print("You're already signed up.")
             return
+        if not db.has_agreed(self.conn, GUILD_ID, self.user_id):
+            print(CONSENT_NOTICE.replace("**", ""))
+            if input("Agree? [y/N] ").strip().lower() != "y":
+                db.opt_out(self.conn, GUILD_ID, self.user_id)
+                if db.get_team_by_name(self.conn, tournament["id"], self.user_name) is not None:
+                    print(f"Someone is already signed up as {self.user_name}.")
+                    return
+                db.register_entrant(self.conn, tournament["id"], self.user_name, None)
+                print(f"{self.user_name} signed up by name only. {OPTED_OUT_NOTE}")
+                return
+            db.record_agreement(self.conn, GUILD_ID, self.user_id)
         db.register_entrant(self.conn, tournament["id"], self.user_name, self.user_id)
         print(f"{self.user_name} signed up ({len(db.get_entrants(self.conn, tournament['id']))} entered so far).")
+
+    def do_optout(self, arg: str) -> None:
+        "Unlink the current user's entries, results and rating from their account (asks you to confirm)."
+        if input(f"Type '{OPT_OUT_CONFIRMATION}' to confirm: ").strip().lower() != OPT_OUT_CONFIRMATION:
+            print("Nothing changed.")
+            return
+        print(opted_out_message(db.opt_out(self.conn, GUILD_ID, self.user_id)))
 
     def do_unregister(self, arg: str) -> None:
         "Withdraw the current user: unregister <name>"
@@ -350,6 +372,9 @@ class WinningTicketCLI(cmd.Cmd):
             if db.get_entrant_team_id(self.conn, tournament["id"], user_id) is not None:
                 print(f"User {user_id} is already signed up.")
                 return
+            if not db.has_agreed(self.conn, GUILD_ID, user_id):
+                print(f"{user_label(user_id)} hasn't agreed to link their data, so they're entered by name only.")
+                user_id = None
         _, entrant_name = db.register_entrant(self.conn, tournament["id"], parts[1], user_id)
         print(f"Signed up {entrant_name} ({len(db.get_entrants(self.conn, tournament['id']))} entered so far).")
 
@@ -576,6 +601,9 @@ class WinningTicketCLI(cmd.Cmd):
             return
         tournament = self._require_concluded(name)
         if tournament is None:
+            return
+        if not db.has_agreed(self.conn, GUILD_ID, user_id):
+            print(f"{user_label(user_id)} hasn't agreed to link their data, so their old entries can't be linked to them.")
             return
         entrant_row = db.get_team_by_name(self.conn, tournament["id"], entrant)
         if entrant_row is None:

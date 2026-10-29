@@ -157,11 +157,11 @@ must match a fresh render.
 | `large` | 40 players, 3 guests | A 64-line bracket, long menus that page, a long leaderboard. |
 | `spam` | 6 casual, 1 spammer | One member firing public-posting commands as fast as they can. |
 | `csv` | 8 players predicting an uploaded bracket | `/tournament create` from a CSV, with two organizers recording results. |
-| `season` | 4 diligent, 3 casual, 1 chaotic, 2 guests | Two tournaments in a row. The organizer may try to reuse the first one's name, which must be refused. In between, a guest joins Discord and the organizer links their old entry to them with `/admin linkplayer`, so the second tournament is seeded by real ratings. |
+| `season` | 4 diligent, 3 casual, 1 chaotic, 2 guests | Two tournaments in a row. The organizer may try to reuse the first one's name, which must be refused. In between, a guest joins Discord, and `/admin linkplayer` must refuse to link their old entry until they agree to it by signing up for the second tournament, which is then seeded by real ratings. A player who agreed also opts out with `/optout`, which must unlink all their entries. |
 
 ## Actors
 
-**Players** have a competence profile. Each number is the chance of doing that thing on a turn:
+**Players** agree to link their data at their first sign-up 80% of the time, and opt out otherwise (`AGREES_TO_LINK`). Someone who agreed must never be asked again. They also have a competence profile. Each number is the chance of doing that thing on a turn:
 
 | | diligent | casual | chaotic | spammer |
 |---|---|---|---|---|

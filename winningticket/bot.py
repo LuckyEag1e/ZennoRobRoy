@@ -26,6 +26,7 @@ INITIAL_COGS = (
     "cogs.registration",
     "cogs.rating",
     "cogs.history",
+    "cogs.consent",
     "cogs.predictions",
     "cogs.results",
     "cogs.admin",
@@ -34,10 +35,16 @@ INITIAL_COGS = (
 )
 
 
+# Withdrawing consent only removes a member's own data, so a ban doesn't stop it.
+ALLOWED_WHEN_BANNED = {"optout"}
+
+
 class WinningTicketTree(app_commands.CommandTree):
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         """Turn away members an admin has banned, before any command or autocomplete runs.
         Buttons, menus and forms check through common.BotView and BotModal instead."""
+        if interaction.command is not None and interaction.command.qualified_name in ALLOWED_WHEN_BANNED:
+            return True
         return not await turn_away_if_banned(interaction)
 
 

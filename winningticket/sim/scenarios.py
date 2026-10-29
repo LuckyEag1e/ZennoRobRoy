@@ -43,6 +43,9 @@ SPAM_BURST = 10
 # The most new public messages one member should be able to cause in a burst; more fills the channel.
 NOISE_LIMIT = 2
 START_OVER = "Start Over"
+# How many players agree to link their data when they first sign up.
+AGREES_TO_LINK = 0.8
+
 # One per tournament in a scenario, since a concluded tournament's name can't be reused.
 TOURNAMENT_NAMES = ["Spring Cup", "Summer Cup", "Autumn Cup", "Winter Cup"]
 
@@ -105,6 +108,11 @@ class TournamentRun:
     # their way there, whatever the bot's bracket shows while a mistake is in it.
     real_winners: dict[int, int] = field(default_factory=dict)
     banned: Optional[Player] = None
+    # Players who opted out when signing up, so they're entered under their name alone.
+    name_only: set[int] = field(default_factory=set)
+    # A guest from the last tournament who has since joined Discord, and the entrant name
+    # the organizer links to them once they've agreed to it by signing up.
+    newcomer: Optional[tuple[Player, str, str]] = None
 
     # -- reading the bot's state --------------------------------------------------------
 
@@ -127,7 +135,12 @@ class TournamentRun:
         conn = db.get_connection()
         try:
             tournament = self._tournament(conn)
-            return tournament is not None and db.get_entrant_team_id(conn, tournament["id"], player.user.id) is not None
+            if tournament is None:
+                return False
+            if player.user.id in self.name_only:
+                entrant = db.get_team_by_name(conn, tournament["id"], player.user.display_name)
+                return entrant is not None and not db.get_members_by_team(conn, tournament["id"])[entrant["id"]]
+            return db.get_entrant_team_id(conn, tournament["id"], player.user.id) is not None
         finally:
             conn.close()
 
@@ -174,6 +187,26 @@ class TournamentRun:
         return self.name
 
     # -- things players do --------------------------------------------------------------
+
+    async def register(self, player: Player, tournament: Optional[str] = None) -> None:
+        """/register, answering the consent notice the first time. Someone who has agreed
+        must never be asked again."""
+        conn = db.get_connection()
+        try:
+            agreed_before = db.has_agreed(conn, GUILD_ID, player.user.id)
+        finally:
+            conn.close()
+        reply = await self.sim.run(player.user, "register", tournament=tournament or self.name)
+        message = reply.sent
+        buttons = [item.label for item in message.view.children] if message is not None and message.view is not None else []
+        if "Agree" not in buttons:
+            return
+        if agreed_before:
+            self.sim._problem(f"{player.user.display_name} was asked for consent again after agreeing")
+        await self.sim.click(player.user, message, "Agree" if player.agrees else "Opt out")
+        if not player.agrees and (message.content or "").startswith("✅"):
+            self.name_only.add(player.user.id)
+            self.guest_skill.setdefault(player.user.display_name, player.skill)
 
     async def predict(self, player: Player) -> None:
         reply = await self.sim.run(player.user, "predict", tournament=await self.tournament_name(player, "predict"))
@@ -305,8 +338,10 @@ class TournamentRun:
         before = self.sim.public_posts[player.user.id]
         for _ in range(SPAM_BURST):
             if self.status() == "registration":
-                command = "unregister" if self.is_registered(player) else "register"
-                await self.sim.run(player.user, command, tournament=self.name)
+                if self.is_registered(player):
+                    await self.sim.run(player.user, "unregister", tournament=self.name)
+                else:
+                    await self.register(player)
             else:
                 await self.look_up(player, self.rng.choice(["bracket", "leaderboard"]))
         caused = self.sim.public_posts[player.user.id] - before
@@ -392,6 +427,7 @@ class TournamentRun:
             await self.sim.run(org, "admin editteam", tournament=self.name, team="Guest 1", new_name="Guest One")
             self.guest_skill["Guest One"] = self.guest_skill["Guest 1"]
         await self._player_turns()
+        await self.link_newcomer()
         await self._close_signups()
         self.check_seeds()
 
@@ -480,7 +516,7 @@ class TournamentRun:
             latecomers = [p for p in self.players if not self.is_registered(p)][:3]
             await self._all_at_once(
                 [self.sim.run_background("sign-up deadline passes", lambda: cog.close_due_registrations.coro(cog))]
-                + [self.sim.run(p.user, "register", tournament=self.name) for p in latecomers]
+                + [self.register(p) for p in latecomers]
             )
         if self.status() == "registration":
             await self.sim.run(org, "registration close", name=self.name)
@@ -614,9 +650,11 @@ class TournamentRun:
         if first_round != expected:
             self.sim._problem(f"round 1 isn't paired for {tournament['seeding_mode']} seeding")
 
-    async def welcome_a_guest(self) -> Optional[Player]:
-        """After a tournament: a guest who played without a Discord account joins, and the
-        organizer links their old entry to them so it counts for their rating."""
+    async def welcome_a_guest(self) -> Optional[tuple[Player, str, str]]:
+        """After a tournament: a guest who played without a Discord account joins. The
+        organizer can't link their old entry to them until they agree to it, which they do
+        by signing up for the next tournament. Returns them, their old entrant name and the
+        tournament it's in."""
         org, style = self.organizer.user, self.organizer.style
         [picked, *_] = await self.sim.autocomplete(org, "admin linkplayer", "tournament", self.name[:2])
         entrants = await self.sim.autocomplete(org, "admin linkplayer", "entrant", "Gu", tournament=picked)
@@ -624,17 +662,54 @@ class TournamentRun:
         if guest is None:
             return None
         newcomer = Player(self.sim.add_user(900 + len(self.players), f"Newcomer {len(self.players)}"),
-                          CASUAL, self.guest_skill[guest])
+                          CASUAL, self.guest_skill[guest], agrees=True)
         if self.rng.random() < style.wrong_order:
             # Tries to delete the old tournament by mistake, which a concluded one is safe from.
             reply = await self.sim.run(org, "admin deletetournament", tournament=picked, confirm_name=picked)
             if reply.sent is None or "has concluded" not in (reply.sent.content or ""):
                 self.sim._problem("/admin deletetournament didn't refuse a concluded tournament")
         reply = await self.sim.run(org, "admin linkplayer", tournament=picked, entrant=guest, user=newcomer.user)
+        if reply.sent is None or "hasn't agreed" not in (reply.sent.content or ""):
+            self.sim._problem("/admin linkplayer linked a member who hadn't agreed to it")
+        return newcomer, guest, picked
+
+    async def link_newcomer(self) -> None:
+        """Once last tournament's guest has signed up and agreed, link their old entry so
+        it counts for their rating before this bracket is seeded."""
+        if self.newcomer is None:
+            return
+        newcomer, guest, old_tournament = self.newcomer
+        if not self.is_registered(newcomer):
+            await self.register(newcomer)
+        reply = await self.sim.run(self.organizer.user, "admin linkplayer", tournament=old_tournament, entrant=guest,
+                                   user=newcomer.user)
         if reply.sent is None or "Linked" not in (reply.sent.content or ""):
-            self.sim._problem(f"/admin linkplayer couldn't link {guest}, a guest with no account")
+            self.sim._problem(f"/admin linkplayer couldn't link {guest} after they agreed")
         await self.sim.run(newcomer.user, "rating")
-        return newcomer
+
+    async def change_of_heart(self) -> None:
+        """Between tournaments, a player who agreed opts out, which must unlink all of their
+        entries. Some first get the confirmation wrong, which must change nothing."""
+        conn = db.get_connection()
+        try:
+            agreed = [p for p in self.players if db.has_agreed(conn, GUILD_ID, p.user.id)]
+        finally:
+            conn.close()
+        if not agreed:
+            return
+        player = self.rng.choice(agreed)
+        if self.rng.random() < player.competence.typo:
+            await self.sim.run(player.user, "optout", confirm="optout")
+        await self.sim.run(player.user, "optout", confirm="opt out")
+        conn = db.get_connection()
+        try:
+            still_linked = conn.execute("SELECT COUNT(*) FROM team_members WHERE user_id = ?", (player.user.id,)).fetchone()[0]
+            still_agreed = db.has_agreed(conn, GUILD_ID, player.user.id)
+        finally:
+            conn.close()
+        if still_linked or still_agreed:
+            self.sim._problem(f"/optout left {player.user.display_name} linked to {still_linked} entries")
+        player.agrees = False
 
     def check_final_state(self) -> None:
         self.sim._begin(None, "final checks")
@@ -720,12 +795,15 @@ async def _play(sim: Simulation, scenario: Scenario, rng: random.Random) -> None
         for _ in range(count):
             user_id = 100 + len(players)
             name = next(names) if user_id < 100 + len(NAMES) else f"Player {user_id}"
-            players.append(Player(sim.add_user(user_id, name), competence, rng.gauss(1500, 200)))
+            players.append(Player(sim.add_user(user_id, name), competence, rng.gauss(1500, 200),
+                                  agrees=rng.random() < AGREES_TO_LINK))
     if scenario.duplicate_names and len(players) > 1:
         players[1].user.display_name = players[0].user.display_name
     co_organizer = Organizer(sim.add_user(2, "Co-organizer", organizer=True), scenario.organizer) if scenario.co_organizer else None
+    newcomer = None
     for number in range(scenario.tournaments):
-        run = TournamentRun(sim, scenario, rng, organizer, players, name=TOURNAMENT_NAMES[number], co_organizer=co_organizer)
+        run = TournamentRun(sim, scenario, rng, organizer, players, name=TOURNAMENT_NAMES[number],
+                            co_organizer=co_organizer, newcomer=newcomer)
         if number and rng.random() < scenario.organizer.wrong_order:
             await run.reuse_a_concluded_name(TOURNAMENT_NAMES[number - 1])
         await run.play()
@@ -733,6 +811,7 @@ async def _play(sim: Simulation, scenario: Scenario, rng: random.Random) -> None
         if number + 1 < scenario.tournaments:
             newcomer = await run.welcome_a_guest()
             if newcomer is not None:
-                players.append(newcomer)
+                players.append(newcomer[0])
+            await run.change_of_heart()
             for player in players:
                 player.unfinished_bracket = None  # that tournament's /predict steps are gone

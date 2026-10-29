@@ -54,10 +54,11 @@ SLOPPY = OrganizerStyle("sloppy", wrong_order=0.4, wrong_result=0.15, uses_deadl
 
 
 class Player:
-    def __init__(self, user: FakeUser, competence: Competence, skill: float) -> None:
+    def __init__(self, user: FakeUser, competence: Competence, skill: float, agrees: bool = True) -> None:
         self.user = user
         self.competence = competence
         self.skill = skill  # true strength, which decides real match results
+        self.agrees = agrees  # whether they agree to link their data when first asked
         self.unfinished_bracket = None  # the /predict step they walked away from, if any
 
     def __repr__(self) -> str:
@@ -88,11 +89,11 @@ class Player:
 
     async def _registration_turn(self, run: TournamentRun) -> None:
         if not run.is_registered(self):
-            await run.sim.run(self.user, "register", tournament=await run.tournament_name(self, "register"))
+            await run.register(self, await run.tournament_name(self, "register"))
         elif run.rng.random() < self.competence.off_script:
             # Changes their mind, then signs up again.
             await run.sim.run(self.user, "unregister", tournament=await run.tournament_name(self, "unregister"))
-            await run.sim.run(self.user, "register", tournament=await run.tournament_name(self, "register"))
+            await run.register(self, await run.tournament_name(self, "register"))
 
     async def _look_around(self, run: TournamentRun) -> None:
         """Checks something that makes sense at this stage of the tournament."""

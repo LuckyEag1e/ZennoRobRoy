@@ -24,7 +24,8 @@ class HelpCog(commands.Cog):
     @group.command(name="players", description="Commands for filling out and checking your bracket")
     async def players(self, interaction: discord.Interaction) -> None:
         embed = _command_list_embed("Player commands", [
-            ("/register tournament:<name>", "Sign up for a tournament that's taking entrants (`/unregister` to withdraw)."),
+            ("/register tournament:<name>", "Sign up for a tournament that's taking entrants (`/unregister` to withdraw). The first time, you choose whether to link your entries, results and rating to your account."),
+            ("/optout confirm:opt out", "Unlink your entries, results and rating from your account if you agreed before."),
             ("/registration entrants name:<name>", "See who has signed up."),
             ("/rating", "See your Elo rating from past tournaments, which decides your seed. Only you see it."),
             ("/predict tournament:<name>", "Fill out your bracket prediction, round by round."),
@@ -52,8 +53,8 @@ class HelpCog(commands.Cog):
              "default), by rating with the top seeds playing mid-ranked seeds first so the lowest "
              "seeds aren't knocked out by the best straight away, or a random draw. "
              "`/registration add` signs up "
-             "a member for them, or an entrant with no Discord account, and `/registration remove` "
-             "withdraws anyone.\n"
+             "a member for them (by name only, unless they've agreed to link their data), or an "
+             "entrant with no Discord account, and `/registration remove` withdraws anyone.\n"
              "Or build it from a bracket CSV:\n"
              "`/tournament create name:<name> csv_file:<file>`\n"
              "The CSV needs a `team_a,team_b` header and one row per round-1 matchup in "

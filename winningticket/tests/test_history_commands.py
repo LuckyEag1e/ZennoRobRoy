@@ -10,6 +10,7 @@ import pytest
 
 import db
 from bracket import resolvable_matches, resolve_slot
+from helpers import sign_up
 from sim.harness import GUILD_ID, Simulation
 
 
@@ -22,7 +23,7 @@ def world(tmp_path):
         organizer = sim.add_user(1, "Organizer", organizer=True)
         player = sim.add_user(10, "Ace")
         await sim.run(organizer, "registration open", name="Cup", seeding="slide")
-        await sim.run(player, "register", tournament="Cup")
+        await sign_up(sim, player, "Cup")
         for guest in ("Blaze", "Comet"):
             await sim.run(organizer, "registration add", tournament="Cup", user=None, name=guest)
         await sim.run(organizer, "registration close", name="Cup")

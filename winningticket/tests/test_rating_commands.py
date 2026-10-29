@@ -10,14 +10,15 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import pytest
 
 import db
+from helpers import sign_up
 from sim.discord_fakes import FakeAttachment
 from sim.harness import GUILD_ID, Simulation
 
 
 @pytest.fixture
 def world(tmp_path):
-    """An organizer, two players, and a concluded CSV tournament ("Old Cup") in which
-    "Ace" beat "Blaze", neither of them linked to a member yet."""
+    """An organizer, two players who have agreed to link their data, and a concluded CSV
+    tournament ("Old Cup") in which "Ace" beat "Blaze", neither of them linked to a member yet."""
     async def build():
         sim = await Simulation.create(tmp_path / "test.db")
         organizer = sim.add_user(1, "Organizer", organizer=True)
@@ -29,6 +30,8 @@ def world(tmp_path):
         [final] = db.get_matches(conn, tournament["id"]).values()
         db.record_result(conn, tournament["id"], final.id, final.team_a_id, organizer.id)
         db.set_tournament_status(conn, tournament["id"], "concluded")
+        for player in (ace, blaze):
+            db.record_agreement(conn, GUILD_ID, player.id)
         conn.close()
         return sim, organizer, ace, blaze, "Old Cup"
 
@@ -62,6 +65,16 @@ def test_linking_an_old_entrant_shows_up_in_rating(world):
     assert "already linked to an entrant" in again.content
     assert _rating_reply(sim, organizer, user=ace).split("\n")[0] == "Singles: **1516**"
     assert not sim.issues
+
+
+def test_linkplayer_needs_the_member_to_have_agreed(world):
+    sim, organizer, _, _, old_cup = world
+    stranger = sim.add_user(12, "Stranger")
+    reply = asyncio.run(sim.run(organizer, "admin linkplayer", tournament=old_cup, entrant="Ace", user=stranger)).sent
+    assert "hasn't agreed" in reply.content
+    conn = db.get_connection()
+    assert conn.execute("SELECT COUNT(*) FROM team_members WHERE user_id = 12").fetchone()[0] == 0
+    conn.close()
 
 
 def test_members_can_only_see_their_own_rating(world):
@@ -105,7 +118,7 @@ def test_closing_seeds_by_rating_unless_overridden(world):
         for name, seeding in (("Seeded", None), ("Drawn", "random")):
             await sim.run(organizer, "registration open", name=name)
             for player in (ace, blaze):
-                await sim.run(player, "register", tournament=name)
+                await sign_up(sim, player, name)
             await sim.run(organizer, "registration add", tournament=name, user=None, name="Guest")
             posts.append((await sim.run(organizer, "registration close", name=name, seeding=seeding)).sent)
         return posts

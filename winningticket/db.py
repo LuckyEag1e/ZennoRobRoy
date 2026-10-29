@@ -156,6 +156,15 @@ CREATE TABLE IF NOT EXISTS live_posts (
     PRIMARY KEY (tournament_id, kind)
 );
 
+-- Members who agreed to have their entries, results and rating tied to their Discord
+-- account. Only agreement is kept: someone who opts out is asked again at their next
+-- sign-up, and entered by name only meanwhile.
+CREATE TABLE IF NOT EXISTS consents (
+    guild_id    INTEGER NOT NULL,
+    user_id     INTEGER NOT NULL,
+    agreed_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    PRIMARY KEY (guild_id, user_id)
+);
 -- Users an admin has blocked from using the bot in a server.
 CREATE TABLE IF NOT EXISTS bans (
     guild_id    INTEGER NOT NULL,
@@ -774,6 +783,31 @@ def get_live_posts(conn: sqlite3.Connection) -> list[sqlite3.Row]:
 def delete_live_post(conn: sqlite3.Connection, tournament_id: int, kind: str) -> None:
     conn.execute("DELETE FROM live_posts WHERE tournament_id = ? AND kind = ?", (tournament_id, kind))
     conn.commit()
+
+
+# -- consent --------------------------------------------------------------------
+
+def has_agreed(conn: sqlite3.Connection, guild_id: int, user_id: int) -> bool:
+    return conn.execute(
+        "SELECT 1 FROM consents WHERE guild_id = ? AND user_id = ?", (guild_id, user_id)
+    ).fetchone() is not None
+
+
+def record_agreement(conn: sqlite3.Connection, guild_id: int, user_id: int) -> None:
+    conn.execute("INSERT OR IGNORE INTO consents (guild_id, user_id) VALUES (?, ?)", (guild_id, user_id))
+    conn.commit()
+
+
+def opt_out(conn: sqlite3.Connection, guild_id: int, user_id: int) -> int:
+    """Forget a member's agreement and unlink every entry of theirs in the server, past
+    and current, leaving each under its name. Returns how many entries were unlinked."""
+    with conn:
+        conn.execute("DELETE FROM consents WHERE guild_id = ? AND user_id = ?", (guild_id, user_id))
+        return conn.execute(
+            """DELETE FROM team_members WHERE user_id = ?
+               AND tournament_id IN (SELECT id FROM tournaments WHERE guild_id = ?)""",
+            (user_id, guild_id),
+        ).rowcount
 
 
 # -- moderation -----------------------------------------------------------------

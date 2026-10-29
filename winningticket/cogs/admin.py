@@ -101,6 +101,13 @@ class AdminCog(commands.Cog):
             if tournament_row is None:
                 return
             label = tournament_row["name"]
+            if not db.has_agreed(conn, interaction.guild_id, user.id):
+                await interaction.response.send_message(
+                    f"{user.mention} hasn't agreed to link their data to their account, so their old entries "
+                    f"can't be linked to them. They're asked when they next use `/register`.",
+                    ephemeral=True,
+                )
+                return
             entrant_row = db.get_team_by_name(conn, tournament_row["id"], entrant)
             if entrant_row is None:
                 await interaction.response.send_message(f"No entrant named '{entrant}' in **{label}**.", ephemeral=True)

@@ -94,6 +94,34 @@ def name_taken_message(existing) -> str:
     return f"A tournament named '{name}' already exists in this server."
 
 
+# Shown privately at a member's first sign-up, before anything is tied to their account.
+CONSENT_NOTICE = (
+    "Before you're signed up: WinningTicket can link your tournament entries, results and Elo rating to "
+    "your Discord account, so your history and seeding follow you from one tournament to the next. That "
+    "also covers anything else it keeps about you as a player in future.\n"
+    "**Agree** to link them. The bot remembers your choice, and `/optout` undoes it any time.\n"
+    "**Opt out** to enter by name only. Nothing is linked to your account, and you're seeded at the "
+    "default rating."
+)
+# Prediction picks are always saved with the member's account, since the pool scores them.
+OPTED_OUT_NOTE = (
+    "Your entry isn't linked to your account, so ask an organizer if you need to withdraw. If you use "
+    "`/predict`, your picks are still saved with your Discord account and appear in this tournament's history."
+)
+OPT_OUT_CONFIRMATION = "opt out"
+
+
+def opted_out_message(unlinked: int) -> str:
+    """What /optout says once it's done."""
+    if not unlinked:
+        done = "Nothing of yours is linked to your account now."
+    else:
+        entry_word = "entry is" if unlinked == 1 else "entries are"
+        done = f"{unlinked} of your {entry_word} no longer linked to your account. They keep your name, and your rating is back to the default."
+    return (f"{done} You'll be asked again the next time you sign up. Your `/predict` picks stay with your "
+            f"account in each tournament's history.")
+
+
 FORMAT_NAMES = {"single_elim": "Single elimination"}
 
 
