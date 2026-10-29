@@ -14,7 +14,7 @@ from discord import app_commands
 import db
 from bracket import Match, resolve_all_slots
 from embeds import render_bracket_embed
-from labels import concluded_label, matchup_label, team_label
+from labels import matchup_label, name_taken_message, team_label
 
 log = logging.getLogger("winningticket")
 
@@ -49,8 +49,8 @@ async def resolve_tournament(
     command passes needs_bracket=False because it works without one."""
     tournament = db.get_tournament_by_name(conn, interaction.guild_id, name)
     if tournament is None:
-        if db.has_concluded_tournament(conn, interaction.guild_id, name):
-            message = f"**{name}** has concluded. Its final results were posted when it ended."
+        if db.get_concluded_tournament_by_name(conn, interaction.guild_id, name) is not None:
+            message = f"**{name}** has concluded. `/history` shows its bracket, seeding and leaderboard."
         else:
             message = f"No tournament named '{name}' found in this server."
         await interaction.response.send_message(message, ephemeral=True)
@@ -117,15 +117,14 @@ async def team_name_autocomplete(interaction: discord.Interaction, current: str)
 async def concluded_tournament_autocomplete(
     interaction: discord.Interaction, current: str
 ) -> list[app_commands.Choice[str]]:
-    """Concluded tournaments, which every other command skips. Each is picked by id,
-    because two of them can share a name."""
+    """Concluded tournaments, newest first, which every other command's autocomplete leaves out."""
     conn = db.get_connection()
     try:
         tournaments = db.get_concluded_tournaments(conn, interaction.guild_id)
     finally:
         conn.close()
     return [
-        app_commands.Choice(name=concluded_label(t), value=str(t["id"]))
+        app_commands.Choice(name=t["name"], value=t["name"])
         for t in tournaments
         if current.lower() in t["name"].lower()
     ][:MAX_SELECT_OPTIONS]
@@ -135,7 +134,8 @@ async def concluded_entrant_autocomplete(interaction: discord.Interaction, curre
     """Entrants in the concluded tournament picked in the same command's `tournament` option."""
     conn = db.get_connection()
     try:
-        tournament_row = _picked_concluded_tournament(conn, interaction, getattr(interaction.namespace, "tournament", None))
+        picked = getattr(interaction.namespace, "tournament", None)
+        tournament_row = db.get_concluded_tournament_by_name(conn, interaction.guild_id, picked) if picked else None
         teams_by_id = db.get_teams(conn, tournament_row["id"]) if tournament_row is not None else {}
     finally:
         conn.close()
@@ -146,26 +146,27 @@ async def concluded_entrant_autocomplete(interaction: discord.Interaction, curre
     ][:MAX_SELECT_OPTIONS]
 
 
-def _picked_concluded_tournament(conn: sqlite3.Connection, interaction: discord.Interaction,
-                                 picked: str | None) -> sqlite3.Row | None:
-    """The concluded tournament whose id concluded_tournament_autocomplete gave as `picked`."""
-    try:
-        return db.get_concluded_tournament(conn, interaction.guild_id, int(picked))
-    except (TypeError, ValueError):
-        return None
-
-
 async def resolve_concluded_tournament(interaction: discord.Interaction, conn: sqlite3.Connection,
-                                       picked: str) -> sqlite3.Row | None:
-    """The concluded tournament picked from concluded_tournament_autocomplete, or None
-    after saying so, such as when a name was typed instead of picked from the list."""
-    tournament = _picked_concluded_tournament(conn, interaction, picked)
+                                       name: str) -> sqlite3.Row | None:
+    """A concluded tournament by name, or None after saying why not."""
+    tournament = db.get_concluded_tournament_by_name(conn, interaction.guild_id, name)
     if tournament is None:
-        await interaction.response.send_message(
-            "Pick the tournament from the list that appears as you type: concluded tournaments can share a name.",
-            ephemeral=True,
-        )
+        if db.get_tournament_by_name(conn, interaction.guild_id, name) is not None:
+            message = f"**{name}** hasn't concluded yet. `/tournament bracket` and `/tournament leaderboard` show it."
+        else:
+            message = f"No concluded tournament named '{name}' in this server."
+        await interaction.response.send_message(message, ephemeral=True)
     return tournament
+
+
+async def refuse_taken_name(interaction: discord.Interaction, conn: sqlite3.Connection, name: str) -> bool:
+    """True, after saying why, if a tournament in this server already has `name`."""
+    existing = (db.get_tournament_by_name(conn, interaction.guild_id, name)
+                or db.get_concluded_tournament_by_name(conn, interaction.guild_id, name))
+    if existing is None:
+        return False
+    await interaction.response.send_message(name_taken_message(existing), ephemeral=True)
+    return True
 
 
 def signups_message(tournament: sqlite3.Row, entrants: int) -> str:

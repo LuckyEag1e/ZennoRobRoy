@@ -25,6 +25,7 @@ INITIAL_COGS = (
     "cogs.tournament",
     "cogs.registration",
     "cogs.rating",
+    "cogs.history",
     "cogs.predictions",
     "cogs.results",
     "cogs.admin",

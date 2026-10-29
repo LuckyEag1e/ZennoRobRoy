@@ -32,6 +32,7 @@ class HelpCog(commands.Cog):
             ("/tournament bracket name:<name>", "See the real tournament bracket's progress."),
             ("/tournament leaderboard name:<name>", "See the standings."),
             ("/match stats tournament:<name>", "See what % of the pool picked each side of a matchup."),
+            ("/history bracket tournament:<name>", "Look back at a concluded tournament. `/history seeding` and `/history leaderboard` show how it was seeded and how the pool did."),
             ("/features", "What the bot can be used for, and what's coming."),
             ("/feedback", "Send the organizers anonymous feedback."),
         ])
@@ -84,8 +85,8 @@ class HelpCog(commands.Cog):
              "`/tournament conclude name:<name>`\n"
              "Once the final is recorded, this posts the podium and the top pick'em scorers "
              "to the channel. The tournament's results are kept and count toward players' "
-             "ratings, but it's removed from every other command and its name is free for a "
-             "new tournament. Only a completed tournament can be concluded."),
+             "ratings. From then on only `/history` shows it, and its name can't be used "
+             "again. Only a completed tournament can be concluded."),
             ("Fixing mistakes",
              "Wrong result, bad team name, etc.? See `/help admin`."),
         ])

@@ -104,7 +104,8 @@ class Player:
         elif status in ("in_progress", "completed"):
             options = ["bracket", "leaderboard", "stats"] + (["mypicks"] if run.has_predicted(self) else [])
         else:
-            options = ["leaderboard", "rating"]  # after it's over, people look for the standings and their rating
+            # After it's over, people look for the standings, their rating, and how it went.
+            options = ["leaderboard", "rating", "history"]
         choice = run.rng.choice(options)
         if choice in ("bracket", "leaderboard"):
             await run.look_up(self, choice)
@@ -115,6 +116,8 @@ class Player:
         elif choice == "entrants":
             await run.sim.run(self.user, "registration entrants",
                               name=await run.tournament_name(self, "registration entrants", "name"))
+        elif choice == "history":
+            await run.look_back(self)
         elif choice == "features":
             await run.sim.run(self.user, "features")
         elif choice == "rating":

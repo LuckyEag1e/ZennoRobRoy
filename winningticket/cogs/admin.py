@@ -21,7 +21,7 @@ from common import (
     tournament_name_autocomplete,
 )
 from embeds import EMBED_DESCRIPTION_LIMIT, mention
-from labels import ban_lines, concluded_label, dropped_results_note, feedback_page, join_within, team_label
+from labels import ban_lines, dropped_results_note, feedback_page, join_within, team_label
 
 STATUS_CHOICES = [app_commands.Choice(name=status, value=status) for status in db.FORCEABLE_STATUSES]
 
@@ -100,7 +100,7 @@ class AdminCog(commands.Cog):
             tournament_row = await resolve_concluded_tournament(interaction, conn, tournament)
             if tournament_row is None:
                 return
-            label = concluded_label(tournament_row)
+            label = tournament_row["name"]
             entrant_row = db.get_team_by_name(conn, tournament_row["id"], entrant)
             if entrant_row is None:
                 await interaction.response.send_message(f"No entrant named '{entrant}' in **{label}**.", ephemeral=True)
@@ -137,7 +137,7 @@ class AdminCog(commands.Cog):
         finally:
             conn.close()
         await interaction.response.send_message(
-            f"🗑️ Deleted **{concluded_label(tournament_row)}**. Its games no longer count for anyone's rating.",
+            f"🗑️ Deleted **{tournament_row['name']}**. Its games no longer count for anyone's rating.",
             ephemeral=True,
         )
 

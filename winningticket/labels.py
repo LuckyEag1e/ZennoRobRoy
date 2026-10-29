@@ -85,10 +85,31 @@ def pickem_podium_lines(scores: list[UserScore], player_label: Callable[[int], s
     return [f"{MEDALS[place]} {player_label(s.user_id)} — {score_label(s)}" for place, s in placed]
 
 
-def concluded_label(tournament) -> str:
-    """A concluded tournament's name with when it was created, since a name can be reused."""
-    created = tournament["created_at"]
-    return f"{tournament['name']} ({created[:10]} {created[11:16]} UTC)"
+def name_taken_message(existing) -> str:
+    """Why a new tournament can't have `existing`'s name. A concluded tournament keeps its
+    name, so the history commands never mix two tournaments up."""
+    name = existing["name"]
+    if existing["status"] == "concluded":
+        return f"'{name}' was the name of a concluded tournament, and names aren't reused. Pick another name."
+    return f"A tournament named '{name}' already exists in this server."
+
+
+def seeding_lines(tournament, teams_by_id: dict) -> list[str]:
+    """How a tournament's bracket was seeded, then its entrants in seed order. Seeds can
+    also come from a CSV or /admin editteam, so only seeds from closing sign-ups by rating
+    are described as rating seeds."""
+    seeded = sorted((team for team in teams_by_id.values() if team["seed"] is not None), key=lambda team: team["seed"])
+    unseeded = sorted(team["name"] for team in teams_by_id.values() if team["seed"] is None)
+    if not seeded:
+        return ["This bracket wasn't seeded."]
+    if tournament["seeding_mode"] in ("standard", "slide"):
+        lines = [f"Entrants were {draw_description(tournament['seeding_mode'])}."]
+    else:
+        lines = ["Seeds were set by the organizers."]
+    lines += [f"{team['seed']}. {team['name']}" for team in seeded]
+    if unseeded:
+        lines.append("Unseeded: " + ", ".join(unseeded))
+    return lines
 
 
 def draw_description(seeding_mode: str) -> str:

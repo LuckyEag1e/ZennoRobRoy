@@ -43,6 +43,9 @@ SPAM_BURST = 10
 # The most new public messages one member should be able to cause in a burst; more fills the channel.
 NOISE_LIMIT = 2
 START_OVER = "Start Over"
+# One per tournament in a scenario, since a concluded tournament's name can't be reused.
+TOURNAMENT_NAMES = ["Spring Cup", "Summer Cup", "Autumn Cup", "Winter Cup"]
+
 NAMES = [
     "Ace", "Blaze", "Comet", "Dash", "Echo", "Flint", "Gale", "Haze", "Iris", "Jinx", "Kite", "Lumen", "Mist",
     "Nova", "Onyx", "Pike", "Quill", "Rook", "Sage", "Tide", "Umber", "Vale", "Wren", "Xeno", "Yarrow", "Zephyr",
@@ -219,6 +222,33 @@ class TournamentRun:
         if menu is not None:
             await self.sim.choose(player.user, message, self.rng.choice(menu.options).value)
 
+    async def look_back(self, player: Player) -> None:
+        """Look at a concluded tournament with /history, which only the asker should see."""
+        command = f"history {self.rng.choice(['bracket', 'seeding', 'leaderboard'])}"
+        reply = await self.sim.run(player.user, command, tournament=await self.tournament_name(player, command))
+        if reply.sent is not None and reply.sent.public:
+            self.sim._problem(f"/{command} posted in the channel instead of replying privately")
+
+    async def check_history_autocomplete(self) -> None:
+        """Once concluded, the tournament is offered by /history and by no other command."""
+        org = self.organizer.user
+        if self.name in await self.sim.autocomplete(org, "tournament bracket", "name", ""):
+            self.sim._problem(f"/tournament bracket still offers {self.name} after it concluded")
+        if self.name not in await self.sim.autocomplete(org, "history bracket", "tournament", ""):
+            self.sim._problem(f"/history bracket doesn't offer {self.name} after it concluded")
+
+    async def reuse_a_concluded_name(self, old_name: str) -> None:
+        """An organizer tries to name the next tournament after the last one, which the bot
+        must refuse without creating anything."""
+        reply = await self.sim.run(self.organizer.user, "registration open", name=old_name)
+        conn = db.get_connection()
+        try:
+            created = db.get_tournament_by_name(conn, GUILD_ID, old_name)
+        finally:
+            conn.close()
+        if created is not None or reply.sent is None or "aren't reused" not in (reply.sent.content or ""):
+            self.sim._problem(f"/registration open reused the concluded name {old_name}")
+
     async def look_up(self, player: Player, kind: str) -> None:
         """Ask for the bracket or leaderboard. If the bot points at its live post instead of
         posting one, check the post it points at exists and really is in view."""
@@ -326,9 +356,14 @@ class TournamentRun:
         await self.refresh_live_posts()
         self.check_live_posts()
         self.status()
+        await self.check_history_autocomplete()
         for player in self.players:
             if self.rng.random() < player.competence.curiosity:
-                await self.look_up(player, "leaderboard")
+                # Some still try the usual command, which should point them to /history.
+                if self.rng.random() < 0.5:
+                    await self.look_up(player, "leaderboard")
+                else:
+                    await self.look_back(player)
 
     async def _run_signups(self) -> None:
         org, style = self.organizer.user, self.organizer.style
@@ -684,7 +719,9 @@ async def _play(sim: Simulation, scenario: Scenario, rng: random.Random) -> None
         players[1].user.display_name = players[0].user.display_name
     co_organizer = Organizer(sim.add_user(2, "Co-organizer", organizer=True), scenario.organizer) if scenario.co_organizer else None
     for number in range(scenario.tournaments):
-        run = TournamentRun(sim, scenario, rng, organizer, players, co_organizer=co_organizer)
+        run = TournamentRun(sim, scenario, rng, organizer, players, name=TOURNAMENT_NAMES[number], co_organizer=co_organizer)
+        if number and rng.random() < scenario.organizer.wrong_order:
+            await run.reuse_a_concluded_name(TOURNAMENT_NAMES[number - 1])
         await run.play()
         run.check_final_state()
         if number + 1 < scenario.tournaments:

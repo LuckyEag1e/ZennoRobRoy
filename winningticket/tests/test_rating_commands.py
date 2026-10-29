@@ -30,7 +30,7 @@ def world(tmp_path):
         db.record_result(conn, tournament["id"], final.id, final.team_a_id, organizer.id)
         db.set_tournament_status(conn, tournament["id"], "concluded")
         conn.close()
-        return sim, organizer, ace, blaze, str(tournament["id"])
+        return sim, organizer, ace, blaze, "Old Cup"
 
     sim, *rest = asyncio.run(build())
     yield (sim, *rest)
@@ -64,10 +64,18 @@ def test_linking_an_old_entrant_shows_up_in_rating(world):
     assert not sim.issues
 
 
-def test_a_typed_name_isnt_taken_for_a_concluded_tournament(world):
+def test_linkplayer_only_works_on_concluded_tournaments(world):
     sim, organizer, ace, _, _ = world
-    reply = asyncio.run(sim.run(organizer, "admin linkplayer", tournament="Old Cup", entrant="Ace", user=ace)).sent
-    assert "Pick the tournament from the list" in reply.content
+
+    async def link_to_an_open_one():
+        await sim.run(organizer, "registration open", name="New Cup")
+        await sim.run(organizer, "registration add", tournament="New Cup", user=None, name="Ace")
+        offered = await sim.autocomplete(organizer, "admin linkplayer", "tournament", "")
+        return offered, (await sim.run(organizer, "admin linkplayer", tournament="New Cup", entrant="Ace", user=ace)).sent
+
+    offered, reply = asyncio.run(link_to_an_open_one())
+    assert offered == ["Old Cup"]
+    assert "hasn't concluded yet" in reply.content
 
 
 def test_removehistory_needs_the_name_retyped(world):

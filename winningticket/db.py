@@ -27,8 +27,9 @@ DB_PATH = Path(__file__).parent / "data" / "tourney.db"
 
 # Tournament statuses, in lifecycle order. A tournament made from a CSV starts at setup;
 # one that takes sign-ups starts at registration and has no matches until it closes.
-# A concluded tournament keeps all its data for later use (such as seeding) but can no
-# longer be looked up by name, so the name is free for a new tournament.
+# A concluded tournament keeps all its data for later use (such as seeding). Only the
+# history commands and a few admin commands look it up, and its name is never reused, so
+# past tournaments can always be told apart.
 STATUSES = ("registration", "setup", "predictions_open", "in_progress", "completed", "concluded")
 # Concluding can't be undone from Discord, so admins can't force it; /tournament
 # conclude only allows it once a tournament is completed. Registration can't be forced
@@ -77,16 +78,15 @@ CREATE TABLE IF NOT EXISTS {table_name} (
 """
 
 
-# Names only have to be unique among tournaments that haven't been concluded.
-_ACTIVE_NAME_INDEX_SQL = """
-CREATE UNIQUE INDEX IF NOT EXISTS idx_tournaments_active_name
-    ON tournaments(guild_id, name) WHERE status != 'concluded';
+# Created by init_db rather than SCHEMA, because older databases may hold duplicate names
+# that have to be renamed first.
+_NAME_INDEX_SQL = """
+CREATE UNIQUE INDEX IF NOT EXISTS idx_tournaments_name ON tournaments(guild_id, name);
 """
 
 SCHEMA = f"""
 PRAGMA foreign_keys = ON;
 {_tournaments_table_sql("tournaments")}
-{_ACTIVE_NAME_INDEX_SQL}
 
 CREATE TABLE IF NOT EXISTS teams (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -182,13 +182,14 @@ def get_connection(path: Path | None = None) -> sqlite3.Connection:
 
 
 # Bump when an older database needs migrating, and add the migration to init_db().
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 
 def init_db(conn: sqlite3.Connection) -> None:
     is_new = conn.execute("SELECT 1 FROM sqlite_master WHERE name = 'tournaments'").fetchone() is None
     conn.executescript(SCHEMA)
     if is_new:
+        conn.execute(_NAME_INDEX_SQL)
         conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
     else:
         _rebuild_tournaments_table(conn)
@@ -203,11 +204,10 @@ def _add_column_if_missing(conn: sqlite3.Connection, table: str, column: str, de
 
 
 def _rebuild_tournaments_table(conn: sqlite3.Connection) -> None:
-    """Older databases have a tournaments table whose CHECK rejects newer statuses, and
-    before version 1 a UNIQUE (guild_id, name) that blocks reusing a concluded name.
-    SQLite can't alter either in place, so the table is rebuilt, following SQLite's
-    documented steps for changing a table that other tables reference. Columns the old
-    table already has are copied across; newer ones start empty."""
+    """Older databases have a tournaments table whose CHECKs reject newer values. SQLite
+    can't alter them in place, so the table is rebuilt, following SQLite's documented
+    steps for changing a table that other tables reference. Columns the old table already
+    has are copied across; newer ones start empty."""
     if conn.execute("PRAGMA user_version").fetchone()[0] >= SCHEMA_VERSION:
         return
     conn.commit()
@@ -229,7 +229,8 @@ def _rebuild_tournaments_table(conn: sqlite3.Connection) -> None:
                         SELECT 'tournaments_new', seq FROM sqlite_sequence WHERE name = 'tournaments'""")
         conn.execute("DROP TABLE tournaments")
         conn.execute("ALTER TABLE tournaments_new RENAME TO tournaments")
-        conn.execute(_ACTIVE_NAME_INDEX_SQL)
+        _rename_duplicate_names(conn)
+        conn.execute(_NAME_INDEX_SQL)
         conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
         conn.execute("COMMIT")
     except BaseException:
@@ -237,6 +238,26 @@ def _rebuild_tournaments_table(conn: sqlite3.Connection) -> None:
         raise
     finally:
         conn.execute("PRAGMA foreign_keys = ON")
+
+
+def _rename_duplicate_names(conn: sqlite3.Connection) -> None:
+    """Versions 1 to 5 let a new tournament reuse a concluded one's name. The newest with
+    each name keeps it, and older ones get their creation date added: 'Cup (2026-03-01)'."""
+    taken = {(row["guild_id"], row["name"]) for row in conn.execute("SELECT guild_id, name FROM tournaments")}
+    older = conn.execute(
+        """SELECT id, guild_id, name, created_at FROM tournaments t WHERE EXISTS (
+               SELECT 1 FROM tournaments newer WHERE newer.guild_id = t.guild_id AND newer.name = t.name
+               AND newer.id > t.id) ORDER BY id"""
+    ).fetchall()
+    for row in older:
+        date = row["created_at"][:10]
+        new_name = f"{row['name']} ({date})"
+        number = 2
+        while (row["guild_id"], new_name) in taken:
+            new_name = f"{row['name']} ({date}, {number})"
+            number += 1
+        taken.add((row["guild_id"], new_name))
+        conn.execute("UPDATE tournaments SET name = ? WHERE id = ?", (new_name, row["id"]))
 
 
 # -- tournaments -------------------------------------------------------------
@@ -279,10 +300,10 @@ def get_tournament_by_name(conn: sqlite3.Connection, guild_id: int, name: str) -
     ).fetchone()
 
 
-def has_concluded_tournament(conn: sqlite3.Connection, guild_id: int, name: str) -> bool:
+def get_concluded_tournament_by_name(conn: sqlite3.Connection, guild_id: int, name: str) -> sqlite3.Row | None:
     return conn.execute(
-        "SELECT 1 FROM tournaments WHERE guild_id = ? AND name = ? AND status = 'concluded'", (guild_id, name)
-    ).fetchone() is not None
+        "SELECT * FROM tournaments WHERE guild_id = ? AND name = ? AND status = 'concluded'", (guild_id, name)
+    ).fetchone()
 
 
 def get_tournament(conn: sqlite3.Connection, tournament_id: int) -> sqlite3.Row:
@@ -290,18 +311,11 @@ def get_tournament(conn: sqlite3.Connection, tournament_id: int) -> sqlite3.Row:
 
 
 def get_concluded_tournaments(conn: sqlite3.Connection, guild_id: int) -> list[sqlite3.Row]:
-    """The server's concluded tournaments, newest first. Their names can repeat, so
-    commands that work on them pick one by id."""
+    """The server's concluded tournaments, newest first."""
     return conn.execute(
         "SELECT * FROM tournaments WHERE guild_id = ? AND status = 'concluded' ORDER BY created_at DESC, id DESC",
         (guild_id,),
     ).fetchall()
-
-
-def get_concluded_tournament(conn: sqlite3.Connection, guild_id: int, tournament_id: int) -> sqlite3.Row | None:
-    return conn.execute(
-        "SELECT * FROM tournaments WHERE id = ? AND guild_id = ? AND status = 'concluded'", (tournament_id, guild_id)
-    ).fetchone()
 
 
 def get_tournament_names(conn: sqlite3.Connection, guild_id: int, status: str | None = None) -> list[str]:
@@ -332,6 +346,11 @@ def claim_registration_close(conn: sqlite3.Connection, tournament_id: int) -> bo
         "UPDATE tournaments SET status = 'setup' WHERE id = ? AND status = 'registration'", (tournament_id,)
     )
     return cur.rowcount > 0
+
+
+def set_seeding_mode(conn: sqlite3.Connection, tournament_id: int, seeding_mode: str) -> None:
+    """Without committing, so it lands together with the bracket it describes."""
+    conn.execute("UPDATE tournaments SET seeding_mode = ? WHERE id = ?", (seeding_mode, tournament_id))
 
 
 def clear_registration_deadline(conn: sqlite3.Connection, tournament_id: int) -> None:

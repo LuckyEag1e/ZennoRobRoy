@@ -65,8 +65,9 @@ Admin:
 - `/tournament lock name:<name>` — stop prediction submissions, start recording real results
 - `/match result tournament:<name>` — pick a ready match and record who really won
 - `/tournament conclude name:<name>` — archive a completed tournament and post its podium
-  and top pick'em scorers. Its results stay in the database (for future seeding), but it
-  disappears from every command and its name can be reused.
+  and top pick'em scorers. Its results stay in the database (for future seeding), and from
+  then on only `/history bracket`, `/history seeding` and `/history leaderboard` show it.
+  Its name can't be used for a new tournament.
 - `/admin ...` — troubleshooting/correction commands (force status, force/overwrite a
   result, clear a result, edit a team's name/seed, clear a user's predictions, delete
   a tournament). All require the Manage Server permission.
@@ -91,6 +92,8 @@ Everyone:
   Both keep one post per tournament in the channel and update it as results come
   in. Asking again while it's still in view gets a private link to it instead of
   another post.
+- `/history bracket|seeding|leaderboard tournament:<name>` — look back at a concluded
+  tournament's final bracket, how it was seeded, and its prediction leaderboard (only you see the reply)
 
 ## Local CLI (no Discord needed)
 
@@ -106,7 +109,8 @@ Commands mirror the slash commands: `create <name> <csv>`, `regopen <name> [--cl
 `unregister <name>`, `entrants <name>`, `regadd <name> <entrant> [user_id]`, `regremove <name> <entrant>`,
 `regclose <name>`, `open <name>`, `predict <name>`,
 `lock <name>`, `conclude <name>`, `matchresult <name>`, `matchstats <name>`, `mypicks <name>`, `bracket <name>`,
-`leaderboard <name>`, `tournaments`, `features`, `feedback <message>`, and the admin set: `admin_setstatus`, `admin_delete`,
+`leaderboard <name>`, `tournaments`, `history`, `history_bracket <name>`, `history_seeding <name>`,
+`history_leaderboard <name>`, `features`, `feedback <message>`, and the admin set: `admin_setstatus`, `admin_delete`,
 `admin_editteam`, `admin_setresult`, `admin_clearresult`, `admin_clearpredictions`, `admin_feedback`,
 `admin_deletefeedback`, `admin_ban`, `admin_unban`, `admin_bans`.
 Use `as <user_id> <name>` to switch which simulated user you're acting as (so you can

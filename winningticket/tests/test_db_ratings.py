@@ -25,7 +25,9 @@ def conn(tmp_path):
 
 
 def _signups(conn, entrants: list[tuple[str, int | None]], seeding_mode: str = "standard", guild: int = GUILD) -> int:
-    tournament_id = db.open_registration(conn, guild, "Cup", 99, 555, None, seeding_mode)
+    # Names are never reused, so each tournament gets its own.
+    name = f"Cup {conn.execute('SELECT COUNT(*) FROM tournaments').fetchone()[0] + 1}"
+    tournament_id = db.open_registration(conn, guild, name, 99, 555, None, seeding_mode)
     for name, user_id in entrants:
         db.register_entrant(conn, tournament_id, name, user_id)
     return tournament_id
@@ -108,6 +110,7 @@ def test_closing_can_override_the_seeding_chosen_at_opening(conn):
     tournament_id = _signups(conn, [("Ace", 1), ("Blaze", 2), ("Comet", 3)], seeding_mode="standard")
     close_registration(conn, tournament_id, random.Random(0), seeding_mode="random")
     assert all(team["seed"] is None for team in db.get_teams(conn, tournament_id).values())
+    assert db.get_tournament(conn, tournament_id)["seeding_mode"] == "random"  # what the history shows
 
 
 def test_random_seeding_is_stored_and_used_by_default(conn):
@@ -134,8 +137,9 @@ def test_removing_a_concluded_tournament_takes_it_out_of_the_ratings(conn):
     assert [t["id"] for t in db.get_concluded_tournaments(conn, GUILD)] == [mistake, keep]
     db.delete_tournament(conn, mistake)
     assert db.load_match_history(conn, GUILD) == [PlayedMatch((1,), (2,))]
-    assert db.get_concluded_tournament(conn, GUILD, mistake) is None
-    assert db.get_concluded_tournament(conn, 2, keep) is None  # not from another server
+    keep_name = db.get_tournament(conn, keep)["name"]
+    assert db.get_concluded_tournament_by_name(conn, GUILD, keep_name)["id"] == keep
+    assert db.get_concluded_tournament_by_name(conn, 2, keep_name) is None  # not from another server
 
 
 def test_version_3_database_gets_random_seeding_for_existing_tournaments(tmp_path):

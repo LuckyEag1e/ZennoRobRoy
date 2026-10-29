@@ -55,6 +55,7 @@ def close_registration(conn: sqlite3.Connection, tournament_id: int, rng: random
         tournament = db.get_tournament(conn, tournament_id)
         members_by_team = db.get_members_by_team(conn, tournament_id)
         seeding_mode = seeding_mode or tournament["seeding_mode"]
+        db.set_seeding_mode(conn, tournament_id, seeding_mode)  # the one used, for the history
         if seeding_mode == "random":
             order = rng.sample(sorted(members_by_team), len(members_by_team))
         else:

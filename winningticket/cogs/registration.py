@@ -14,6 +14,7 @@ from bracket import BracketError
 from common import (
     edit_signups_message,
     load_bracket_embed,
+    refuse_taken_name,
     registration_name_autocomplete,
     requires_manage_server,
     resolve_tournament,
@@ -148,10 +149,7 @@ class RegistrationCog(commands.Cog):
             closes_at = datetime.now(timezone.utc) + timedelta(hours=closes_in_hours)
         conn = db.get_connection()
         try:
-            if db.get_tournament_by_name(conn, interaction.guild_id, name) is not None:
-                await interaction.response.send_message(
-                    f"A tournament named '{name}' already exists in this server.", ephemeral=True
-                )
+            if await refuse_taken_name(interaction, conn, name):
                 return
             tournament_id = db.open_registration(
                 conn, interaction.guild_id, name, interaction.user.id, interaction.channel_id,

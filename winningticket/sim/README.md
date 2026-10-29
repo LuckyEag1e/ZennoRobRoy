@@ -140,7 +140,8 @@ must match a fresh render.
 
 **At the end:**
 
-- the tournament reached `concluded` (each one, in a scenario that plays several)
+- the tournament reached `concluded` (each one, in a scenario that plays several), and from
+  then on only `/history` offers it, privately
 - every stored result is the real winner, and every match shows the two entrants who really played it
 - the stored champion won the final
 - every saved bracket is complete and consistent with its own earlier picks
@@ -156,7 +157,7 @@ must match a fresh render.
 | `large` | 40 players, 3 guests | A 64-line bracket, long menus that page, a long leaderboard. |
 | `spam` | 6 casual, 1 spammer | One member firing public-posting commands as fast as they can. |
 | `csv` | 8 players predicting an uploaded bracket | `/tournament create` from a CSV, with two organizers recording results. |
-| `season` | 4 diligent, 3 casual, 1 chaotic, 2 guests | Two tournaments in a row under the same name. In between, a guest joins Discord and the organizer links their old entry to them with `/admin linkplayer`, so the second tournament is seeded by real ratings. |
+| `season` | 4 diligent, 3 casual, 1 chaotic, 2 guests | Two tournaments in a row. The organizer may try to reuse the first one's name, which must be refused. In between, a guest joins Discord and the organizer links their old entry to them with `/admin linkplayer`, so the second tournament is seeded by real ratings. |
 
 ## Actors
 
