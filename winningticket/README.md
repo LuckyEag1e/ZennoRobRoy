@@ -66,7 +66,7 @@ Admin:
 - `/match result tournament:<name>` — pick a ready match and record who really won
 - `/tournament conclude name:<name>` — archive a completed tournament and post its podium
   and top pick'em scorers. Its results stay in the database (for future seeding), and from
-  then on only `/history bracket`, `/history seeding` and `/history leaderboard` show it.
+  then on only `/history` shows it, and nothing can delete it or change its results.
   Its name can't be used for a new tournament.
 - `/admin ...` — troubleshooting/correction commands (force status, force/overwrite a
   result, clear a result, edit a team's name/seed, clear a user's predictions, delete
@@ -92,6 +92,8 @@ Everyone:
   Both keep one post per tournament in the channel and update it as results come
   in. Asking again while it's still in view gets a private link to it instead of
   another post.
+- `/history list` — every concluded tournament with its champion, number of entrants,
+  format, singles or teams, and the date it finished
 - `/history bracket|seeding|leaderboard tournament:<name>` — look back at a concluded
   tournament's final bracket, how it was seeded, and its prediction leaderboard (only you see the reply)
 

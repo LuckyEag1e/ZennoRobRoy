@@ -2,7 +2,7 @@
 
 No discord.py or sqlite3 imports here, like bracket.py, so it can be unit tested on its own.
 Ratings are never stored: they're replayed from the full history whenever they're needed,
-so correcting or removing an old tournament changes them straight away.
+so linking an old entrant to a member changes them straight away.
 """
 
 from __future__ import annotations

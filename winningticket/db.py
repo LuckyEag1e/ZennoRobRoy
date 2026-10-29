@@ -42,6 +42,10 @@ _STATUS_SQL_LIST = ", ".join(f"'{status}'" for status in STATUSES)
 # at random. seeding.seeded_pairs shows the difference.
 SEEDING_MODES = ("standard", "slide", "random")
 _SEEDING_SQL_LIST = ", ".join(f"'{mode}'" for mode in SEEDING_MODES)
+# Tournament formats. Only single elimination exists so far; double elimination and round
+# robin are planned.
+FORMATS = ("single_elim",)
+_FORMAT_SQL_LIST = ", ".join(f"'{format}'" for format in FORMATS)
 
 
 def to_db_time(moment: datetime) -> str:
@@ -73,7 +77,8 @@ CREATE TABLE IF NOT EXISTS {table_name} (
     registration_closes_at TEXT,
     -- The sign-ups announcement, edited once sign-ups close so its countdown stops.
     announcement_message_id INTEGER,
-    seeding_mode TEXT NOT NULL CHECK (seeding_mode IN ({_SEEDING_SQL_LIST})) DEFAULT 'random'
+    seeding_mode TEXT NOT NULL CHECK (seeding_mode IN ({_SEEDING_SQL_LIST})) DEFAULT 'random',
+    format      TEXT NOT NULL CHECK (format IN ({_FORMAT_SQL_LIST})) DEFAULT 'single_elim'
 );
 """
 
@@ -182,7 +187,7 @@ def get_connection(path: Path | None = None) -> sqlite3.Connection:
 
 
 # Bump when an older database needs migrating, and add the migration to init_db().
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 
 def init_db(conn: sqlite3.Connection) -> None:
@@ -298,6 +303,38 @@ def get_tournament_by_name(conn: sqlite3.Connection, guild_id: int, name: str) -
         "SELECT * FROM tournaments WHERE guild_id = ? AND name = ? AND status != 'concluded'",
         (guild_id, name),
     ).fetchone()
+
+
+class ConcludedSummary(NamedTuple):
+    """One line of /history list."""
+
+    name: str
+    champion: Optional[str]
+    entrants: int
+    format: str
+    has_teams: bool  # any entrant with more than one Discord user behind it
+    finished_at: Optional[str]  # when its final was recorded
+
+
+def get_concluded_summaries(conn: sqlite3.Connection, guild_id: int) -> list[ConcludedSummary]:
+    """The server's concluded tournaments, newest first, summed up for /history list."""
+    # The final is the one match that feeds into nothing.
+    rows = conn.execute(
+        """SELECT t.name, t.format,
+                   (SELECT w.name FROM matches m JOIN match_results r ON r.match_id = m.id
+                    JOIN teams w ON w.id = r.winner_team_id
+                    WHERE m.tournament_id = t.id AND m.feeds_into_match_id IS NULL) AS champion,
+                   (SELECT r.recorded_at FROM matches m JOIN match_results r ON r.match_id = m.id
+                    WHERE m.tournament_id = t.id AND m.feeds_into_match_id IS NULL) AS finished_at,
+                   (SELECT COUNT(*) FROM teams WHERE tournament_id = t.id) AS entrants,
+                   EXISTS (SELECT 1 FROM team_members WHERE tournament_id = t.id
+                           GROUP BY team_id HAVING COUNT(*) > 1) AS has_teams
+            FROM tournaments t WHERE t.guild_id = ? AND t.status = 'concluded'
+            ORDER BY t.created_at DESC, t.id DESC""",
+        (guild_id,),
+    ).fetchall()
+    return [ConcludedSummary(r["name"], r["champion"], r["entrants"], r["format"], bool(r["has_teams"]), r["finished_at"])
+            for r in rows]
 
 
 def get_concluded_tournament_by_name(conn: sqlite3.Connection, guild_id: int, name: str) -> sqlite3.Row | None:

@@ -32,6 +32,7 @@ class HelpCog(commands.Cog):
             ("/tournament bracket name:<name>", "See the real tournament bracket's progress."),
             ("/tournament leaderboard name:<name>", "See the standings."),
             ("/match stats tournament:<name>", "See what % of the pool picked each side of a matchup."),
+            ("/history list", "See every concluded tournament, with its champion, size, format and date."),
             ("/history bracket tournament:<name>", "Look back at a concluded tournament. `/history seeding` and `/history leaderboard` show how it was seeded and how the pool did."),
             ("/features", "What the bot can be used for, and what's coming."),
             ("/feedback", "Send the organizers anonymous feedback."),
@@ -103,7 +104,6 @@ class HelpCog(commands.Cog):
             ("/admin clearpredictions tournament:<name> user:<member>", "Wipe one user's saved predictions."),
             ("/admin deletetournament tournament:<name> confirm_name:<name>", "Permanently delete a tournament and all its data."),
             ("/admin linkplayer tournament:<concluded> entrant:<name> user:<member>", "Link an entrant in a concluded tournament to the member who played as them, so its games count for their rating."),
-            ("/admin removehistory tournament:<concluded> confirm_name:<name>", "Delete a concluded tournament that shouldn't count for ratings, such as a test."),
             ("/admin feedback [page:<n>]", "Read anonymous feedback, newest first. `/admin deletefeedback number:<n>` removes one."),
             ("/admin ban user:<member> [reason:<text>]", "Block a member from using the bot. `/admin unban` undoes it, and `/admin bans` lists everyone banned."),
         ])

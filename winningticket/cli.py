@@ -42,6 +42,7 @@ from labels import (
     dropped_results_note,
     entrant_lines,
     feedback_page,
+    history_line,
     matchup_label,
     name_taken_message,
     pick_review_lines,
@@ -243,12 +244,12 @@ class WinningTicketCLI(cmd.Cmd):
     # -- history -------------------------------------------------------------
 
     def do_history(self, arg: str) -> None:
-        "List concluded tournaments, newest first."
-        tournaments = db.get_concluded_tournaments(self.conn, GUILD_ID)
-        if not tournaments:
-            print("No concluded tournaments yet.")
-        for tournament in tournaments:
-            print(f"- {tournament['name']}")
+        "List concluded tournaments, newest first, with their champion, size, format and date."
+        summaries = db.get_concluded_summaries(self.conn, GUILD_ID)
+        if not summaries:
+            print("No tournaments have concluded yet.")
+        for summary in summaries:
+            print(f"- {history_line(summary)}")
 
     def do_history_bracket(self, arg: str) -> None:
         "Show a concluded tournament's final bracket: history_bracket <name>"
@@ -584,18 +585,6 @@ class WinningTicketCLI(cmd.Cmd):
             print(f"{user_label(user_id)} is already linked to an entrant in '{name}'.")
             return
         print(f"Linked {user_label(user_id)} to {entrant} in '{name}'.")
-
-    def do_admin_removehistory(self, arg: str) -> None:
-        "Delete a concluded tournament so it stops counting for ratings (asks you to retype the name): admin_removehistory <name>"
-        name = arg.strip()
-        tournament = self._require_concluded(name)
-        if tournament is None:
-            return
-        if input(f"Type '{name}' again to confirm permanent deletion: ").strip() != name:
-            print("Confirmation didn't match. Cancelled.")
-            return
-        db.delete_tournament(self.conn, tournament["id"])
-        print(f"Deleted '{name}'. Its games no longer count for anyone's rating.")
 
     def do_admin_setresult(self, arg: str) -> None:
         "Force/overwrite any known matchup's result: admin_setresult <name>"

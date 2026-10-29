@@ -131,15 +131,11 @@ def test_linking_an_old_team_adds_its_games_to_the_members_rating(conn):
     assert not db.link_team_member(conn, tournament_id, blaze, 1)
 
 
-def test_removing_a_concluded_tournament_takes_it_out_of_the_ratings(conn):
-    keep = _concluded(conn, [("Ace", 1), ("Blaze", 2)])
-    mistake = _concluded(conn, [("Ace", 1), ("Blaze", 2)], winner_of=max)
-    assert [t["id"] for t in db.get_concluded_tournaments(conn, GUILD)] == [mistake, keep]
-    db.delete_tournament(conn, mistake)
-    assert db.load_match_history(conn, GUILD) == [PlayedMatch((1,), (2,))]
-    keep_name = db.get_tournament(conn, keep)["name"]
-    assert db.get_concluded_tournament_by_name(conn, GUILD, keep_name)["id"] == keep
-    assert db.get_concluded_tournament_by_name(conn, 2, keep_name) is None  # not from another server
+def test_concluded_tournaments_are_listed_newest_first(conn):
+    older = _concluded(conn, [("Ace", 1), ("Blaze", 2)])
+    newer = _concluded(conn, [("Ace", 1), ("Blaze", 2)], winner_of=max)
+    _concluded(conn, [("Comet", 3), ("Dash", 4)], guild=2)  # another server's
+    assert [t["id"] for t in db.get_concluded_tournaments(conn, GUILD)] == [newer, older]
 
 
 def test_version_3_database_gets_random_seeding_for_existing_tournaments(tmp_path):
@@ -147,7 +143,8 @@ def test_version_3_database_gets_random_seeding_for_existing_tournaments(tmp_pat
     v3_table = db._tournaments_table_sql("tournaments").replace(
         "announcement_message_id INTEGER,", "announcement_message_id INTEGER"
     )
-    v3_table = "\n".join(line for line in v3_table.splitlines() if "seeding_mode" not in line)
+    # Version 3 had neither of the columns added since.
+    v3_table = "\n".join(line for line in v3_table.splitlines() if "seeding_mode" not in line and "format" not in line)
     conn.executescript(v3_table + "PRAGMA user_version = 3;")
     conn.execute("INSERT INTO tournaments (guild_id, name, created_by, status) VALUES (1, 'Open', 99, 'registration')")
     conn.commit()

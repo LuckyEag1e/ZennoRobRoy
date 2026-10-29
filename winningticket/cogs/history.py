@@ -7,7 +7,7 @@ from discord.ext import commands
 import db
 from common import concluded_tournament_autocomplete, load_bracket_embed, resolve_concluded_tournament
 from embeds import EMBED_DESCRIPTION_LIMIT, render_leaderboard_embed
-from labels import join_within, seeding_lines
+from labels import history_line, join_within, seeding_lines
 
 
 class HistoryCog(commands.Cog):
@@ -18,6 +18,17 @@ class HistoryCog(commands.Cog):
         self.bot = bot
 
     group = app_commands.Group(name="history", description="Look back at concluded tournaments", guild_only=True)
+
+    @group.command(name="list", description="See every concluded tournament, newest first")
+    async def list_tournaments(self, interaction: discord.Interaction) -> None:
+        conn = db.get_connection()
+        try:
+            summaries = db.get_concluded_summaries(conn, interaction.guild_id)
+        finally:
+            conn.close()
+        lines = [history_line(summary) for summary in summaries] or ["No tournaments have concluded yet."]
+        embed = discord.Embed(title="Concluded tournaments", description=join_within(lines, EMBED_DESCRIPTION_LIMIT))
+        await interaction.response.send_message(embed=embed, ephemeral=True)
 
     @group.command(name="bracket", description="See a concluded tournament's final bracket")
     @app_commands.describe(tournament="Concluded tournament")

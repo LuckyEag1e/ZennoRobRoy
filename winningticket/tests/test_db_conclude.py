@@ -141,6 +141,19 @@ def test_a_concluded_tournament_can_still_be_found_by_name(conn):
     assert db.get_concluded_tournament_by_name(conn, 1, "Live") is None
 
 
+def test_version_6_database_gets_single_elimination_for_existing_tournaments(tmp_path):
+    conn = db.get_connection(tmp_path / "v6.db")
+    v6_table = "\n".join(line for line in db._tournaments_table_sql("tournaments").splitlines() if "format" not in line)
+    v6_table = v6_table.replace("DEFAULT 'random',", "DEFAULT 'random'")
+    conn.executescript(v6_table + "PRAGMA user_version = 6;")
+    conn.execute("INSERT INTO tournaments (guild_id, name, created_by) VALUES (1, 'Cup', 1)")
+    conn.commit()
+
+    db.init_db(conn)
+    assert db.get_tournament_by_name(conn, 1, "Cup")["format"] == "single_elim"
+    conn.close()
+
+
 def test_migration_renames_all_but_the_newest_of_a_reused_name(tmp_path):
     conn = db.get_connection(tmp_path / "v5.db")
     v5_table = db._tournaments_table_sql("tournaments")

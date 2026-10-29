@@ -224,8 +224,14 @@ class TournamentRun:
 
     async def look_back(self, player: Player) -> None:
         """Look at a concluded tournament with /history, which only the asker should see."""
-        command = f"history {self.rng.choice(['bracket', 'seeding', 'leaderboard'])}"
-        reply = await self.sim.run(player.user, command, tournament=await self.tournament_name(player, command))
+        command = f"history {self.rng.choice(['list', 'bracket', 'seeding', 'leaderboard'])}"
+        if command == "history list":
+            reply = await self.sim.run(player.user, command)
+            listed = reply.sent.embed.description if reply.sent is not None and reply.sent.embed is not None else None
+            if listed is not None and self.name not in listed:  # a banned player gets no list at all
+                self.sim._problem(f"/history list doesn't include {self.name}")
+        else:
+            reply = await self.sim.run(player.user, command, tournament=await self.tournament_name(player, command))
         if reply.sent is not None and reply.sent.public:
             self.sim._problem(f"/{command} posted in the channel instead of replying privately")
 
@@ -620,10 +626,10 @@ class TournamentRun:
         newcomer = Player(self.sim.add_user(900 + len(self.players), f"Newcomer {len(self.players)}"),
                           CASUAL, self.guest_skill[guest])
         if self.rng.random() < style.wrong_order:
-            # Starts removing the old tournament by mistake, but mistypes the name, which must stop it.
-            reply = await self.sim.run(org, "admin removehistory", tournament=picked, confirm_name=self.name.lower())
-            if reply.sent is None or "didn't match" not in (reply.sent.content or ""):
-                self.sim._problem("/admin removehistory went ahead without the name retyped exactly")
+            # Tries to delete the old tournament by mistake, which a concluded one is safe from.
+            reply = await self.sim.run(org, "admin deletetournament", tournament=picked, confirm_name=picked)
+            if reply.sent is None or "has concluded" not in (reply.sent.content or ""):
+                self.sim._problem("/admin deletetournament didn't refuse a concluded tournament")
         reply = await self.sim.run(org, "admin linkplayer", tournament=picked, entrant=guest, user=newcomer.user)
         if reply.sent is None or "Linked" not in (reply.sent.content or ""):
             self.sim._problem(f"/admin linkplayer couldn't link {guest}, a guest with no account")

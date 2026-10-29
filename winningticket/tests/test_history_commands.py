@@ -63,6 +63,29 @@ def test_history_replies_privately_with_bracket_seeding_and_leaderboard(world):
     assert not sim.issues
 
 
+def test_history_list_sums_up_each_concluded_tournament(world):
+    sim, _, player = world
+    reply = asyncio.run(sim.run(player, "history list")).sent
+    assert not reply.public
+    [line] = reply.embed.description.splitlines()
+    name, details = line.split(": ", 1)
+    champion, entrants, format_name, play, finished = details.split(" · ")
+    assert name == "Cup" and champion.startswith("🏆 ")
+    assert (entrants, format_name, play) == ("3 entrants", "Single elimination", "Singles")
+    assert len(finished) == 10 and finished[4] == "-"  # the day the final was recorded
+
+
+def test_history_list_says_when_nothing_has_concluded(tmp_path):
+    async def ask():
+        sim = await Simulation.create(tmp_path / "empty.db")
+        try:
+            return (await sim.run(sim.add_user(10, "Ace"), "history list")).sent
+        finally:
+            await sim.close()
+
+    assert asyncio.run(ask()).embed.description == "No tournaments have concluded yet."
+
+
 def test_only_history_offers_a_concluded_tournament(world):
     sim, organizer, player = world
 

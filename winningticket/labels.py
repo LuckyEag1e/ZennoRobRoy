@@ -94,6 +94,18 @@ def name_taken_message(existing) -> str:
     return f"A tournament named '{name}' already exists in this server."
 
 
+FORMAT_NAMES = {"single_elim": "Single elimination"}
+
+
+def history_line(summary) -> str:
+    """One concluded tournament in /history list: its name, champion, size, format, whether
+    it was played in teams, and the day its final was recorded."""
+    entrant_word = "entrant" if summary.entrants == 1 else "entrants"
+    finished = summary.finished_at[:10] if summary.finished_at else "unfinished"
+    return (f"{summary.name}: 🏆 {summary.champion or 'no champion'} · {summary.entrants} {entrant_word} · "
+            f"{FORMAT_NAMES[summary.format]} · {'Teams' if summary.has_teams else 'Singles'} · {finished}")
+
+
 def seeding_lines(tournament, teams_by_id: dict) -> list[str]:
     """How a tournament's bracket was seeded, then its entrants in seed order. Seeds can
     also come from a CSV or /admin editteam, so only seeds from closing sign-ups by rating

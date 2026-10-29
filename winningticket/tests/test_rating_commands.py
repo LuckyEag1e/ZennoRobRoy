@@ -78,22 +78,13 @@ def test_linkplayer_only_works_on_concluded_tournaments(world):
     assert "hasn't concluded yet" in reply.content
 
 
-def test_removehistory_needs_the_name_retyped(world):
-    sim, organizer, ace, blaze, old_cup = world
-
-    async def remove():
-        await sim.run(organizer, "admin linkplayer", tournament=old_cup, entrant="Ace", user=ace)
-        await sim.run(organizer, "admin linkplayer", tournament=old_cup, entrant="Blaze", user=blaze)
-        wrong = await sim.run(organizer, "admin removehistory", tournament=old_cup, confirm_name="Old")
-        rated = (await sim.run(ace, "rating")).sent.embed.description
-        right = await sim.run(organizer, "admin removehistory", tournament=old_cup, confirm_name="Old Cup")
-        return wrong.sent, rated, right.sent
-
-    wrong, rated, right = asyncio.run(remove())
-    assert "didn't match" in wrong.content and "provisional" not in rated.split("\n")[0]
-    assert "Deleted" in right.content
-    assert "provisional" in _rating_reply(sim, ace).split("\n")[0]
-    assert asyncio.run(sim.autocomplete(organizer, "admin removehistory", "tournament", "")) == []
+def test_a_concluded_tournament_cant_be_deleted(world):
+    sim, organizer, _, _, old_cup = world
+    reply = asyncio.run(sim.run(organizer, "admin deletetournament", tournament=old_cup, confirm_name=old_cup)).sent
+    assert "has concluded" in reply.content
+    conn = db.get_connection()
+    assert db.get_concluded_tournament_by_name(conn, GUILD_ID, old_cup) is not None
+    conn.close()
 
 
 def test_closing_seeds_by_rating_unless_overridden(world):

@@ -118,29 +118,6 @@ class AdminCog(commands.Cog):
             ephemeral=True,
         )
 
-    @group.command(name="removehistory", description="Delete a concluded tournament so it no longer counts for ratings")
-    @app_commands.describe(tournament="Concluded tournament",
-                           confirm_name="Retype the tournament name to confirm deletion")
-    @app_commands.autocomplete(tournament=concluded_tournament_autocomplete)
-    async def removehistory(self, interaction: discord.Interaction, tournament: str, confirm_name: str) -> None:
-        conn = db.get_connection()
-        try:
-            tournament_row = await resolve_concluded_tournament(interaction, conn, tournament)
-            if tournament_row is None:
-                return
-            if confirm_name != tournament_row["name"]:
-                await interaction.response.send_message(
-                    "Confirmation name didn't match. No changes made.", ephemeral=True
-                )
-                return
-            db.delete_tournament(conn, tournament_row["id"])
-        finally:
-            conn.close()
-        await interaction.response.send_message(
-            f"🗑️ Deleted **{tournament_row['name']}**. Its games no longer count for anyone's rating.",
-            ephemeral=True,
-        )
-
     @group.command(name="editteam", description="Fix a team's name or seed")
     @app_commands.describe(tournament="Tournament name", team="Team to edit", new_name="New name (optional)", new_seed="New seed (optional)")
     @app_commands.autocomplete(tournament=tournament_name_autocomplete, team=team_name_autocomplete)
