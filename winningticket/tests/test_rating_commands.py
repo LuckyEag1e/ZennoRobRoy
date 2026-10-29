@@ -60,8 +60,16 @@ def test_linking_an_old_entrant_shows_up_in_rating(world):
     assert picked == old_cup and entrants == ["Ace", "Blaze"]
     assert "provisional" in only_one_side  # a game counts once both sides are linked
     assert "already linked to an entrant" in again.content
-    assert _rating_reply(sim, blaze, user=ace).split("\n")[0] == "Singles: **1516**"
+    assert _rating_reply(sim, organizer, user=ace).split("\n")[0] == "Singles: **1516**"
     assert not sim.issues
+
+
+def test_members_can_only_see_their_own_rating(world):
+    sim, organizer, ace, blaze, _ = world
+    refused = asyncio.run(sim.run(blaze, "rating", user=ace)).sent
+    assert not refused.public and refused.embed is None and "private" in refused.content
+    assert "Blaze" in asyncio.run(sim.run(blaze, "rating", user=blaze)).sent.embed.title  # naming yourself is fine
+    assert "Ace" in asyncio.run(sim.run(organizer, "rating", user=ace)).sent.embed.title
 
 
 def test_linkplayer_only_works_on_concluded_tournaments(world):

@@ -121,8 +121,11 @@ class Player:
         elif choice == "features":
             await run.sim.run(self.user, "features")
         elif choice == "rating":
-            # Their own, or sizing up someone else.
-            await run.sim.run(self.user, "rating", user=run.rng.choice([None, run.rng.choice(run.players).user]))
+            # Their own, or trying to size up someone else, which only organizers may do.
+            other = run.rng.choice([None, run.rng.choice(run.players).user])
+            reply = await run.sim.run(self.user, "rating", user=other)
+            if other not in (None, self.user) and reply.sent is not None and reply.sent.embed is not None:
+                run.sim._problem(f"{self.user.display_name} could see another member's rating")
         else:
             await run.sim.run(self.user, "help players")
 

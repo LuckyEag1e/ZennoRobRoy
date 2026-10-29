@@ -26,7 +26,7 @@ class HelpCog(commands.Cog):
         embed = _command_list_embed("Player commands", [
             ("/register tournament:<name>", "Sign up for a tournament that's taking entrants (`/unregister` to withdraw)."),
             ("/registration entrants name:<name>", "See who has signed up."),
-            ("/rating [user:<member>]", "See your Elo rating from past tournaments, which decides your seed."),
+            ("/rating", "See your Elo rating from past tournaments, which decides your seed. Only you see it."),
             ("/predict tournament:<name>", "Fill out your bracket prediction, round by round."),
             ("/mypicks tournament:<name>", "See your saved picks and current score."),
             ("/tournament bracket name:<name>", "See the real tournament bracket's progress."),
@@ -103,6 +103,7 @@ class HelpCog(commands.Cog):
             ("/admin editteam tournament:<name> team:<name>", "Fix a team's name or seed after import."),
             ("/admin clearpredictions tournament:<name> user:<member>", "Wipe one user's saved predictions."),
             ("/admin deletetournament tournament:<name> confirm_name:<name>", "Permanently delete a tournament and all its data."),
+            ("/rating user:<member>", "See any member's Elo rating. Members can only see their own."),
             ("/admin linkplayer tournament:<concluded> entrant:<name> user:<member>", "Link an entrant in a concluded tournament to the member who played as them, so its games count for their rating."),
             ("/admin feedback [page:<n>]", "Read anonymous feedback, newest first. `/admin deletefeedback number:<n>` removes one."),
             ("/admin ban user:<member> [reason:<text>]", "Block a member from using the bot. `/admin unban` undoes it, and `/admin bans` lists everyone banned."),
