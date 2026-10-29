@@ -35,6 +35,13 @@ LineMarker = Callable[[Match, Optional[int], Optional[int]], dict]
 # round until Discord wraps the lines and breaks the diagram.
 NAME_SLOT_WIDTH = 10
 
+# Writing each winner where their line joins reads best, but it adds a name's width per
+# round. A bracket of up to 16 lines stays under about 64 characters wide and 2000 long
+# even with every name at full width; a bigger one would wrap on a phone or overflow an
+# embed, so it lists winners in a narrow column on the right instead. Going by the
+# bracket's size, not its current names, keeps the layout the same all tournament.
+INLINE_MAX_ROUNDS = 4
+
 _ESC = "\x1b"
 _RESET = f"{_ESC}[0m"
 # Discord's ```ansi support covers: 0 reset, 1 bold, 4 underline, and the
@@ -99,7 +106,7 @@ def prediction_marker(results_by_match: dict, picks: dict) -> LineMarker:
 class _Row:
     text: str
     width: int  # visible width; the ANSI escape bytes in `text` would throw off len()
-    label: str = ""  # a game's winner, shown in the column right of the tree
+    label: str = ""  # a game's winner, when winners are shown in a column right of the tree
 
 
 # A rendered subtree: its rows, the row its parent's connector attaches to, and the
@@ -122,8 +129,9 @@ def _render_match(
     slots: dict,
     winner_of: WinnerLookup,
     marker_fn: LineMarker,
+    inline: bool,
 ) -> Rendered:
-    """A real (non-bye) game: its two sides joined at a junction row labelled with its winner."""
+    """A real (non-bye) game: its two sides joined at a junction row for its winner."""
     team_a, team_b = slots[match.id]
     marks = marker_fn(match, team_a, team_b)
 
@@ -131,25 +139,29 @@ def _render_match(
         feeder = feeders_by_target.get(match.id, {}).get(side)
         if feeder is None or is_bye(feeder):
             return _render_team(team_id, match, teams_by_id, marks)
-        return _render_match(feeder, matches_by_id, feeders_by_target, teams_by_id, slots, winner_of, marker_fn)
+        return _render_match(feeder, matches_by_id, feeders_by_target, teams_by_id, slots, winner_of, marker_fn, inline)
 
     winner = winner_of(match.id)
     if winner is None:
-        label = " TBD"  # nothing decided yet -- no color
+        label, label_width = " TBD", 4  # nothing decided yet -- no color
     else:
         # Coloured by the round the winner plays next, like the teams in that game.
         next_match = matches_by_id.get(match.feeds_into_match_id)
         color_round = next_match.played_round if next_match is not None else match.played_round + 1
         mark = marks.get(winner, " ")
-        # Labels end their line, so they're truncated like team names but not padded.
-        label = _colorize(f"{mark}{_fit(team_label(teams_by_id, winner)).rstrip()}", color_round, mark)
+        # Truncated like team names but not padded: the connector to the next game, or the
+        # end of the line, follows straight on.
+        plain = f"{mark}{_fit(team_label(teams_by_id, winner)).rstrip()}"
+        label, label_width = _colorize(plain, color_round, mark), len(plain)
 
-    return _join(render_side("A", team_a), render_side("B", team_b), label)
+    return _join(render_side("A", team_a), render_side("B", team_b), label, label_width, inline)
 
 
-def _join(top: Rendered, bottom: Rendered, label: str) -> Rendered:
-    """Stack two subtrees with a junction row between them, and draw connectors from
-    each subtree's attachment row to the junction."""
+def _join(top: Rendered, bottom: Rendered, label: str, label_width: int, inline: bool) -> Rendered:
+    """Stack two subtrees with a junction row between them, and draw connectors from each
+    subtree's attachment row to the junction. `inline` writes the winner on the junction
+    row, and the parent game's connector carries on from the end of their name; otherwise
+    the winner is kept on the row for the column to the right of the tree."""
     top_rows, top_anchor, top_width = top
     bottom_rows, bottom_anchor, bottom_width = bottom
     column = max(top_width, bottom_width) + 1
@@ -167,9 +179,10 @@ def _join(top: Rendered, bottom: Rendered, label: str) -> Rendered:
 
     rows = connect(top_rows, top_anchor, "┐", range(top_anchor + 1, len(top_rows)))
     anchor = len(rows)
-    rows.append(_Row(" " * column + "├", column + 1, label))
+    junction = _Row(" " * column + "├" + label, column + 1 + label_width) if inline else _Row(" " * column + "├", column + 1, label)
+    rows.append(junction)
     rows += connect(bottom_rows, bottom_anchor, "┘", range(bottom_anchor))
-    return rows, anchor, column + 1
+    return rows, anchor, junction.width
 
 
 def _bye_summary(matches_by_id: dict, teams_by_id: dict, slots: dict, winner_of: WinnerLookup) -> list[str]:
@@ -200,20 +213,24 @@ def render_tree(
     marker_fn: LineMarker,
 ) -> str:
     """Render the full connected bracket tree as a ```ansi fenced block, one color per
-    round. Each game is a junction row with its winner in a column on the right. A team
-    with a bye is a single line joining the game where they first play. Byes are also
-    listed above the diagram so they're easy to spot at a glance.
+    round. Each game is a junction row naming its winner, whose line carries on from there
+    to their next game; a bracket too big for that lists winners in a column on the right.
+    A team with a bye is a single line joining the game where they first play. Byes are
+    also listed above the diagram so they're easy to spot at a glance.
     """
     root = final_match(matches_by_id)
-    if is_bye(root):
-        rows, _, _ = _render_team(bye_team_id(root), root, teams_by_id, {})
+
+    def tree_rows(inline: bool) -> list[_Row]:
+        if is_bye(root):
+            return _render_team(bye_team_id(root), root, teams_by_id, {})[0]
+        return _render_match(root, matches_by_id, feeders_by_target, teams_by_id, slots, winner_of, marker_fn, inline)[0]
+
+    if root.round <= INLINE_MAX_ROUNDS:
+        lines = [row.text for row in tree_rows(inline=True)]
     else:
-        rows, _, _ = _render_match(root, matches_by_id, feeders_by_target, teams_by_id, slots, winner_of, marker_fn)
-    label_column = max(row.width for row in rows) + 1
-    tree_lines = [
-        row.text + " " * (label_column - row.width) + row.label if row.label else row.text
-        for row in rows
-    ]
+        rows = tree_rows(inline=False)
+        label_column = max(row.width for row in rows) + 1
+        lines = [row.text + " " * (label_column - row.width) + row.label if row.label else row.text for row in rows]
 
     # Tracing which two branches converge at the final through a deep tree is
     # hard even with connector lines, so call it out explicitly up top too.
@@ -232,6 +249,6 @@ def render_tree(
     if out_lines:
         out_lines.append("")
     out_lines.append("```ansi")
-    out_lines.extend(tree_lines)
+    out_lines.extend(lines)
     out_lines.append("```")
     return "\n".join(out_lines)
