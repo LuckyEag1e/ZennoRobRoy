@@ -98,8 +98,12 @@ def name_taken_message(existing) -> str:
 CONSENT_NOTICE = (
     "Before you're signed up: WinningTicket can link your tournament entries, results and Elo rating to "
     "your Discord account, so your history and seeding follow you from one tournament to the next. That "
-    "also covers anything else it keeps about you as a player in future.\n"
-    "**Agree** to link them. The bot remembers your choice, and `/optout` undoes it any time.\n"
+    "also covers anything else it keeps about you as a player in future. All data collected will not be "
+    "used for any purpose other than providing a fair and competitive experience for participants in "
+    "hosted events.\n"
+    "**Agree** to link them. The bot remembers your choice. You may opt out at any time with the "
+    "`/optout` command, which will also unlink all data previously associated with your account, so "
+    "your past entries only show your name.\n"
     "**Opt out** to enter by name only. Nothing is linked to your account, and you're seeded at the "
     "default rating."
 )
