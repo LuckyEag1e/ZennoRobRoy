@@ -96,16 +96,17 @@ def name_taken_message(existing) -> str:
 
 # Shown privately at a member's first sign-up, before anything is tied to their account.
 CONSENT_NOTICE = (
-    "Before you're signed up: WinningTicket can link your tournament entries, results and Elo rating to "
-    "your Discord account, so your history and seeding follow you from one tournament to the next. That "
-    "also covers anything else it keeps about you as a player in future. All data collected will not be "
-    "used for any purpose other than providing a fair and competitive experience for participants in "
-    "hosted events.\n"
+    "Before you're signed up: WinningTicket can link your tournament entries, results, and Elo rating "
+    "to your Discord account, so your history and seeding follow you from one tournament to the next. "
+    "That also covers anything else it keeps about you as a player in the future. All data collected "
+    "will not be used for any purpose other than providing a fair and competitive experience for "
+    "participants in hosted events.\n"
     "**Agree** to link them. The bot remembers your choice. You may opt out at any time with the "
-    "`/optout` command, which will also unlink all data previously associated with your account, so "
-    "your past entries only show your name.\n"
-    "**Opt out** to enter by name only. Nothing is linked to your account, and you're seeded at the "
-    "default rating."
+    "`/optout` command, which will unlink all data previously associated with your account.\n"
+    "**Opt out** to enter by your display name only. Nothing is linked to your account, and you're "
+    "seeded at the default rating.\n"
+    "Opting out doesn't delete any data: your past entries stay in tournament history under your "
+    "display name."
 )
 # Prediction picks are always saved with the member's account, since the pool scores them.
 OPTED_OUT_NOTE = (
