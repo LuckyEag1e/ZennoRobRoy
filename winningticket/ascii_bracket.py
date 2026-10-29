@@ -24,7 +24,7 @@ from bracket import (
     is_bye,
     rounds,
 )
-from labels import team_label
+from labels import team_label, team_name
 
 # (match, team_a_id, team_b_id) -> {team_id: '+' or '-'} for whichever teams
 # in this match should be marked; teams not present render unmarked.
@@ -34,9 +34,13 @@ LineMarker = Callable[[Match, Optional[int], Optional[int]], dict]
 # names from the round before, so uncapped long names widen every later
 # round until Discord wraps the lines and breaks the diagram.
 NAME_SLOT_WIDTH = 10
+# A winner named on a junction adds their name's width to every later round, so those
+# names are cut much shorter than the entrants listed down the left, and leave out the
+# seed, which the entrant's own line already shows.
+JUNCTION_NAME_WIDTH = 5
 
 # Writing each winner where their line joins reads best, but it adds a name's width per
-# round. A bracket of up to 16 lines stays under about 64 characters wide and 2000 long
+# round. A bracket of up to 16 lines stays within about 44 characters wide and 1500 long
 # even with every name at full width; a bigger one would wrap on a phone or overflow an
 # embed, so it lists winners in a narrow column on the right instead. Going by the
 # bracket's size, not its current names, keeps the layout the same all tournament.
@@ -61,10 +65,10 @@ def _colorize(text: str, round_num: int, mark: str) -> str:
     return f"{_ESC}[{style}{_round_color(round_num)}m{text}{_RESET}"
 
 
-def _fit(text: str) -> str:
-    if len(text) > NAME_SLOT_WIDTH:
-        return text[: NAME_SLOT_WIDTH - 1] + "…"
-    return text.ljust(NAME_SLOT_WIDTH)
+def _fit(text: str, width: int = NAME_SLOT_WIDTH) -> str:
+    if len(text) > width:
+        return text[: width - 1] + "…"
+    return text.ljust(width)
 
 
 def real_result_marker(results_by_match: dict) -> LineMarker:
@@ -151,7 +155,8 @@ def _render_match(
         mark = marks.get(winner, " ")
         # Truncated like team names but not padded: the connector to the next game, or the
         # end of the line, follows straight on.
-        plain = f"{mark}{_fit(team_label(teams_by_id, winner)).rstrip()}"
+        name = _fit(team_name(teams_by_id, winner), JUNCTION_NAME_WIDTH) if inline else _fit(team_label(teams_by_id, winner))
+        plain = f"{mark}{name.rstrip()}"
         label, label_width = _colorize(plain, color_round, mark), len(plain)
 
     return _join(render_side("A", team_a), render_side("B", team_b), label, label_width, inline)

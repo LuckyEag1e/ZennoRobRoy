@@ -294,7 +294,7 @@ def test_render_tree_names_winners_on_the_junction_up_to_16_lines_then_in_a_colu
         lines = _strip_ansi(_render(matches, teams, results={first_game.id: 1})).splitlines()
         return lines[lines.index("```ansi") + 2].rstrip()
 
-    assert first_round_junction(16).endswith("├+Player 1─┐")
+    assert first_round_junction(16).endswith("├+Play…─┐")  # cut short, since it widens every later round
     # 32 lines would be too wide for a phone that way, so the winner sits in the right-hand column.
     junction = first_round_junction(32)
     assert "├─┐" in junction and junction.endswith(" +Player 1")
