@@ -11,7 +11,7 @@ from common import (
     MatchPicker,
     TournamentSession,
     WinnerPicker,
-    concluded_team_autocomplete,
+    concluded_entrant_autocomplete,
     concluded_tournament_autocomplete,
     edit_signups_message,
     outdated_pick_message,
@@ -91,30 +91,30 @@ class AdminCog(commands.Cog):
         if tournament_row["status"] == "registration":
             await edit_signups_message(self.bot, tournament_row, f"📝 Sign-ups for **{tournament}** were cancelled.")
 
-    @group.command(name="linkteam", description="Link a team in a concluded tournament to a member, so it counts for their rating")
-    @app_commands.describe(tournament="Concluded tournament", team="Team the member played on", user="Member to link")
-    @app_commands.autocomplete(tournament=concluded_tournament_autocomplete, team=concluded_team_autocomplete)
-    async def linkteam(self, interaction: discord.Interaction, tournament: str, team: str, user: discord.Member) -> None:
+    @group.command(name="linkplayer", description="Link an entrant in a concluded tournament to the member who played as them")
+    @app_commands.describe(tournament="Concluded tournament", entrant="Entrant the member played as", user="Member to link")
+    @app_commands.autocomplete(tournament=concluded_tournament_autocomplete, entrant=concluded_entrant_autocomplete)
+    async def linkplayer(self, interaction: discord.Interaction, tournament: str, entrant: str, user: discord.Member) -> None:
         conn = db.get_connection()
         try:
             tournament_row = await resolve_concluded_tournament(interaction, conn, tournament)
             if tournament_row is None:
                 return
             label = concluded_label(tournament_row)
-            team_row = db.get_team_by_name(conn, tournament_row["id"], team)
-            if team_row is None:
-                await interaction.response.send_message(f"No team named '{team}' in **{label}**.", ephemeral=True)
+            entrant_row = db.get_team_by_name(conn, tournament_row["id"], entrant)
+            if entrant_row is None:
+                await interaction.response.send_message(f"No entrant named '{entrant}' in **{label}**.", ephemeral=True)
                 return
-            linked = db.link_team_member(conn, tournament_row["id"], team_row["id"], user.id)
+            linked = db.link_team_member(conn, tournament_row["id"], entrant_row["id"], user.id)
         finally:
             conn.close()
         if not linked:
             await interaction.response.send_message(
-                f"{user.mention} is already on a team in **{label}**.", ephemeral=True
+                f"{user.mention} is already linked to an entrant in **{label}**.", ephemeral=True
             )
             return
         await interaction.response.send_message(
-            f"🔗 Linked {user.mention} to **{team}** in **{label}**. Their games there against other linked members now count for their rating.",
+            f"🔗 Linked {user.mention} to **{entrant}** in **{label}**. Their games there against other linked members now count for their rating.",
             ephemeral=True,
         )
 

@@ -43,30 +43,30 @@ def _rating_reply(sim, asker, **options) -> str:
     return reply.embed.description
 
 
-def test_linking_an_old_team_shows_up_in_rating(world):
+def test_linking_an_old_entrant_shows_up_in_rating(world):
     sim, organizer, ace, blaze, old_cup = world
     assert "provisional" in _rating_reply(sim, ace).split("\n")[0]
 
     async def link():
-        [picked] = await sim.autocomplete(organizer, "admin linkteam", "tournament", "old")
-        teams = await sim.autocomplete(organizer, "admin linkteam", "team", "", tournament=picked)
-        await sim.run(organizer, "admin linkteam", tournament=picked, team="Ace", user=ace)
+        [picked] = await sim.autocomplete(organizer, "admin linkplayer", "tournament", "old")
+        entrants = await sim.autocomplete(organizer, "admin linkplayer", "entrant", "", tournament=picked)
+        await sim.run(organizer, "admin linkplayer", tournament=picked, entrant="Ace", user=ace)
         only_one_side = (await sim.run(ace, "rating")).sent.embed.description
-        await sim.run(organizer, "admin linkteam", tournament=picked, team="Blaze", user=blaze)
-        again = await sim.run(organizer, "admin linkteam", tournament=picked, team="Blaze", user=ace)
-        return picked, sorted(teams), only_one_side, again.sent
+        await sim.run(organizer, "admin linkplayer", tournament=picked, entrant="Blaze", user=blaze)
+        again = await sim.run(organizer, "admin linkplayer", tournament=picked, entrant="Blaze", user=ace)
+        return picked, sorted(entrants), only_one_side, again.sent
 
-    picked, teams, only_one_side, again = asyncio.run(link())
-    assert picked == old_cup and teams == ["Ace", "Blaze"]
+    picked, entrants, only_one_side, again = asyncio.run(link())
+    assert picked == old_cup and entrants == ["Ace", "Blaze"]
     assert "provisional" in only_one_side  # a game counts once both sides are linked
-    assert "already on a team" in again.content
+    assert "already linked to an entrant" in again.content
     assert _rating_reply(sim, blaze, user=ace).split("\n")[0] == "Singles: **1516**"
     assert not sim.issues
 
 
 def test_a_typed_name_isnt_taken_for_a_concluded_tournament(world):
     sim, organizer, ace, _, _ = world
-    reply = asyncio.run(sim.run(organizer, "admin linkteam", tournament="Old Cup", team="Ace", user=ace)).sent
+    reply = asyncio.run(sim.run(organizer, "admin linkplayer", tournament="Old Cup", entrant="Ace", user=ace)).sent
     assert "Pick the tournament from the list" in reply.content
 
 
@@ -74,8 +74,8 @@ def test_removehistory_needs_the_name_retyped(world):
     sim, organizer, ace, blaze, old_cup = world
 
     async def remove():
-        await sim.run(organizer, "admin linkteam", tournament=old_cup, team="Ace", user=ace)
-        await sim.run(organizer, "admin linkteam", tournament=old_cup, team="Blaze", user=blaze)
+        await sim.run(organizer, "admin linkplayer", tournament=old_cup, entrant="Ace", user=ace)
+        await sim.run(organizer, "admin linkplayer", tournament=old_cup, entrant="Blaze", user=blaze)
         wrong = await sim.run(organizer, "admin removehistory", tournament=old_cup, confirm_name="Old")
         rated = (await sim.run(ace, "rating")).sent.embed.description
         right = await sim.run(organizer, "admin removehistory", tournament=old_cup, confirm_name="Old Cup")
@@ -92,8 +92,8 @@ def test_closing_seeds_by_rating_unless_overridden(world):
     sim, organizer, ace, blaze, old_cup = world
 
     async def two_signups():
-        await sim.run(organizer, "admin linkteam", tournament=old_cup, team="Ace", user=ace)
-        await sim.run(organizer, "admin linkteam", tournament=old_cup, team="Blaze", user=blaze)
+        await sim.run(organizer, "admin linkplayer", tournament=old_cup, entrant="Ace", user=ace)
+        await sim.run(organizer, "admin linkplayer", tournament=old_cup, entrant="Blaze", user=blaze)
         posts = []
         for name, seeding in (("Seeded", None), ("Drawn", "random")):
             await sim.run(organizer, "registration open", name=name)

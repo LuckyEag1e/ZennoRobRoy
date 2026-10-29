@@ -131,8 +131,8 @@ async def concluded_tournament_autocomplete(
     ][:MAX_SELECT_OPTIONS]
 
 
-async def concluded_team_autocomplete(interaction: discord.Interaction, current: str) -> list[app_commands.Choice[str]]:
-    """Teams in the concluded tournament picked in the same command's `tournament` option."""
+async def concluded_entrant_autocomplete(interaction: discord.Interaction, current: str) -> list[app_commands.Choice[str]]:
+    """Entrants in the concluded tournament picked in the same command's `tournament` option."""
     conn = db.get_connection()
     try:
         tournament_row = _picked_concluded_tournament(conn, interaction, getattr(interaction.namespace, "tournament", None))

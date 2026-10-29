@@ -153,7 +153,7 @@ must match a fresh render.
 | `large` | 40 players, 3 guests | A 64-line bracket, long menus that page, a long leaderboard. |
 | `spam` | 6 casual, 1 spammer | One member firing public-posting commands as fast as they can. |
 | `csv` | 8 players predicting an uploaded bracket | `/tournament create` from a CSV, with two organizers recording results. |
-| `season` | 4 diligent, 3 casual, 1 chaotic, 2 guests | Two tournaments in a row under the same name. In between, a guest joins Discord and the organizer links their old entry to them with `/admin linkteam`, so the second tournament is seeded by real ratings. |
+| `season` | 4 diligent, 3 casual, 1 chaotic, 2 guests | Two tournaments in a row under the same name. In between, a guest joins Discord and the organizer links their old entry to them with `/admin linkplayer`, so the second tournament is seeded by real ratings. |
 
 ## Actors
 

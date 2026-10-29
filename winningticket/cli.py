@@ -530,13 +530,13 @@ class WinningTicketCLI(cmd.Cmd):
         db.update_team(self.conn, team_row["id"], new_name, new_seed, seed_given)
         print("Updated.")
 
-    def do_admin_linkteam(self, arg: str) -> None:
-        "Link a team in a concluded tournament to a user, so it counts for their rating: admin_linkteam <name> <team> <user_id>"
+    def do_admin_linkplayer(self, arg: str) -> None:
+        "Link an entrant in a concluded tournament to the user who played as them, so its games count for their rating: admin_linkplayer <name> <entrant> <user_id>"
         parts = shlex.split(arg)
         if len(parts) != 3:
-            print("usage: admin_linkteam <name> <team> <user_id>")
+            print("usage: admin_linkplayer <name> <entrant> <user_id>")
             return
-        name, team, user_id = parts
+        name, entrant, user_id = parts
         try:
             user_id = int(user_id)
         except ValueError:
@@ -545,14 +545,14 @@ class WinningTicketCLI(cmd.Cmd):
         tournament = self._choose_concluded(name)
         if tournament is None:
             return
-        team_row = db.get_team_by_name(self.conn, tournament["id"], team)
-        if team_row is None:
-            print(f"No team named '{team}' in {concluded_label(tournament)}.")
+        entrant_row = db.get_team_by_name(self.conn, tournament["id"], entrant)
+        if entrant_row is None:
+            print(f"No entrant named '{entrant}' in {concluded_label(tournament)}.")
             return
-        if not db.link_team_member(self.conn, tournament["id"], team_row["id"], user_id):
-            print(f"{user_label(user_id)} is already on a team in {concluded_label(tournament)}.")
+        if not db.link_team_member(self.conn, tournament["id"], entrant_row["id"], user_id):
+            print(f"{user_label(user_id)} is already linked to an entrant in {concluded_label(tournament)}.")
             return
-        print(f"Linked {user_label(user_id)} to {team} in {concluded_label(tournament)}.")
+        print(f"Linked {user_label(user_id)} to {entrant} in {concluded_label(tournament)}.")
 
     def do_admin_removehistory(self, arg: str) -> None:
         "Delete a concluded tournament so it stops counting for ratings (asks you to retype the name): admin_removehistory <name>"

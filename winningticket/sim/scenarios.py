@@ -544,9 +544,9 @@ class TournamentRun:
         """After a tournament: a guest who played without a Discord account joins, and the
         organizer links their old entry to them so it counts for their rating."""
         org, style = self.organizer.user, self.organizer.style
-        [picked, *_] = await self.sim.autocomplete(org, "admin linkteam", "tournament", self.name[:2])
-        teams = await self.sim.autocomplete(org, "admin linkteam", "team", "Gu", tournament=picked)
-        guest = next((team for team in teams if team in self.guest_skill), None)
+        [picked, *_] = await self.sim.autocomplete(org, "admin linkplayer", "tournament", self.name[:2])
+        entrants = await self.sim.autocomplete(org, "admin linkplayer", "entrant", "Gu", tournament=picked)
+        guest = next((entrant for entrant in entrants if entrant in self.guest_skill), None)
         if guest is None:
             return None
         newcomer = Player(self.sim.add_user(900 + len(self.players), f"Newcomer {len(self.players)}"),
@@ -556,9 +556,9 @@ class TournamentRun:
             reply = await self.sim.run(org, "admin removehistory", tournament=picked, confirm_name=self.name.lower())
             if reply.sent is None or "didn't match" not in (reply.sent.content or ""):
                 self.sim._problem("/admin removehistory went ahead without the name retyped exactly")
-        reply = await self.sim.run(org, "admin linkteam", tournament=picked, team=guest, user=newcomer.user)
+        reply = await self.sim.run(org, "admin linkplayer", tournament=picked, entrant=guest, user=newcomer.user)
         if reply.sent is None or "Linked" not in (reply.sent.content or ""):
-            self.sim._problem(f"/admin linkteam couldn't link {guest}, a guest with no account")
+            self.sim._problem(f"/admin linkplayer couldn't link {guest}, a guest with no account")
         await self.sim.run(newcomer.user, "rating")
         return newcomer
 

@@ -98,7 +98,7 @@ class HelpCog(commands.Cog):
             ("/admin editteam tournament:<name> team:<name>", "Fix a team's name or seed after import."),
             ("/admin clearpredictions tournament:<name> user:<member>", "Wipe one user's saved predictions."),
             ("/admin deletetournament tournament:<name> confirm_name:<name>", "Permanently delete a tournament and all its data."),
-            ("/admin linkteam tournament:<concluded> team:<name> user:<member>", "Link a team in a concluded tournament to the member who played it, so its games count for their rating."),
+            ("/admin linkplayer tournament:<concluded> entrant:<name> user:<member>", "Link an entrant in a concluded tournament to the member who played as them, so its games count for their rating."),
             ("/admin removehistory tournament:<concluded> confirm_name:<name>", "Delete a concluded tournament that shouldn't count for ratings, such as a test."),
             ("/admin feedback [page:<n>]", "Read anonymous feedback, newest first. `/admin deletefeedback number:<n>` removes one."),
             ("/admin ban user:<member> [reason:<text>]", "Block a member from using the bot. `/admin unban` undoes it, and `/admin bans` lists everyone banned."),
