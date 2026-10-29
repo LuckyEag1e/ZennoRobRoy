@@ -8,10 +8,10 @@ WinningTicket is a Python (discord.py) bot that runs a bracket prediction pool. 
 
 ```
 python3 -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt          # plus `pip install pytest` for tests
+pip install -r requirements.txt          # plus `pip install pytest pytest-xdist` for tests
 python bot.py                            # needs DISCORD_BOT_TOKEN in .env
 python cli.py                            # terminal REPL, no Discord needed (uses data/cli.db)
-pytest                                   # all tests
+pytest -n auto                           # all tests, spread across CPU cores
 pytest tests/test_scoring.py::test_scoring_wrong_pick_awards_zero   # single test
 python -m sim                            # simulated tournaments through the real cogs (--help for options)
 ./deploy.sh                              # rsync to remote host + restart systemd service

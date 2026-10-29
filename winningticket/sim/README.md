@@ -27,8 +27,8 @@ so it works in scripts. `pytest` also runs seed 0 of every scenario except `larg
 `tests/test_simulation.py`.
 
 Runs are deterministic: the same scenario and seed always play out the same way, so a problem
-found on a seed can be replayed exactly. Each run takes a fraction of a second; `large` takes
-a few seconds.
+found on a seed can be replayed exactly. Each run takes a second or two and `large` takes a few,
+but runs play side by side on every CPU core, so `python -m sim` finishes in seconds.
 
 ## How a run works
 
