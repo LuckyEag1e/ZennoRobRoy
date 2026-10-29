@@ -35,11 +35,10 @@ from tournament_builder import (
 
 log = logging.getLogger("winningticket")
 
-SEEDING_CHOICES = [
-    app_commands.Choice(name="By rating: top seeds play the lowest seeds first", value="standard"),
-    app_commands.Choice(name="By rating: top seeds play mid-ranked seeds first (slide)", value="slide"),
-    app_commands.Choice(name="Random draw", value="random"),
-]
+# Shown as-is in the option once picked, so the names stay short; the option's description
+# explains them.
+SEEDING_CHOICES = [app_commands.Choice(name=mode, value=mode) for mode in db.SEEDING_MODES]
+SEEDING_OPTION_HELP = "standard (default): top seeds play the lowest. slide: top seeds play mid-ranked. random: no seeds"
 
 
 def _close_and_describe(conn: sqlite3.Connection, tournament: sqlite3.Row, seeding_mode: Optional[str] = None,
@@ -192,7 +191,7 @@ class RegistrationCog(commands.Cog):
     @app_commands.describe(
         name="Tournament name",
         closes_in_hours="Close sign-ups automatically after this many hours (leave blank to close by hand)",
-        seeding="How entrants are placed in the bracket when sign-ups close (default: by rating, top seeds play the lowest)",
+        seeding=SEEDING_OPTION_HELP,
     )
     @app_commands.choices(seeding=SEEDING_CHOICES)
     @requires_manage_server
@@ -217,7 +216,8 @@ class RegistrationCog(commands.Cog):
             conn.close()
 
     @group.command(name="close", description="Close sign-ups and draw the bracket")
-    @app_commands.describe(name="Tournament name", seeding="Override the seeding chosen when sign-ups opened")
+    @app_commands.describe(name="Tournament name",
+                           seeding="Override the seeding chosen at open: standard, slide or random")
     @app_commands.autocomplete(name=registration_name_autocomplete)
     @app_commands.choices(seeding=SEEDING_CHOICES)
     @requires_manage_server

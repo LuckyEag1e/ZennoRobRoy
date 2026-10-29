@@ -54,10 +54,12 @@ out, e.g. `create Demo example_bracket.csv` in the local CLI below.
 ## Usage
 
 Admin:
-- `/registration open name:<name> [closes_in_hours:<hours>]`: take sign-ups instead of
-  uploading a CSV. Members enter with `/register`. Sign-ups close after `closes_in_hours`
-  (or with `/registration close name:<name>`), and then the entrants are drawn into a
-  bracket at random, with byes filling it out to a power of two.
+- `/registration open name:<name> [closes_in_hours:<hours>] [seeding:standard|slide|random]`:
+  take sign-ups instead of uploading a CSV. Members enter with `/register`. Sign-ups close
+  after `closes_in_hours` (or with `/registration close name:<name>`), and then the entrants
+  are drawn into a bracket, with byes for the top seeds filling it out to a power of two.
+  `standard` (the default) seeds by rating with the top seeds playing the lowest first,
+  `slide` has them play mid-ranked seeds first, and `random` draws without seeds.
 - `/registration add tournament:<name> [user:<member>] [name:<text>]`: sign up a member
   for them (by name only, unless they've agreed to link their data), or an entrant with no
   Discord account. `/registration remove` withdraws anyone.
