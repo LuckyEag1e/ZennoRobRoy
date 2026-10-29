@@ -18,7 +18,7 @@ import discord
 import db
 from bracket import bracket_order, final_match, is_bye, resolve_all_slots, resolve_slot
 from labels import team_label
-from ratings import compute_ratings, entrant_rating
+from ratings import BASE_RATING, compute_ratings, entrant_rating
 from sim.actors import (
     CAREFUL,
     CASUAL,
@@ -520,8 +520,8 @@ class TournamentRun:
     # -- the final comparison ------------------------------------------------------------
 
     def check_seeds(self) -> None:
-        """A tournament seeded by rating must list its rated entrants best first. Where
-        unrated ones go is a club decision, so they aren't checked."""
+        """A tournament seeded by rating must list its entrants best first, counting
+        unrated ones as the starting rating."""
         conn = db.get_connection()
         try:
             tournament = db.get_tournament(conn, self.tournament_id)
@@ -535,10 +535,10 @@ class TournamentRun:
         if sorted(seeds.values(), key=str) != sorted(range(1, len(seeds) + 1), key=str):
             self.sim._problem(f"a tournament seeded by rating has seeds {sorted(seeds.values(), key=str)}")
             return
-        rated = [entrant_rating(members_by_team[team_id], ratings) for team_id in sorted(seeds, key=seeds.get)]
-        rated = [rating for rating in rated if rating is not None]
-        if rated != sorted(rated, reverse=True):
-            self.sim._problem(f"seeds don't follow the entrants' ratings: {[round(r) for r in rated]}")
+        by_seed = [entrant_rating(members_by_team[team_id], ratings) for team_id in sorted(seeds, key=seeds.get)]
+        by_seed = [BASE_RATING if rating is None else rating for rating in by_seed]
+        if by_seed != sorted(by_seed, reverse=True):
+            self.sim._problem(f"seeds don't follow the entrants' ratings: {[round(rating) for rating in by_seed]}")
 
     async def welcome_a_guest(self) -> Optional[Player]:
         """After a tournament: a guest who played without a Discord account joins, and the

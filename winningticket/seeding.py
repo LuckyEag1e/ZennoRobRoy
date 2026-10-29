@@ -40,8 +40,8 @@ def seeded_pairs(ordered_team_ids: list[int]) -> list[tuple[Optional[int], Optio
 
 def place_new_entrants(rated: dict[int, float], unrated: list[int], rng: random.Random) -> list[int]:
     """Every entrant, best seed first, given the ratings of those who have played before.
-    Where players with no rating yet belong is still up to the club; until it decides,
-    they count as an average player. Equal ratings are put in random order."""
+    Players with no rating yet count as an average player, so a newcomer isn't seeded
+    below members who have been losing. Equal ratings are put in random order."""
     rating_of = dict(rated) | {team_id: BASE_RATING for team_id in unrated}
     tiebreak = {team_id: rng.random() for team_id in sorted(rating_of)}
     return sorted(rating_of, key=lambda team_id: (-rating_of[team_id], tiebreak[team_id]))

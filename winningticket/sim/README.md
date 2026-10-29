@@ -129,8 +129,7 @@ own lines, so they never mix.
 - **Bans on open views:** a member banned while their feedback form or stats menu is open must
   not be able to use it.
 - **Seeding:** when sign-ups close with seeding by rating, every entrant gets a seed and the
-  rated ones are seeded best first. Where unrated players go is left unchecked, because the
-  club hasn't decided it yet.
+  entrants are seeded best first, with unrated players counted at the starting rating.
 
 **At quiet moments:** after a refresh of the live posts, every live bracket and leaderboard post
 must match a fresh render.
