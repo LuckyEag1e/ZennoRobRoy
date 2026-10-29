@@ -98,9 +98,9 @@ class TournamentRun:
     tournament_id: Optional[int] = None
     co_organizer: Optional[Organizer] = None
     guest_skill: dict[str, float] = field(default_factory=dict)
-    # The real winner of each matchup played, keyed by (match id, its two teams). A matchup
-    # can change when an earlier result is corrected, and then it's a new game.
-    outcomes: dict[tuple[int, frozenset], int] = field(default_factory=dict)
+    # The real winner of each match, by match id. Games are played by whoever really won
+    # their way there, whatever the bot's bracket shows while a mistake is in it.
+    real_winners: dict[int, int] = field(default_factory=dict)
     banned: Optional[Player] = None
 
     # -- reading the bot's state --------------------------------------------------------
@@ -315,6 +315,12 @@ class TournamentRun:
         await self._housekeeping()
         await self.sim.run(org, "tournament lock", name=self.name)
         await self._play_matches()
+        # A last look over every result before concluding. Fixing an early one can drop the
+        # final's result, and then there are games left to record.
+        await self._review_results(self.organizer)
+        while self.status() == "in_progress":
+            await self._play_matches()
+            await self._review_results(self.organizer)
         await self._housekeeping()
         await self.sim.run(org, "tournament conclude", name=self.name)
         await self.refresh_live_posts()
@@ -475,11 +481,21 @@ class TournamentRun:
         matches_by_id, feeders, teams_by_id, results = self._bracket()
         label_to_team = {team_label(teams_by_id, team)[:80]: team for team in teams_by_id}
         team_a, team_b = (label_to_team[label] for label in buttons)
-        winner = self._real_winner(match_id, team_a, team_b)
+        winner = self._real_winner(match_id, matches_by_id, feeders)
+        if winner not in (team_a, team_b):
+            # An earlier result is wrong, so the bracket shows a game that wasn't played. A
+            # careful organizer leaves it until that's fixed; a sloppy one records it anyway,
+            # and the bot should drop or keep that result correctly once the earlier one is fixed.
+            if self.rng.random() < style.wrong_result:
+                await self.sim.click(org, message, self.rng.choice(buttons))
+            return True
         loser = team_b if winner == team_a else team_a
         if self.rng.random() < style.wrong_result:
             await self.sim.click(org, message, team_label(teams_by_id, loser)[:80])
-            await self._fix_result(organizer, match_id, winner, teams_by_id)
+            # Half the time they notice at once; otherwise the mistake sits in the bracket
+            # until their next review, while others may record games from it.
+            if self.rng.random() < 0.5:
+                await self._fix_result(organizer, match_id, winner, teams_by_id)
         else:
             await self.sim.click(org, message, team_label(teams_by_id, winner)[:80])
         if self.rng.random() < style.wrong_result / 2:
@@ -488,13 +504,16 @@ class TournamentRun:
 
     async def _review_results(self, organizer: Organizer) -> None:
         """Look over the recorded results and correct any that don't match what was played,
-        as an organizer would after noticing a mistake."""
+        as an organizer would after noticing a mistake. Earliest first, since fixing one can
+        bring the real winner of a later match back into it."""
         matches_by_id, feeders, teams_by_id, results = self._bracket()
-        slots = resolve_all_slots(matches_by_id, results.get, feeders)
-        for match_id, winner in results.items():
-            real = self.outcomes.get((match_id, frozenset(slots[match_id])))
-            if real is not None and real != winner:
-                await self._fix_result(organizer, match_id, real, teams_by_id)
+        for match in sorted(matches_by_id.values(), key=bracket_order):
+            if match.id not in results:
+                continue
+            real = self._real_winner(match.id, matches_by_id, feeders)
+            if results[match.id] != real and real in resolve_slot(match, matches_by_id, results.get, feeders):
+                await self._fix_result(organizer, match.id, real, teams_by_id)
+                results = self._bracket()[3]  # the fix may have dropped later results
 
     async def _clear_result(self, organizer: Organizer, match_id: int) -> None:
         """Clears a result they just recorded, as if unsure; it gets recorded again later."""
@@ -512,13 +531,18 @@ class TournamentRun:
         await self.sim.click(org, message, team_label(teams_by_id, winner)[:80])
         await self.sim.click(org, message, "Confirm")
 
-    def _real_winner(self, match_id: int, team_a: int, team_b: int) -> int:
-        """Who really wins this matchup, decided by skill the first time anyone asks."""
-        key = (match_id, frozenset((team_a, team_b)))
-        if key not in self.outcomes:
+    def _real_winner(self, match_id: int, matches_by_id, feeders) -> int:
+        """Who really wins this match, decided by skill the first time anyone asks."""
+        if match_id not in self.real_winners:
+            team_a, team_b = self._real_matchup(match_id, matches_by_id, feeders)
             a_wins = 1 / (1 + 10 ** ((self.skill_of(team_b) - self.skill_of(team_a)) / 400))
-            self.outcomes[key] = team_a if self.rng.random() < a_wins else team_b
-        return self.outcomes[key]
+            self.real_winners[match_id] = team_a if self.rng.random() < a_wins else team_b
+        return self.real_winners[match_id]
+
+    def _real_matchup(self, match_id: int, matches_by_id, feeders) -> tuple[int, int]:
+        """The two entrants who really reached this match."""
+        return resolve_slot(matches_by_id[match_id], matches_by_id,
+                            lambda feeder_id: self._real_winner(feeder_id, matches_by_id, feeders), feeders)
 
     # -- the final comparison ------------------------------------------------------------
 
@@ -589,14 +613,13 @@ class TournamentRun:
             results = db.get_results(conn, self.tournament_id)
             slots = resolve_all_slots(matches_by_id, results.get, feeders)
             for match_id, winner in results.items():
-                real = self.outcomes.get((match_id, frozenset(slots[match_id])))
-                if real is None:
-                    self.sim._problem(f"match {match_id} has a result for a matchup nobody played")
-                elif real != winner:
+                if set(slots[match_id]) != set(self._real_matchup(match_id, matches_by_id, feeders)):
+                    self.sim._problem(f"match {match_id} shows a matchup that wasn't played")
+                elif winner != self._real_winner(match_id, matches_by_id, feeders):
                     self.sim._problem(f"match {match_id}'s stored winner isn't the one who really won")
             podium, _, scores = db.load_final_results(conn, self.tournament_id)
             final = final_match(matches_by_id)
-            if podium.champion != self.outcomes.get((final.id, frozenset(slots[final.id]))):
+            if podium.champion != self._real_winner(final.id, matches_by_id, feeders):
                 self.sim._problem("the stored champion isn't the one who won the final")
             predictions = db.get_all_predictions(conn, self.tournament_id)
         finally:

@@ -67,7 +67,11 @@ but runs play side by side on every CPU core, so `python -m sim` finishes in sec
    unbanning someone who keeps poking at admin commands.
 6. **Real results come from hidden skill.** Every entrant has a skill rating, and each match's
    winner is drawn from the two ratings, Elo-style. It doesn't depend on anyone's predictions.
-   The simulator remembers the real outcome of every matchup it played.
+   Each match is decided once, between the entrants who really won their way there, even
+   while a wrong result makes the bot's bracket show someone else. Organizers record the game
+   that was really played: a careful one leaves a match alone while the bracket shows the
+   wrong people, and a sloppy one sometimes records it anyway and corrects it later. Before
+   concluding, the organizer looks over every result once more.
 7. **At the end**, the bot's stored results, champion, saved brackets and leaderboard points
    are compared with what was actually played.
 
@@ -137,7 +141,7 @@ must match a fresh render.
 **At the end:**
 
 - the tournament reached `concluded` (each one, in a scenario that plays several)
-- every stored result is the real winner of the matchup played
+- every stored result is the real winner, and every match shows the two entrants who really played it
 - the stored champion won the final
 - every saved bracket is complete and consistent with its own earlier picks
 - every predictor's points match an independent recount.

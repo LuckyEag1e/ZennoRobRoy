@@ -45,7 +45,7 @@ SPAMMER = Competence("spammer", typo=0.0, off_script=0.0, double_click=0.0, aban
 class OrganizerStyle:
     name: str
     wrong_order: float    # runs a stage's command too early or twice
-    wrong_result: float   # records the wrong winner, then fixes it with /admin setresult
+    wrong_result: float   # records the wrong winner, then fixes it with /admin setresult, at once or at the next review
     uses_deadline: bool   # closes sign-ups with a deadline instead of by hand
 
 
