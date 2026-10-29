@@ -32,9 +32,9 @@ class FeedbackCooldown(MemberCooldown):
         return True
 
 
-class FeedbackModal(BotModal, title="Anonymous feedback"):
+class FeedbackModal(BotModal, title="Anonymous Feedback"):
     feedback_text = discord.ui.TextInput(
-        label="Your feedback",
+        label="Your Feedback",
         style=discord.TextStyle.paragraph,
         placeholder="Organizers can read this, but they won't see who sent it.",
         max_length=FEEDBACK_MAX_LENGTH,

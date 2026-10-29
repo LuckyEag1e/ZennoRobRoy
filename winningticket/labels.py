@@ -103,7 +103,7 @@ CONSENT_NOTICE = (
     "participants in hosted events.\n"
     "**Agree** to link them. The bot remembers your choice. You may opt out at any time with the "
     "`/optout` command, which will unlink all data previously associated with your account.\n"
-    "**Opt out** to enter by your display name only. Nothing is linked to your account, and you're "
+    "**Opt Out** to enter by your display name only. Nothing is linked to your account, and you're "
     "seeded at the default rating.\n"
     "Opting out doesn't delete any data: your past entries stay in tournament history under your "
     "display name."

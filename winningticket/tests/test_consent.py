@@ -53,7 +53,7 @@ def test_first_sign_up_asks_privately_before_entering_anyone(world):
     sim, _, member = world
     notice = asyncio.run(sim.run(member, "register", tournament="Cup")).sent
     assert not notice.public
-    assert [item.label for item in notice.view.children] == ["Agree", "Opt out"]
+    assert [item.label for item in notice.view.children] == ["Agree", "Opt Out"]
     assert "/optout" in notice.content
     assert _entry("Ace") is None  # nothing is saved until they choose
 
@@ -74,7 +74,7 @@ def test_opting_out_enters_by_name_only_and_isnt_remembered(world):
     assert _entry("Ace") == ("Ace", None) and not _agreed(member.id)
     assert "/predict" in reply.content and "history" in reply.content  # picks are still tied to them
     again = asyncio.run(sim.run(member, "register", tournament="Shield")).sent
-    assert [item.label for item in again.view.children] == ["Agree", "Opt out"]
+    assert [item.label for item in again.view.children] == ["Agree", "Opt Out"]
     twice = asyncio.run(sign_up(sim, member, "Cup", agree=False))
     assert "already signed up" in twice.content
 

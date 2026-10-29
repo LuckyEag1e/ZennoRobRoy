@@ -203,7 +203,7 @@ class TournamentRun:
             return
         if agreed_before:
             self.sim._problem(f"{player.user.display_name} was asked for consent again after agreeing")
-        await self.sim.click(player.user, message, "Agree" if player.agrees else "Opt out")
+        await self.sim.click(player.user, message, "Agree" if player.agrees else "Opt Out")
         if not player.agrees and (message.content or "").startswith("✅"):
             self.name_only.add(player.user.id)
             self.guest_skill.setdefault(player.user.display_name, player.skill)

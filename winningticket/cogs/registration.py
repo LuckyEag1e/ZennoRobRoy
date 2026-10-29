@@ -74,7 +74,7 @@ async def _require_registration(interaction: discord.Interaction, tournament: sq
 
 
 class ConsentView(BotView):
-    """Agree or Opt out, shown privately to a member signing up who hasn't agreed yet."""
+    """Agree or Opt Out, shown privately to a member signing up who hasn't agreed yet."""
 
     def __init__(self, cog: RegistrationCog, tournament_id: int) -> None:
         super().__init__(timeout=600)
@@ -85,7 +85,7 @@ class ConsentView(BotView):
     async def agree(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         await self._sign_up(interaction, linked=True)
 
-    @discord.ui.button(label="Opt out", style=discord.ButtonStyle.secondary)
+    @discord.ui.button(label="Opt Out", style=discord.ButtonStyle.secondary)
     async def opt_out(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         await self._sign_up(interaction, linked=False)
 

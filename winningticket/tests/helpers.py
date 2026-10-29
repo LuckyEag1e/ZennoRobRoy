@@ -28,5 +28,5 @@ async def sign_up(sim, user, tournament: str, agree: bool = True):
     reply = (await sim.run(user, "register", tournament=tournament)).sent
     labels = [item.label for item in reply.view.children] if reply.view is not None else []
     if "Agree" in labels:
-        await sim.click(user, reply, "Agree" if agree else "Opt out")
+        await sim.click(user, reply, "Agree" if agree else "Opt Out")
     return reply
