@@ -11,6 +11,7 @@ from discord.ext import commands
 from dotenv import load_dotenv
 
 import db
+from common import turn_away_if_banned
 
 load_dotenv()
 
@@ -33,21 +34,9 @@ INITIAL_COGS = (
 
 class WinningTicketTree(app_commands.CommandTree):
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        """Turn away members an admin has banned, before any command or autocomplete runs."""
-        if interaction.guild_id is None:
-            return True
-        conn = db.get_connection()
-        try:
-            banned = db.is_banned(conn, interaction.guild_id, interaction.user.id)
-        finally:
-            conn.close()
-        if not banned:
-            return True
-        if interaction.type == discord.InteractionType.application_command:
-            await interaction.response.send_message(
-                "An admin has blocked you from using WinningTicket in this server.", ephemeral=True
-            )
-        return False
+        """Turn away members an admin has banned, before any command or autocomplete runs.
+        Buttons, menus and forms check through common.BotView and BotModal instead."""
+        return not await turn_away_if_banned(interaction)
 
 
 class WinningTicketBot(commands.Bot):

@@ -7,10 +7,12 @@ from discord.ext import commands
 import db
 from bracket import Match, bracket_order, matches_with_both_teams, resolve_all_slots
 from common import (
+    BotView,
     MatchPicker,
     TournamentSession,
     WinnerPicker,
     edit_signups_message,
+    outdated_pick_message,
     resolve_tournament,
     team_name_autocomplete,
     tournament_name_autocomplete,
@@ -21,7 +23,7 @@ from labels import ban_lines, dropped_results_note, feedback_page, join_within, 
 STATUS_CHOICES = [app_commands.Choice(name=status, value=status) for status in db.FORCEABLE_STATUSES]
 
 
-class ConfirmView(discord.ui.View):
+class ConfirmView(BotView):
     def __init__(self, on_confirm, timeout: int = 120) -> None:
         super().__init__(timeout=timeout)
         self._on_confirm = on_confirm
@@ -103,6 +105,11 @@ class AdminCog(commands.Cog):
             if new_name is None and new_seed is None:
                 await interaction.response.send_message("Provide new_name and/or new_seed.", ephemeral=True)
                 return
+            if new_name is not None and db.team_name_taken(conn, tournament_row["id"], new_name, team_row["id"]):
+                await interaction.response.send_message(
+                    f"**{tournament}** already has a team named '{new_name}'.", ephemeral=True
+                )
+                return
             db.update_team(conn, team_row["id"], new_name, new_seed, seed_given=new_seed is not None)
         finally:
             conn.close()
@@ -133,19 +140,41 @@ class AdminCog(commands.Cog):
             async def choose(winner_interaction: discord.Interaction, winner_id: int, loser_id: int) -> None:
                 winner_label = team_label(session.teams_by_id, winner_id)
 
+                def current_match() -> db.MatchNow | None:
+                    conn = db.get_connection()
+                    try:
+                        return db.match_now(conn, session.tournament_id, match.id)
+                    finally:
+                        conn.close()
+
                 async def record(confirm_interaction: discord.Interaction) -> None:
                     conn = db.get_connection()
                     try:
-                        dropped = db.record_result(conn, session.tournament_id, match.id, winner_id,
-                                                   confirm_interaction.user.id)
+                        # Checked again here: the confirm button can sit unclicked while others edit results.
+                        refusal = outdated_pick_message(db.match_now(conn, session.tournament_id, match.id),
+                                                        (winner_id, loser_id))
+                        if refusal is None:
+                            dropped = db.record_result(conn, session.tournament_id, match.id, winner_id,
+                                                       confirm_interaction.user.id)
                     finally:
                         conn.close()
+                    if refusal is not None:
+                        await confirm_interaction.response.edit_message(content=refusal, view=None)
+                        return
                     await confirm_interaction.response.edit_message(
                         content=f"✅ Set Round {match.played_round} winner to **{winner_label}**.{dropped_results_note(dropped)}",
                         view=None,
                     )
 
-                if match.id in results_by_match:
+                now = current_match()
+                refusal = outdated_pick_message(now, (winner_id, loser_id))
+                if refusal is not None:
+                    await winner_interaction.response.edit_message(content=refusal, view=None)
+                elif now.winner == winner_id:
+                    await winner_interaction.response.edit_message(
+                        content=f"**{winner_label}** already won this match, so there's nothing to change.", view=None
+                    )
+                elif now.winner is not None:
                     await winner_interaction.response.edit_message(
                         content=f"This match already has a recorded result. Overwrite with **{winner_label}**? "
                                 f"Later results that depended on the old winner will be cleared.",
@@ -189,9 +218,22 @@ class AdminCog(commands.Cog):
             async def clear(confirm_interaction: discord.Interaction) -> None:
                 conn = db.get_connection()
                 try:
-                    dropped = db.clear_result(conn, session.tournament_id, match.id)
+                    # Only clear the result this menu showed: someone may have cleared it,
+                    # re-recorded it, or changed the matchup since it opened.
+                    now = db.match_now(conn, session.tournament_id, match.id)
+                    refusal = outdated_pick_message(now, slots[match.id])
+                    if refusal is None and now.winner is None:
+                        refusal = "That result was already cleared."
+                    elif refusal is None and now.winner != results_by_match[match.id]:
+                        refusal = (f"That result has changed since the menu was opened: "
+                                   f"**{team_label(session.teams_by_id, now.winner)}** won. Run the command again.")
+                    if refusal is None:
+                        dropped = db.clear_result(conn, session.tournament_id, match.id)
                 finally:
                     conn.close()
+                if refusal is not None:
+                    await confirm_interaction.response.edit_message(content=refusal, view=None)
+                    return
                 await confirm_interaction.response.edit_message(
                     content=f"✅ Result cleared.{dropped_results_note(dropped)}", view=None
                 )

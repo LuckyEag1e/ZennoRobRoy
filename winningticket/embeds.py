@@ -7,7 +7,7 @@ import sqlite3
 import discord
 
 from ascii_bracket import prediction_marker, real_result_marker, render_tree
-from bracket import Match, Podium, UserScore
+from bracket import Match, Podium, UserScore, ranked_places
 from labels import crowd_verdict, join_within, pick_share, pickem_podium_lines, podium_lines, score_label, team_label
 
 # Discord rejects an embed field value or description longer than these.
@@ -53,9 +53,9 @@ def render_leaderboard_embed(tournament_name: str, scores: list[UserScore]) -> d
     embed.description = f"**{len(scores)} {participant_word}**\n"
 
     lines = []
-    for rank, s in enumerate(scores, start=1):
-        lines.append(f"**{rank}.** <@{s.user_id}> — {score_label(s)}")
-    embed.description += "\n".join(lines)
+    for place, s in ranked_places(scores):
+        lines.append(f"**{place}.** {mention(s.user_id)} — {score_label(s)}")
+    embed.description += join_within(lines, EMBED_DESCRIPTION_LIMIT - len(embed.description))
     return embed
 
 

@@ -7,6 +7,8 @@ a runtime, or a deployment target — each lives in its own directory with its o
   Chrono Genesis API: leaderboards, member profiles, quota/goal tracking, a daily auto-post.
 - **[`winningticket/`](winningticket/README.md)** — Python. Runs a bracket prediction pool
   (like a March Madness pool) for a tournament: members predict outcomes, admins record real
-  results, the bot scores everyone against reality.
+  results, the bot scores everyone against reality. It comes with a simulator that plays whole
+  tournaments against the real code to catch bugs; see
+  [how the simulator works and what it tests](winningticket/sim/README.md).
 
 See each directory's own `README.md` for setup, usage, and deployment.

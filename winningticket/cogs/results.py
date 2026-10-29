@@ -10,6 +10,7 @@ from common import (
     MatchPicker,
     TournamentSession,
     WinnerPicker,
+    outdated_pick_message,
     requires_manage_server,
     resolve_tournament,
     tournament_name_autocomplete,
@@ -24,7 +25,24 @@ async def _record_and_announce(interaction: discord.Interaction, session: Tourna
     loser_label = team_label(session.teams_by_id, loser_id)
     conn = db.get_connection()
     try:
-        db.record_result(conn, session.tournament_id, match.id, winner_id, interaction.user.id)
+        # Checked and saved with no await in between, so nothing can change the match in the gap.
+        now = db.match_now(conn, session.tournament_id, match.id)
+        refusal = outdated_pick_message(now, (winner_id, loser_id))
+        if refusal is None and now.status != "in_progress":
+            refusal = f"**{session.tournament_name}** isn't recording results right now (status: {now.status})."
+        if refusal is None and now.winner is not None:
+            refusal = (f"Someone already recorded this match: **{team_label(session.teams_by_id, now.winner)}** won. "
+                       f"Use `/admin setresult` to change it.")
+        if refusal is None:
+            db.record_result(conn, session.tournament_id, match.id, winner_id, interaction.user.id)
+    finally:
+        conn.close()
+    if refusal is not None:
+        await interaction.response.edit_message(content=refusal, view=None)
+        return
+
+    conn = db.get_connection()
+    try:
         if match.feeds_into_match_id is None:
             advance_text = f"🏆 **{winner_label}** is the champion of {session.tournament_name}!"
         else:

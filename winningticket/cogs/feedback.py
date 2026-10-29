@@ -1,12 +1,11 @@
 from __future__ import annotations
 
-import time
-
 import discord
 from discord import app_commands
 from discord.ext import commands
 
 import db
+from common import BotModal, MemberCooldown
 
 # Long enough for a real message, short enough that each one fits an embed field when read back.
 FEEDBACK_MAX_LENGTH = 1000
@@ -14,17 +13,16 @@ FEEDBACK_MAX_LENGTH = 1000
 FEEDBACK_COOLDOWN_SECONDS = 300
 
 
-class FeedbackCooldown:
-    """When each member last sent feedback. It lives only in memory, so nothing stored
-    links a message to its sender."""
+class FeedbackCooldown(MemberCooldown):
+    """When each member last sent feedback. Being only in memory, it never links a stored
+    message to its sender."""
 
     def __init__(self) -> None:
-        self.last_sent: dict[tuple[int, int], float] = {}
+        super().__init__(FEEDBACK_COOLDOWN_SECONDS)
 
     async def refuse_if_waiting(self, interaction: discord.Interaction) -> bool:
         """If this member sent feedback too recently, tell them how long to wait and return True."""
-        sent = self.last_sent.get((interaction.guild_id, interaction.user.id), float("-inf"))
-        wait = sent + FEEDBACK_COOLDOWN_SECONDS - time.monotonic()
+        wait = self.seconds_left(interaction)
         if wait <= 0:
             return False
         minutes = max(1, round(wait / 60))
@@ -33,13 +31,8 @@ class FeedbackCooldown:
         )
         return True
 
-    def record_sent(self, interaction: discord.Interaction) -> None:
-        now = time.monotonic()
-        self.last_sent = {key: sent for key, sent in self.last_sent.items() if now - sent < FEEDBACK_COOLDOWN_SECONDS}
-        self.last_sent[(interaction.guild_id, interaction.user.id)] = now
 
-
-class FeedbackModal(discord.ui.Modal, title="Anonymous feedback"):
+class FeedbackModal(BotModal, title="Anonymous feedback"):
     feedback_text = discord.ui.TextInput(
         label="Your feedback",
         style=discord.TextStyle.paragraph,
@@ -67,7 +60,7 @@ class FeedbackModal(discord.ui.Modal, title="Anonymous feedback"):
             db.add_feedback(conn, interaction.guild_id, message)
         finally:
             conn.close()
-        self.cooldown.record_sent(interaction)
+        self.cooldown.record(interaction)
         await interaction.response.send_message(
             "Thanks! Your feedback was sent to the organizers anonymously.", ephemeral=True
         )

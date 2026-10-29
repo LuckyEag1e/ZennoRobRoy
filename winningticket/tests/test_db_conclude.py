@@ -130,3 +130,10 @@ def test_final_results_name_the_podium_and_score_the_players(conn):
     assert sorted(name[t] for t in result.third_places) == ["B", "D"]
     assert [(s.user_id, s.points) for s in scores] == [(7, 4)]
     assert db.load_scores(conn, tournament_id) == scores
+
+
+def test_a_concluded_tournament_can_still_be_recognised_by_name(conn):
+    _concluded_tournament(conn)
+    assert db.has_concluded_tournament(conn, 1, "Cup")
+    assert not db.has_concluded_tournament(conn, 1, "Other")
+    assert not db.has_concluded_tournament(conn, 2, "Cup")

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import sqlite3
+import time
 from dataclasses import dataclass
 from typing import Awaitable, Callable
 
@@ -48,9 +49,11 @@ async def resolve_tournament(
     command passes needs_bracket=False because it works without one."""
     tournament = db.get_tournament_by_name(conn, interaction.guild_id, name)
     if tournament is None:
-        await interaction.response.send_message(
-            f"No tournament named '{name}' found in this server.", ephemeral=True
-        )
+        if db.has_concluded_tournament(conn, interaction.guild_id, name):
+            message = f"**{name}** has concluded. Its final results were posted when it ended."
+        else:
+            message = f"No tournament named '{name}' found in this server."
+        await interaction.response.send_message(message, ephemeral=True)
         return None
     if needs_bracket and tournament["status"] == "registration":
         message = (
@@ -111,9 +114,10 @@ async def team_name_autocomplete(interaction: discord.Interaction, current: str)
     ][:MAX_SELECT_OPTIONS]
 
 
-def signups_message(tournament: sqlite3.Row) -> str:
+def signups_message(tournament: sqlite3.Row, entrants: int) -> str:
     """The sign-ups announcement as the tournament now stands. It's posted when sign-ups
-    open and rewritten when they close, so its countdown doesn't keep running."""
+    open and rewritten as people sign up and when sign-ups close, so the channel gets one
+    message that stays current instead of a post per sign-up."""
     name = tournament["name"]
     if tournament["status"] != "registration":
         return f"📝 Sign-ups for **{name}** are closed."
@@ -122,7 +126,8 @@ def signups_message(tournament: sqlite3.Row) -> str:
         f"Sign-ups close <t:{int(db.from_db_time(closes_at).timestamp())}:R>."
         if closes_at is not None else "An organizer will close sign-ups."
     )
-    return f"📝 Sign-ups are open for **{name}**! Run `/register tournament:{name}` to enter. {closing}"
+    return (f"📝 Sign-ups are open for **{name}**! Run `/register tournament:{name}` to enter. {closing} "
+            f"**{entrants}** entered so far.")
 
 
 async def edit_signups_message(client: discord.Client, tournament: sqlite3.Row, content: str) -> None:
@@ -146,11 +151,76 @@ def load_bracket_embed(conn: sqlite3.Connection, tournament: sqlite3.Row) -> dis
     )
 
 
+class MemberCooldown:
+    """When each member last did something, kept only in memory, for limits like "once a
+    minute". Nothing is written down, so it can't be traced back to anyone later."""
+
+    def __init__(self, seconds: float) -> None:
+        self.seconds = seconds
+        self._last: dict[tuple[int, int], float] = {}
+
+    def seconds_left(self, interaction: discord.Interaction) -> float:
+        last = self._last.get((interaction.guild_id, interaction.user.id), float("-inf"))
+        return last + self.seconds - time.monotonic()
+
+    def record(self, interaction: discord.Interaction) -> None:
+        now = time.monotonic()
+        self._last = {key: when for key, when in self._last.items() if now - when < self.seconds}
+        self._last[(interaction.guild_id, interaction.user.id)] = now
+
+    def clear(self) -> None:
+        self._last.clear()
+
+
+async def turn_away_if_banned(interaction: discord.Interaction) -> bool:
+    """True if an admin has banned this member, after telling them so where Discord
+    allows a reply (it doesn't for autocomplete)."""
+    if interaction.guild_id is None:
+        return False
+    conn = db.get_connection()
+    try:
+        banned = db.is_banned(conn, interaction.guild_id, interaction.user.id)
+    finally:
+        conn.close()
+    if banned and interaction.type != discord.InteractionType.autocomplete:
+        await interaction.response.send_message(
+            "An admin has blocked you from using WinningTicket in this server.", ephemeral=True
+        )
+    return banned
+
+
+class BotView(discord.ui.View):
+    """Base for every view the bot sends, so a member banned while one is open can't keep using it."""
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        return not await turn_away_if_banned(interaction)
+
+
+class BotModal(discord.ui.Modal):
+    """Base for every form the bot opens, so a member banned while one is open can't send it."""
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        return not await turn_away_if_banned(interaction)
+
+
+def outdated_pick_message(now: db.MatchNow | None, teams: tuple[int, int]) -> str | None:
+    """Why a match picked from a menu opened earlier can't be saved any more, or None if
+    it still can. `teams` are the two teams the menu showed."""
+    if now is None:
+        return "That tournament no longer exists."
+    if now.status == "concluded":
+        # Saving would also reset its status, since a decided final means "completed".
+        return "That tournament has concluded, so its results can't change any more."
+    if set(now.teams) != set(teams):
+        return "This matchup has changed since the menu was opened, because an earlier result was edited. Run the command again."
+    return None
+
+
 MatchCallback = Callable[[discord.Interaction, Match], Awaitable[None]]
 WinnerCallback = Callable[[discord.Interaction, int, int], Awaitable[None]]
 
 
-class MatchPicker(discord.ui.View):
+class MatchPicker(BotView):
     """A select menu of matches that pages through them, since Discord caps a menu at 25
     options and a large bracket has more matches than that."""
 
@@ -202,7 +272,7 @@ class MatchPicker(discord.ui.View):
         await self.on_pick(interaction, match)
 
 
-class WinnerPicker(discord.ui.View):
+class WinnerPicker(BotView):
     """One button per team in a match; calls on_pick(interaction, winner_id, loser_id)."""
 
     def __init__(self, team_a: int, team_b: int, teams_by_id: dict, on_pick: WinnerCallback,

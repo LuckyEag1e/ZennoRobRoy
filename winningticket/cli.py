@@ -26,6 +26,7 @@ from bracket import (
     matches_with_both_teams,
     next_opponent,
     pick_distribution,
+    ranked_places,
     resolvable_matches,
     resolve_all_slots,
     resolve_slot,
@@ -210,8 +211,8 @@ class WinningTicketCLI(cmd.Cmd):
             return
         participant_word = "participant" if len(scores) == 1 else "participants"
         print(f"{len(scores)} {participant_word}\n")
-        for rank, s in enumerate(scores, start=1):
-            print(f"{rank}. user {s.user_id}: {score_label(s)}")
+        for place, s in ranked_places(scores):
+            print(f"{place}. {user_label(s.user_id)}: {score_label(s)}")
 
     # -- registration --------------------------------------------------------
 
@@ -224,11 +225,16 @@ class WinningTicketCLI(cmd.Cmd):
             return
         closes_at = None
         if hours.strip():
+            low, high = tournament_builder.MIN_CLOSES_IN_HOURS, tournament_builder.MAX_CLOSES_IN_HOURS
             try:
-                closes_at = datetime.now(timezone.utc) + timedelta(hours=float(hours))
+                closes_in = float(hours)
             except ValueError:
-                print("--closes-in must be a number of hours, like 0.01 for about 36 seconds")
+                closes_in = None
+            # Written so a NaN fails it too.
+            if closes_in is None or not low <= closes_in <= high:
+                print(f"--closes-in must be a number of hours from {low} to {high:g}")
                 return
+            closes_at = datetime.now(timezone.utc) + timedelta(hours=closes_in)
         if db.get_tournament_by_name(self.conn, GUILD_ID, name) is not None:
             print(f"A tournament named '{name}' already exists.")
             return
@@ -476,6 +482,9 @@ class WinningTicketCLI(cmd.Cmd):
         if team_row is None:
             print(f"No team named '{team}' in '{name}'.")
             return
+        if new_name is not None and db.team_name_taken(self.conn, tournament["id"], new_name, team_row["id"]):
+            print(f"'{name}' already has a team named '{new_name}'.")
+            return
         db.update_team(self.conn, team_row["id"], new_name, new_seed, seed_given)
         print("Updated.")
 
@@ -644,7 +653,10 @@ class WinningTicketCLI(cmd.Cmd):
             return None
         tournament = db.get_tournament_by_name(self.conn, GUILD_ID, name)
         if tournament is None:
-            print(f"No tournament named '{name}'. Use 'tournaments' to list them.")
+            if db.has_concluded_tournament(self.conn, GUILD_ID, name):
+                print(f"'{name}' has concluded. Its final results were shown when it ended.")
+            else:
+                print(f"No tournament named '{name}'. Use 'tournaments' to list them.")
             return None
         if needs_bracket and tournament["status"] == "registration":
             print(f"'{name}' is still taking sign-ups, so it has no bracket yet. "
@@ -692,17 +704,19 @@ class WinningTicketCLI(cmd.Cmd):
         a_label = team_label(teams_by_id, team_a)
         b_label = team_label(teams_by_id, team_b)
 
-        if match.id in results_by_match:
-            if input("This match already has a result. Overwrite? [y/N] ").strip().lower() != "y":
-                print("Cancelled.")
-                return
-
         winner_choice = input(f"Winner: [1] {a_label}  [2] {b_label}  > ").strip()
         if winner_choice not in ("1", "2"):
             print("Invalid choice.")
             return
         winner_id = team_a if winner_choice == "1" else team_b
         loser_id = team_b if winner_choice == "1" else team_a
+        if results_by_match.get(match.id) == winner_id:
+            print(f"{team_label(teams_by_id, winner_id)} already won this match, so there's nothing to change.")
+            return
+        if match.id in results_by_match:
+            if input("This match already has a different result. Overwrite? [y/N] ").strip().lower() != "y":
+                print("Cancelled.")
+                return
         dropped = db.record_result(self.conn, tournament["id"], match.id, winner_id, self.user_id)
 
         winner_label = team_label(teams_by_id, winner_id)

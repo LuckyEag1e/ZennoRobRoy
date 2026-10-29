@@ -5,6 +5,7 @@ from __future__ import annotations
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import NamedTuple, Optional
 
 from bracket import (
     Match,
@@ -16,6 +17,7 @@ from bracket import (
     compute_leaderboard,
     final_match,
     podium,
+    resolve_slot,
     stale_results,
 )
 
@@ -128,6 +130,19 @@ CREATE TABLE IF NOT EXISTS predictions (
 CREATE INDEX IF NOT EXISTS idx_predictions_user ON predictions(tournament_id, user_id);
 CREATE INDEX IF NOT EXISTS idx_predictions_match ON predictions(match_id);
 
+-- The latest bracket or leaderboard posted in a channel for each tournament, which the
+-- bot keeps up to date so people can be pointed at it instead of getting a new post.
+CREATE TABLE IF NOT EXISTS live_posts (
+    tournament_id   INTEGER NOT NULL REFERENCES tournaments(id) ON DELETE CASCADE,
+    kind            TEXT NOT NULL CHECK (kind IN ('bracket', 'leaderboard')),
+    channel_id      INTEGER NOT NULL,
+    message_id      INTEGER NOT NULL,
+    -- A fingerprint of what the post shows, so a restart doesn't re-edit (and mark as
+    -- "edited") a post that's already current.
+    shown           TEXT,
+    PRIMARY KEY (tournament_id, kind)
+);
+
 -- Users an admin has blocked from using the bot in a server.
 CREATE TABLE IF NOT EXISTS bans (
     guild_id    INTEGER NOT NULL,
@@ -169,7 +184,14 @@ def init_db(conn: sqlite3.Connection) -> None:
         conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
     else:
         _rebuild_tournaments_table(conn)
+        _add_column_if_missing(conn, "live_posts", "shown", "TEXT")
     conn.commit()
+
+
+def _add_column_if_missing(conn: sqlite3.Connection, table: str, column: str, definition: str) -> None:
+    """For a new column on a table that has no constraint changes, which SQLite can add in place."""
+    if column not in {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
 
 def _rebuild_tournaments_table(conn: sqlite3.Connection) -> None:
@@ -243,6 +265,12 @@ def get_tournament_by_name(conn: sqlite3.Connection, guild_id: int, name: str) -
         "SELECT * FROM tournaments WHERE guild_id = ? AND name = ? AND status != 'concluded'",
         (guild_id, name),
     ).fetchone()
+
+
+def has_concluded_tournament(conn: sqlite3.Connection, guild_id: int, name: str) -> bool:
+    return conn.execute(
+        "SELECT 1 FROM tournaments WHERE guild_id = ? AND name = ? AND status = 'concluded'", (guild_id, name)
+    ).fetchone() is not None
 
 
 def get_tournament(conn: sqlite3.Connection, tournament_id: int) -> sqlite3.Row:
@@ -346,6 +374,10 @@ def get_entrant_team_id(conn: sqlite3.Connection, tournament_id: int, user_id: i
     return row["team_id"] if row is not None else None
 
 
+def entrant_count(conn: sqlite3.Connection, tournament_id: int) -> int:
+    return conn.execute("SELECT COUNT(*) FROM teams WHERE tournament_id = ?", (tournament_id,)).fetchone()[0]
+
+
 def get_entrants(conn: sqlite3.Connection, tournament_id: int) -> list[sqlite3.Row]:
     """The tournament's teams with their members' user ids, in sign-up order. A team with
     no Discord account behind it has one row, with user_id None."""
@@ -366,6 +398,13 @@ def get_team_by_name(conn: sqlite3.Connection, tournament_id: int, name: str) ->
     return conn.execute(
         "SELECT * FROM teams WHERE tournament_id = ? AND name = ?", (tournament_id, name)
     ).fetchone()
+
+
+def team_name_taken(conn: sqlite3.Connection, tournament_id: int, name: str, team_id: int) -> bool:
+    """True if a team other than `team_id` in this tournament is already called `name`.
+    Admin commands find teams by name, so two with one name would be ambiguous."""
+    other = get_team_by_name(conn, tournament_id, name)
+    return other is not None and other["id"] != team_id
 
 
 def update_team(conn: sqlite3.Connection, team_id: int, name: str | None, seed: int | None, seed_given: bool) -> None:
@@ -449,6 +488,27 @@ def load_final_results(conn: sqlite3.Connection, tournament_id: int) -> tuple[Po
 
 
 # -- results ------------------------------------------------------------------
+
+class MatchNow(NamedTuple):
+    status: str  # the tournament's
+    teams: tuple[Optional[int], Optional[int]]
+    winner: Optional[int]
+
+
+def match_now(conn: sqlite3.Connection, tournament_id: int, match_id: int) -> MatchNow | None:
+    """A match's teams and recorded winner as they stand now, with its tournament's status,
+    or None if the tournament is gone. A menu can sit open while others change the
+    bracket, so menus check this before saving what was picked from them."""
+    tournament = get_tournament(conn, tournament_id)
+    if tournament is None:
+        return None
+    matches_by_id, feeders, _ = load_bracket(conn, tournament_id)
+    if match_id not in matches_by_id:
+        return None
+    results = get_results(conn, tournament_id)
+    teams = resolve_slot(matches_by_id[match_id], matches_by_id, results.get, feeders)
+    return MatchNow(tournament["status"], teams, results.get(match_id))
+
 
 def get_results(conn: sqlite3.Connection, tournament_id: int) -> dict[int, int]:
     rows = conn.execute(
@@ -542,6 +602,43 @@ def clear_user_predictions(conn: sqlite3.Connection, tournament_id: int, user_id
         "DELETE FROM predictions WHERE tournament_id = ? AND user_id = ?",
         (tournament_id, user_id),
     )
+    conn.commit()
+
+
+# -- live posts -------------------------------------------------------------------
+
+def set_live_post(conn: sqlite3.Connection, tournament_id: int, kind: str, channel_id: int, message_id: int,
+                  shown: str) -> None:
+    conn.execute(
+        """INSERT INTO live_posts (tournament_id, kind, channel_id, message_id, shown) VALUES (?, ?, ?, ?, ?)
+           ON CONFLICT(tournament_id, kind) DO UPDATE SET
+               channel_id = excluded.channel_id, message_id = excluded.message_id, shown = excluded.shown""",
+        (tournament_id, kind, channel_id, message_id, shown),
+    )
+    conn.commit()
+
+
+def set_live_post_shown(conn: sqlite3.Connection, tournament_id: int, kind: str, message_id: int, shown: str) -> None:
+    """Record what a live post now shows, unless a newer post has replaced it meanwhile."""
+    conn.execute(
+        "UPDATE live_posts SET shown = ? WHERE tournament_id = ? AND kind = ? AND message_id = ?",
+        (shown, tournament_id, kind, message_id),
+    )
+    conn.commit()
+
+
+def get_live_post(conn: sqlite3.Connection, tournament_id: int, kind: str) -> sqlite3.Row | None:
+    return conn.execute(
+        "SELECT * FROM live_posts WHERE tournament_id = ? AND kind = ?", (tournament_id, kind)
+    ).fetchone()
+
+
+def get_live_posts(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    return conn.execute("SELECT * FROM live_posts").fetchall()
+
+
+def delete_live_post(conn: sqlite3.Connection, tournament_id: int, kind: str) -> None:
+    conn.execute("DELETE FROM live_posts WHERE tournament_id = ? AND kind = ?", (tournament_id, kind))
     conn.commit()
 
 

@@ -88,6 +88,10 @@ Everyone:
 - `/tournament bracket name:<name>` — see the real bracket's progress
 - `/tournament leaderboard name:<name>` — see standings
 
+  Both keep one post per tournament in the channel and update it as results come
+  in. Asking again while it's still in view gets a private link to it instead of
+  another post.
+
 ## Local CLI (no Discord needed)
 
 `cli.py` is a terminal REPL that drives the exact same `db.py`/`bracket.py`/`csv_import.py`
@@ -122,8 +126,35 @@ pytest
 
 Covers bracket-tree generation, slot derivation (including upset propagation),
 scoring, pick-distribution stats, and CSV validation — no live bot connection
-needed. Discord-side interactions (buttons/selects) are exercised manually
-against a real server.
+needed. It also plays one simulated tournament per scenario (see below).
+
+### Simulated tournaments
+
+`python -m sim` plays whole tournaments through the real slash commands, buttons,
+menus and forms, using a fake Discord layer and a throwaway database. Simulated
+players and an organizer register, predict, check the leaderboard, make typos,
+double-click, abandon brackets, poke at admin commands and so on, each according to
+a competence profile. After every step it checks for crashes, unanswered
+interactions, messages Discord would reject, organizer commands in public posts,
+DMs and inconsistent data; at the end it compares the champion and every score
+against the results it played.
+
+```
+python -m sim --list                         # the scenarios
+python -m sim                                # every scenario, 5 seeds each
+python -m sim --scenario chaos --seed 3 --transcript   # replay one run step by step
+python -m sim --coverage                     # which commands ran at which stage
+```
+
+Scenarios can be `crowded` (players act at once, so their clicks and forms
+interleave), `simultaneous` (the bot also handles their interactions at the same
+instant, interleaving inside its own code wherever it waits on Discord), and have
+a `co_organizer` recording results alongside the organizer. The order is chosen by
+the seed, so any run replays exactly.
+
+Scenarios, competence profiles and organizer styles live in `sim/scenarios.py`
+and `sim/actors.py`. [`sim/README.md`](sim/README.md) explains how a run works, what
+it checks, what it doesn't test, and how to extend it. Buttons on real Discord still get a manual check before release.
 
 ## Deployment
 

@@ -385,16 +385,16 @@ def podium(
     return Podium(results_by_match.get(final.id), loser(final), third_places)
 
 
-def top_places(scores: list[UserScore], places: int = 3) -> list[tuple[int, UserScore]]:
-    """(place, score) for everyone placing in the top `places`. Tied points share a place,
-    and the next place is skipped for each extra player tied (1, 1, 3). Nobody places
-    with 0 points."""
+def ranked_places(scores: list[UserScore]) -> list[tuple[int, UserScore]]:
+    """(place, score) for every score, best first. Tied points share a place, and the next
+    place is skipped for each extra player tied (1, 1, 3)."""
     placed = []
     for i, score in enumerate(scores):  # already sorted by points, highest first
-        if score.points == 0:
-            break
         place = i + 1 if i == 0 or score.points != scores[i - 1].points else placed[-1][0]
-        if place > places:
-            break
         placed.append((place, score))
     return placed
+
+
+def top_places(scores: list[UserScore], places: int = 3) -> list[tuple[int, UserScore]]:
+    """The ranked_places within the top `places`. Nobody places with 0 points."""
+    return [(place, score) for place, score in ranked_places(scores) if score.points > 0 and place <= places]

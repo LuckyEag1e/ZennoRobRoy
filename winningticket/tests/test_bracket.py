@@ -24,6 +24,7 @@ from bracket import (
     resolve_all_slots,
     resolve_slot,
     stale_results,
+    ranked_places,
     top_places,
 )
 from helpers import matches_from_pairs, numbered
@@ -352,3 +353,8 @@ def test_top_places_includes_everyone_tied_for_the_last_place():
 def test_top_places_leaves_out_players_with_no_points():
     assert [s.user_id for _, s in top_places(_scores([(1, 4), (2, 0), (3, 0)]))] == [1]
     assert top_places(_scores([(1, 0), (2, 0)])) == []
+
+
+def test_ranked_places_share_a_place_on_tied_points_and_keep_everyone():
+    scores = _scores([(1, 5), (2, 5), (3, 5), (4, 2), (5, 0)])
+    assert [(place, s.user_id) for place, s in ranked_places(scores)] == [(1, 1), (1, 2), (1, 3), (4, 4), (5, 5)]

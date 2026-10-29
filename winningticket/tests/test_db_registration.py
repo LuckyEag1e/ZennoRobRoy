@@ -200,3 +200,25 @@ def test_version_2_database_keeps_its_registration_details(tmp_path):
     assert tournament["announcement_message_id"] is None
     assert conn.execute("PRAGMA user_version").fetchone()[0] == db.SCHEMA_VERSION
     conn.close()
+
+
+def test_a_team_cant_be_renamed_to_another_teams_name(conn):
+    tournament_id = _open_with(conn, 2)
+    first, second = (e["team_id"] for e in db.get_entrants(conn, tournament_id))
+    assert db.team_name_taken(conn, tournament_id, "Player 2", first)
+    assert not db.team_name_taken(conn, tournament_id, "Player 2", second)  # keeping its own name
+    assert not db.team_name_taken(conn, tournament_id, "Someone new", first)
+
+
+def test_a_saved_close_is_still_announced_if_the_bracket_cant_be_drawn(conn, monkeypatch):
+    os.environ.setdefault("DISCORD_BOT_TOKEN", "test")
+    import cogs.registration as registration
+
+    def broken_embed(*args):
+        raise RuntimeError("rendering failed")
+
+    monkeypatch.setattr(registration, "load_bracket_embed", broken_embed)
+    tournament_id = _open_with(conn, 2)
+    closed, content, embed = registration._close_and_describe(conn, db.get_tournament(conn, tournament_id))
+    assert closed and embed is None and "is closed" in content
+    assert db.get_tournament(conn, tournament_id)["status"] == "setup"
