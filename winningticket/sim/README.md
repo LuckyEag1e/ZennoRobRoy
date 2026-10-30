@@ -219,7 +219,6 @@ list.
        -> [private] Round 1 — Match 2 of 4 / …
        (Haze walks away from their bracket)
  112 Organizer: clicks [Ace]
-       -> [private] ✅ Result recorded. **Ace** advances to Round 2 to face TBD.
        -> [public] 📣 Round 1: **Ace** defeats **Blaze**. …
        !! match 15 was recorded again without /admin setresult's confirmation
 ```
