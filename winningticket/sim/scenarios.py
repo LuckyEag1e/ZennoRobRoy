@@ -654,7 +654,7 @@ class TournamentRun:
     async def separate_shared_names(self) -> None:
         """A player who opted out shares a display name with one who agreed afterwards, so
         that one took over the opted-out player's entry. The organizer unlinks it, which
-        must give it back under its name alone and enter the other player on their own."""
+        must give it back under its name alone, and enters the other player under another name."""
         org = self.organizer.user
         for player in self.players:
             if player.user.id not in self.name_only:
@@ -671,6 +671,8 @@ class TournamentRun:
             [picked, *_] = await self.sim.autocomplete(org, "admin unlinkplayer", "tournament", self.name[:2])
             await self.sim.autocomplete(org, "admin unlinkplayer", "entrant", name[:2], tournament=picked)
             await self.sim.run(org, "admin unlinkplayer", tournament=picked, entrant=name)
+            taker_user = next(p.user for p in self.players if p.user.id == taker)
+            await self.sim.run(org, "registration add", tournament=self.name, user=taker_user, name=f"{name} too")
             conn = db.get_connection()
             try:
                 entrants = db.get_entrants(conn, self.tournament_id)
@@ -679,7 +681,7 @@ class TournamentRun:
             if (name, None) not in [(e["name"], e["user_id"]) for e in entrants]:
                 self.sim._problem(f"/admin unlinkplayer didn't leave {name} under its name alone")
             if not any(e["user_id"] == taker and e["name"] != name for e in entrants):
-                self.sim._problem(f"/admin unlinkplayer didn't enter {name}'s taker on their own")
+                self.sim._problem(f"{name}'s taker couldn't be entered under another name after /admin unlinkplayer")
 
     async def welcome_a_guest(self) -> Optional[tuple[Player, str, str]]:
         """After a tournament: a guest who played without a Discord account joins. The

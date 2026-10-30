@@ -104,9 +104,6 @@ CREATE TABLE IF NOT EXISTS team_members (
     team_id         INTEGER NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
     tournament_id   INTEGER NOT NULL REFERENCES tournaments(id) ON DELETE CASCADE,
     user_id         INTEGER NOT NULL,
-    -- 1 if the member took over an entry that was already there under their name, so
-    -- withdrawing gives that entry back instead of deleting it.
-    took_over       INTEGER NOT NULL DEFAULT 0,
     UNIQUE (tournament_id, user_id)
 );
 CREATE INDEX IF NOT EXISTS idx_team_members_team ON team_members(team_id);
@@ -209,14 +206,24 @@ def init_db(conn: sqlite3.Connection) -> None:
     else:
         _rebuild_tournaments_table(conn)
         _add_column_if_missing(conn, "live_posts", "shown", "TEXT")
-        _add_column_if_missing(conn, "team_members", "took_over", "INTEGER NOT NULL DEFAULT 0")
+        # Some older databases have this column, and nothing reads it.
+        _drop_column_if_present(conn, "team_members", "took_over")
     conn.commit()
+
+
+def _columns(conn: sqlite3.Connection, table: str) -> set[str]:
+    return {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
 
 
 def _add_column_if_missing(conn: sqlite3.Connection, table: str, column: str, definition: str) -> None:
     """For a new column on a table that has no constraint changes, which SQLite can add in place."""
-    if column not in {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}:
+    if column not in _columns(conn, table):
         conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+
+
+def _drop_column_if_present(conn: sqlite3.Connection, table: str, column: str) -> None:
+    if column in _columns(conn, table):
+        conn.execute(f"ALTER TABLE {table} DROP COLUMN {column}")
 
 
 def _rebuild_tournaments_table(conn: sqlite3.Connection) -> None:
@@ -440,97 +447,53 @@ def register_entrant(conn: sqlite3.Connection, tournament_id: int, name: str,
 
     A member signing up under the name of an entrant with no account behind it takes that
     entry over, since it's most likely theirs: added by an organizer before they agreed,
-    or from when they opted out. Any other taken name gets a number added, so admin
+    or from when they opted out. If it was someone else's, unlink_entrant undoes it. Any other taken name gets a number added, so admin
     commands that find teams by name still work."""
     existing = get_team_by_name(conn, tournament_id, name)
     if existing is not None and user_id is None:
         return None
     if existing is not None and not team_member_ids(conn, existing["id"]):
-        with conn:
-            conn.execute(
-                "INSERT INTO team_members (team_id, tournament_id, user_id, took_over) VALUES (?, ?, ?, 1)",
-                (existing["id"], tournament_id, user_id),
-            )
+        link_team_member(conn, tournament_id, existing["id"], user_id)
         return existing["id"], name
-    unique_name = _unused_name(conn, tournament_id, name)
-    with conn:
-        team_id = _insert_entrant(conn, tournament_id, unique_name, user_id)
-    return team_id, unique_name
-
-
-def _unused_name(conn: sqlite3.Connection, tournament_id: int, name: str) -> str:
-    """`name`, or `name` with the lowest number added that no team in the tournament has."""
     taken = {team["name"] for team in get_teams(conn, tournament_id).values()}
     unique_name = name
     number = 2
     while unique_name in taken:
         unique_name = f"{name} ({number})"
         number += 1
-    return unique_name
-
-
-def _insert_entrant(conn: sqlite3.Connection, tournament_id: int, name: str, user_id: int | None) -> int:
-    """Add a one-person team without committing, and return its id."""
-    team_id = conn.execute(
-        "INSERT INTO teams (tournament_id, name, seed) VALUES (?, ?, NULL)", (tournament_id, name)
-    ).lastrowid
-    if user_id is not None:
-        conn.execute(
-            "INSERT INTO team_members (team_id, tournament_id, user_id) VALUES (?, ?, ?)",
-            (team_id, tournament_id, user_id),
-        )
-    return team_id
-
-
-class OwnEntryError(Exception):
-    """Raised when unlinking, during sign-ups, an entry the member made themselves. Left
-    name-only, it would be marked as taken over once they signed up again, so withdrawing
-    it is the way to remove them instead."""
-
-    def __init__(self, user_id: int) -> None:
-        super().__init__(f"User {user_id} made this entry themselves")
-        self.user_id = user_id
-
-
-def unlink_entrant(conn: sqlite3.Connection, tournament_id: int, team_id: int) -> tuple[int, str | None] | None:
-    """Unlink the member behind one entrant, leaving the entrant under its name and the
-    member's agreement and other entries as they are. During sign-ups this is for a member
-    who took the entry over from someone else (see register_entrant): they're entered again
-    on their own under a numbered name, and OwnEntryError is raised for any other entry.
-    Returns (their user id, the name they were re-entered under or None), or None if
-    nobody was linked."""
-    membership = conn.execute("SELECT user_id, took_over FROM team_members WHERE team_id = ?", (team_id,)).fetchone()
-    if membership is None:
-        return None
-    user_id = membership["user_id"]
     with conn:
-        conn.execute("DELETE FROM team_members WHERE team_id = ? AND user_id = ?", (team_id, user_id))
-        # Read after the delete, which holds the write lock, so sign-ups can't close in between.
-        if get_tournament(conn, tournament_id)["status"] != "registration":
-            return user_id, None
-        if not membership["took_over"]:
-            raise OwnEntryError(user_id)  # rolls the delete back
-        name = conn.execute("SELECT name FROM teams WHERE id = ?", (team_id,)).fetchone()["name"]
-        new_name = _unused_name(conn, tournament_id, name)
-        _insert_entrant(conn, tournament_id, new_name, user_id)
-    return user_id, new_name
+        team_id = conn.execute(
+            "INSERT INTO teams (tournament_id, name, seed) VALUES (?, ?, NULL)", (tournament_id, unique_name)
+        ).lastrowid
+        if user_id is not None:
+            conn.execute(
+                "INSERT INTO team_members (team_id, tournament_id, user_id) VALUES (?, ?, ?)",
+                (team_id, tournament_id, user_id),
+            )
+    return team_id, unique_name
+
+
+def unlink_entrant(conn: sqlite3.Connection, team_id: int) -> int | None:
+    """Unlink the member behind one entrant, leaving the entrant under its name and the
+    member's agreement and other entries as they are. Returns their user id, or None if
+    nobody was linked."""
+    user_ids = team_member_ids(conn, team_id)
+    if not user_ids:
+        return None
+    with conn:
+        conn.execute("DELETE FROM team_members WHERE team_id = ? AND user_id = ?", (team_id, user_ids[0]))
+    return user_ids[0]
 
 
 def unregister_entrant(conn: sqlite3.Connection, tournament_id: int, user_id: int) -> bool:
-    """Withdraw a user's team, or just unlink them from one they took over, so it stays
-    entered under its name. Returns False if they weren't registered."""
+    """Withdraw a user's team. Returns False if they weren't registered."""
     with conn:
-        membership = conn.execute(
-            "SELECT team_id, took_over FROM team_members WHERE tournament_id = ? AND user_id = ?",
+        cur = conn.execute(
+            """DELETE FROM teams WHERE id = (
+                   SELECT team_id FROM team_members WHERE tournament_id = ? AND user_id = ?)""",
             (tournament_id, user_id),
-        ).fetchone()
-        if membership is None:
-            return False
-        if membership["took_over"]:
-            conn.execute("DELETE FROM team_members WHERE team_id = ? AND user_id = ?", (membership["team_id"], user_id))
-        else:
-            conn.execute("DELETE FROM teams WHERE id = ?", (membership["team_id"],))
-    return True
+        )
+    return cur.rowcount > 0
 
 
 def get_entrant_team_id(conn: sqlite3.Connection, tournament_id: int, user_id: int) -> int | None:

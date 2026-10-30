@@ -138,14 +138,14 @@ def test_an_organizer_can_separate_a_member_who_took_over_an_entry(world):
         await sign_up(sim, member, "Cup", agree=True)
         took_over = _entry("Ace")
         reply = (await sim.run(organizer, "admin unlinkplayer", tournament="Cup", entrant="Ace")).sent
-        again = (await sim.run(member, "register", tournament="Cup")).sent
-        return took_over, reply, again
+        await sim.run(organizer, "registration add", tournament="Cup", user=member, name="Ace B")
+        return took_over, reply
 
-    took_over, reply, again = asyncio.run(take_over_then_separate())
+    took_over, reply = asyncio.run(take_over_then_separate())
     assert took_over == ("Ace", member.id)
-    assert not reply.public and "Ace (2)" in reply.content
-    assert _entry("Ace") == ("Ace", None) and _entry("Ace (2)") == ("Ace (2)", member.id)
-    assert _agreed(member.id) and "already signed up" in again.content
+    assert not reply.public and "Unlinked" in reply.content and "/registration add" in reply.content
+    assert _entry("Ace") == ("Ace", None) and _entry("Ace B") == ("Ace B", member.id)
+    assert _agreed(member.id)
     assert not sim.issues
 
 

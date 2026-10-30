@@ -19,7 +19,6 @@ from common import (
     outdated_pick_message,
     resolve_concluded_tournament,
     resolve_tournament,
-    signups_message,
     team_name_autocomplete,
     tournament_name_autocomplete,
 )
@@ -149,29 +148,18 @@ class AdminCog(commands.Cog):
             if entrant_row is None:
                 await interaction.response.send_message(f"No entrant named '{entrant}' in **{tournament}**.", ephemeral=True)
                 return
-            try:
-                unlinked = db.unlink_entrant(conn, tournament_row["id"], entrant_row["id"])
-            except db.OwnEntryError as e:
-                await interaction.response.send_message(
-                    f"**{entrant}** is {mention(e.user_id)}'s own entry, so there's nothing to separate. "
-                    f"`/registration remove` withdraws it.", ephemeral=True
-                )
-                return
-            if unlinked is None:
-                await interaction.response.send_message(f"**{entrant}** isn't linked to anyone.", ephemeral=True)
-                return
-            user_id, new_name = unlinked
-            content = (f"Unlinked {mention(user_id)} from **{entrant}** in **{tournament}**. "
-                       f"Their agreement and other entries are unchanged.")
-            if new_name is not None:
-                content += f" They're entered separately as **{new_name}**."
-            await interaction.response.send_message(content, ephemeral=True)
-            if new_name is not None:
-                await edit_signups_message(
-                    self.bot, tournament_row, signups_message(tournament_row, db.entrant_count(conn, tournament_row["id"]))
-                )
+            user_id = db.unlink_entrant(conn, entrant_row["id"])
         finally:
             conn.close()
+        if user_id is None:
+            await interaction.response.send_message(f"**{entrant}** isn't linked to anyone.", ephemeral=True)
+            return
+        content = (f"Unlinked {mention(user_id)} from **{entrant}** in **{tournament}**. "
+                   f"Their agreement and other entries are unchanged.")
+        if tournament_row["status"] == "registration":
+            content += (" If they signed up again they'd take this entry back, so to enter them separately, "
+                        "use `/registration add` with them and another name.")
+        await interaction.response.send_message(content, ephemeral=True)
 
     @group.command(name="editteam", description="Fix an entrant's name or seed")
     @app_commands.describe(tournament="Tournament name", team="Entrant to edit", new_name="New name (optional)", new_seed="New seed (optional)")

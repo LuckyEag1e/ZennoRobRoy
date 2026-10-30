@@ -65,8 +65,8 @@ Admin:
   Discord account. `/registration remove` withdraws anyone. A member who has agreed and
   signs up under the name of an entrant with no account takes that entry over.
 - `/admin unlinkplayer tournament:<name> entrant:<name>`: unlink the member behind one
-  entrant, keeping their agreement and other entries. During sign-ups it only separates a
-  member who took over someone else's entry, entering them again on their own.
+  entrant, keeping their agreement and other entries, such as a member who took over
+  someone else's entry under the same name.
   `/admin linkplayer` links an entrant in a concluded tournament to the member who played as them.
 - `/tournament create name:<name> csv_file:<attach bracket.csv>`
 - `/tournament open name:<name>` — let members start `/predict`

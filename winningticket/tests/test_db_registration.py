@@ -72,43 +72,17 @@ def test_a_member_takes_over_a_name_only_entry_under_their_name(conn):
     assert [(e["name"], e["user_id"]) for e in db.get_entrants(conn, tournament_id)] == [("Sam", 7)]
 
 
-def test_unlinking_during_sign_ups_gives_the_entry_back_and_enters_the_member_alone(conn):
-    tournament_id = _open_with(conn, 0)
-    guest_id, _ = db.register_entrant(conn, tournament_id, "Sam", None)
-    db.register_entrant(conn, tournament_id, "Sam", 7)  # takes the guest's entry over
-    db.record_agreement(conn, 1, 7)
-    assert db.unlink_entrant(conn, tournament_id, guest_id) == (7, "Sam (2)")
-    assert [(e["name"], e["user_id"]) for e in db.get_entrants(conn, tournament_id)] == [("Sam", None), ("Sam (2)", 7)]
-    assert db.has_agreed(conn, 1, 7)
-    assert db.unlink_entrant(conn, tournament_id, guest_id) is None  # nobody left to unlink
-
-
-def test_withdrawing_from_a_taken_over_entry_gives_it_back(conn):
-    tournament_id = _open_with(conn, 0)
-    db.register_entrant(conn, tournament_id, "Sam", None)
-    db.register_entrant(conn, tournament_id, "Sam", 7)
-    assert db.unregister_entrant(conn, tournament_id, 7)
-    assert [(e["name"], e["user_id"]) for e in db.get_entrants(conn, tournament_id)] == [("Sam", None)]
-    db.register_entrant(conn, tournament_id, "Sam", 7)  # can take it over again
-    assert db.unlink_entrant(conn, tournament_id, db.get_entrant_team_id(conn, tournament_id, 7)) == (7, "Sam (2)")
-    assert db.unregister_entrant(conn, tournament_id, 7)  # their own entry this time, so it goes
-    assert [(e["name"], e["user_id"]) for e in db.get_entrants(conn, tournament_id)] == [("Sam", None)]
-
-
-def test_unlinking_a_members_own_entry_during_sign_ups_is_refused(conn):
+def test_unlinking_leaves_the_entry_under_its_name(conn):
     tournament_id = _open_with(conn, 1)
+    db.record_agreement(conn, 1, 1)
     team_id = db.get_entrant_team_id(conn, tournament_id, 1)
-    with pytest.raises(db.OwnEntryError):
-        db.unlink_entrant(conn, tournament_id, team_id)
-    assert [(e["name"], e["user_id"]) for e in db.get_entrants(conn, tournament_id)] == [("Player 1", 1)]
-
-
-def test_unlinking_after_sign_ups_only_removes_the_link(conn):
-    tournament_id = _open_with(conn, 2)
-    close_registration(conn, tournament_id, random.Random(0))
-    team_id = db.get_entrant_team_id(conn, tournament_id, 1)
-    assert db.unlink_entrant(conn, tournament_id, team_id) == (1, None)
-    assert [(e["name"], e["user_id"]) for e in db.get_entrants(conn, tournament_id)] == [("Player 1", None), ("Player 2", 2)]
+    assert db.unlink_entrant(conn, team_id) == 1
+    assert [(e["name"], e["user_id"]) for e in db.get_entrants(conn, tournament_id)] == [("Player 1", None)]
+    assert db.has_agreed(conn, 1, 1)
+    assert db.unlink_entrant(conn, team_id) is None  # nobody left to unlink
+    assert db.register_entrant(conn, tournament_id, "Player 1", 1) == (team_id, "Player 1")  # signing up takes it back
+    assert db.unregister_entrant(conn, tournament_id, 1)
+    assert db.get_entrants(conn, tournament_id) == []
 
 
 def test_unregistering_removes_the_team(conn):
@@ -253,6 +227,15 @@ def test_version_2_database_keeps_its_registration_details(tmp_path):
     assert (tournament["channel_id"], tournament["registration_closes_at"]) == (555, "2026-01-01T00:00:00.000Z")
     assert tournament["announcement_message_id"] is None
     assert conn.execute("PRAGMA user_version").fetchone()[0] == db.SCHEMA_VERSION
+    conn.close()
+
+
+def test_the_unused_took_over_column_is_dropped(tmp_path):
+    conn = db.get_connection(tmp_path / "test.db")
+    db.init_db(conn)
+    conn.execute("ALTER TABLE team_members ADD COLUMN took_over INTEGER NOT NULL DEFAULT 0")
+    db.init_db(conn)
+    assert "took_over" not in {row["name"] for row in conn.execute("PRAGMA table_info(team_members)")}
     conn.close()
 
 

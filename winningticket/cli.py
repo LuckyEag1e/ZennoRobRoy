@@ -622,7 +622,7 @@ class WinningTicketCLI(cmd.Cmd):
         print(f"Linked {user_label(user_id)} to {entrant} in '{name}'.")
 
     def do_admin_unlinkplayer(self, arg: str) -> None:
-        "Unlink the user behind an entrant, keeping their agreement and other entries; during sign-ups, one who took the entry over is re-entered on their own: admin_unlinkplayer <name> <entrant>"
+        "Unlink the user behind an entrant, keeping their agreement and other entries: admin_unlinkplayer <name> <entrant>"
         parts = shlex.split(arg)
         if len(parts) != 2:
             print("usage: admin_unlinkplayer <name> <entrant>")
@@ -636,18 +636,13 @@ class WinningTicketCLI(cmd.Cmd):
         if entrant_row is None:
             print(f"No entrant named '{entrant}' in '{name}'.")
             return
-        try:
-            unlinked = db.unlink_entrant(self.conn, tournament["id"], entrant_row["id"])
-        except db.OwnEntryError as e:
-            print(f"{entrant} is {user_label(e.user_id)}'s own entry, so there's nothing to separate. 'regremove' withdraws it.")
-            return
-        if unlinked is None:
+        user_id = db.unlink_entrant(self.conn, entrant_row["id"])
+        if user_id is None:
             print(f"{entrant} isn't linked to anyone.")
             return
-        user_id, new_name = unlinked
         print(f"Unlinked {user_label(user_id)} from {entrant} in '{name}'.")
-        if new_name is not None:
-            print(f"They're entered separately as {new_name}.")
+        if tournament["status"] == "registration":
+            print("If they signed up again they'd take this entry back, so use 'regadd' with another name to enter them separately.")
 
     def do_admin_setresult(self, arg: str) -> None:
         "Force/overwrite any known matchup's result: admin_setresult <name>"
