@@ -4,7 +4,19 @@ from __future__ import annotations
 
 from typing import Callable, Optional
 
-from bracket import Match, Podium, UserScore, byes_in_round, effective_winner, matches_in_round, rounds, top_places
+from bracket import (
+    Match,
+    Outcomes,
+    Podium,
+    UserScore,
+    bracket_order,
+    byes_in_round,
+    effective_winner,
+    matches_in_round,
+    next_opponent,
+    rounds,
+    top_places,
+)
 from ratings import Ratings
 
 MEDALS = {1: "🥇", 2: "🥈", 3: "🥉"}
@@ -55,6 +67,71 @@ def dropped_results_note(dropped: list[int]) -> str:
     return f" Also cleared {len(dropped)} later result(s) that no longer matched the bracket; re-record them."
 
 
+def advance_text(match: Match, winner: int, matches_by_id: dict[int, Match], feeders_by_target: dict,
+                 outcomes: Outcomes, teams_by_id: dict, tournament_name: str) -> str:
+    """Where the winner of `match` goes next. Walkovers they've been given since are passed
+    over, so it names the game they really play next."""
+    walked_over = []
+    current = match
+    while current.feeds_into_match_id is not None:
+        following = matches_by_id[current.feeds_into_match_id]
+        if following.id not in outcomes.walkovers or outcomes.winners.get(following.id) != winner:
+            break
+        walked_over.append(str(following.played_round))
+        current = following
+    name = f"**{team_label(teams_by_id, winner)}**"
+    by_walkover = ""
+    if walked_over:
+        by_walkover = (f" after a walkover in Round {walked_over[0]}" if len(walked_over) == 1
+                       else f" after walkovers in Rounds {', '.join(walked_over[:-1])} and {walked_over[-1]}")
+    if current.feeds_into_match_id is None:
+        return f"🏆 {name} is the champion of {tournament_name}{by_walkover}!"
+    opponent = next_opponent(current, feeders_by_target, outcomes.winners.get)
+    next_round = matches_by_id[current.feeds_into_match_id].played_round
+    return f"{name} advances to Round {next_round}{by_walkover} to face {team_label(teams_by_id, opponent)}."
+
+
+def walkover_lines(before: Outcomes, after: Outcomes, matches_by_id: dict[int, Match], feeders_by_target: dict,
+                   teams_by_id: dict, tournament_name: str) -> list[str]:
+    """One line per entrant given a walkover between `before` and `after`, saying where it
+    takes them."""
+    lines = []
+    announced = set()
+    for match in sorted((matches_by_id[i] for i in after.walkovers - before.walkovers), key=bracket_order):
+        winner = after.winners[match.id]
+        if winner in announced:
+            continue  # advance_text already passes over their later walkovers
+        announced.add(winner)
+        lines.append(f"Round {match.played_round}: **{team_label(teams_by_id, winner)}** wins by walkover. "
+                     + advance_text(match, winner, matches_by_id, feeders_by_target, after, teams_by_id,
+                                    tournament_name))
+    return lines
+
+
+def withdrawal_line(entrant_name: str, reason: str, tournament_name: str) -> str:
+    """The public line for an entrant leaving a tournament, saying whether they or an organizer decided it."""
+    if reason == "dropped":
+        return f"🚪 **{entrant_name}** dropped out of **{tournament_name}**."
+    if reason == "disqualified":
+        return f"🚫 An organizer disqualified **{entrant_name}** from **{tournament_name}**."
+    return f"🚪 An organizer withdrew **{entrant_name}** from **{tournament_name}**."
+
+
+WITHDRAWAL_NAMES = {"dropped": "dropped out", "withdrawn": "withdrawn by an organizer",
+                    "disqualified": "disqualified"}
+
+
+def bracket_notes(matches_by_id: dict[int, Match], slots: dict, outcomes: Outcomes, teams_by_id: dict) -> list[str]:
+    """What the bracket drawing can't show: who has withdrawn, and which matches were
+    called off or have nobody left to play them."""
+    notes = [f"{team['name']}: {WITHDRAWAL_NAMES[team['withdrawn']]}"
+             for team in sorted(teams_by_id.values(), key=lambda team: team["name"]) if team["withdrawn"]]
+    for match in sorted((matches_by_id[i] for i in outcomes.skipped | outcomes.empty), key=bracket_order):
+        reason = "called off" if match.id in outcomes.skipped else "nobody left to play"
+        notes.append(f"{matchup_label(match, slots, teams_by_id)}: {reason}")
+    return notes
+
+
 def pick_review_lines(matches_by_id: dict[int, Match], picks: dict[int, int], teams_by_id: dict) -> list[str]:
     """One line per game showing the user's pick, then one per team sitting that round out, round by round."""
     lines = []
@@ -68,11 +145,16 @@ def pick_review_lines(matches_by_id: dict[int, Match], picks: dict[int, int], te
 
 def podium_lines(result: Podium, teams_by_id: dict) -> list[str]:
     """Names only: once the tournament is over, seeds don't say anything about the result."""
-    lines = [f"{MEDALS[1]} {team_name(teams_by_id, result.champion)}",
-             f"{MEDALS[2]} {team_name(teams_by_id, result.runner_up)}"]
+    lines = [f"{MEDALS[1]} {_placed_name(teams_by_id, result.champion)}",
+             f"{MEDALS[2]} {_placed_name(teams_by_id, result.runner_up)}"]
     if result.third_places:
         lines.append(f"{MEDALS[3]} " + " & ".join(team_name(teams_by_id, t) for t in result.third_places))
     return lines
+
+
+def _placed_name(teams_by_id: dict, team_id: Optional[int]) -> str:
+    """A podium place, which stays empty when its match was skipped or won by walkover."""
+    return team_name(teams_by_id, team_id) if team_id is not None else "Not decided"
 
 
 def pickem_podium_lines(scores: list[UserScore], player_label: Callable[[int], str]) -> list[str]:
@@ -224,6 +306,8 @@ CURRENT_FEATURES = [
     "seed, so the strongest players don't meet early. `/rating` shows yours.",
     "**Live results:** organizers record results as games finish, the bot announces who "
     "advances, and anyone can check the bracket or see how the pool picked each matchup.",
+    "**Dropouts:** players can drop out, and organizers can disqualify entrants or call "
+    "a match off. The bracket plays on with walkovers.",
     "**Final results:** concluding a tournament posts the podium and the top predictors, "
     "and keeps the results for the future.",
     "**Anonymous feedback** for the organizers.",

@@ -6,7 +6,6 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import pytest
 
 from bracket import (
-    decided_matches,
     BracketError,
     Match,
     Podium,
@@ -24,7 +23,8 @@ from bracket import (
     resolvable_matches,
     resolve_all_slots,
     resolve_slot,
-    stale_results,
+    played_games,
+    settle,
     ranked_places,
     top_places,
 )
@@ -217,6 +217,14 @@ def test_resolvable_matches_excludes_bye_matches():
     assert {m.id for m in resolvable} == {200}
 
 
+def _outcomes(matches_by_id, feeders, results, skips=None, withdrawn=frozenset()):
+    return settle(matches_by_id, feeders, results, skips or {}, set(withdrawn))
+
+
+def _stale(matches_by_id, feeders, results):
+    return _outcomes(matches_by_id, feeders, results).stale
+
+
 def test_final_match_is_the_one_feeding_nothing():
     matches_by_id, _ = _build_4_team_fixture()
     assert final_match(matches_by_id).id == 200
@@ -224,24 +232,24 @@ def test_final_match_is_the_one_feeding_nothing():
 
 def test_stale_results_keeps_consistent_results():
     matches_by_id, feeders = _build_4_team_fixture()
-    assert stale_results(matches_by_id, feeders, {100: 1, 101: 3, 200: 1}) == []
+    assert _stale(matches_by_id, feeders, {100: 1, 101: 3, 200: 1}) == []
 
 
 def test_stale_results_drops_later_winner_after_earlier_result_changes():
     matches_by_id, feeders = _build_4_team_fixture()
     # team 1 won the final, but match 100 was then changed so team 2 advanced instead
-    assert stale_results(matches_by_id, feeders, {100: 2, 101: 3, 200: 1}) == [200]
+    assert _stale(matches_by_id, feeders, {100: 2, 101: 3, 200: 1}) == [200]
 
 
 def test_stale_results_keeps_later_winner_who_is_still_in_the_match():
     matches_by_id, feeders = _build_4_team_fixture()
     # team 3 won the final from the other side, so changing match 100 doesn't affect it
-    assert stale_results(matches_by_id, feeders, {100: 2, 101: 3, 200: 3}) == []
+    assert _stale(matches_by_id, feeders, {100: 2, 101: 3, 200: 3}) == []
 
 
 def test_stale_results_drops_later_winner_after_earlier_result_is_cleared():
     matches_by_id, feeders = _build_4_team_fixture()
-    assert stale_results(matches_by_id, feeders, {101: 3, 200: 1}) == [200]
+    assert _stale(matches_by_id, feeders, {101: 3, 200: 1}) == [200]
 
 
 def test_next_match_to_pick_follows_bracket_order_and_skips_byes():
@@ -314,27 +322,27 @@ def _play_out(matches_by_id, winner_of_pair):
 def test_podium_has_both_semi_final_losers_in_third():
     matches_by_id = matches_from_pairs([(1, 2), (3, 4), (5, 6), (7, 8)])
     feeders, results = _play_out(matches_by_id, min)
-    assert podium(matches_by_id, feeders, results) == Podium(champion=1, runner_up=5, third_places=[3, 7])
+    assert podium(matches_by_id, feeders, _outcomes(matches_by_id, feeders, results)) == Podium(champion=1, runner_up=5, third_places=[3, 7])
 
 
 def test_podium_leaves_out_a_bye_into_the_final():
     # 3 goes straight to the final, so only the other side's semi-final has a loser.
     matches_by_id = matches_from_pairs([(1, 2), (3, None)])
     feeders, results = _play_out(matches_by_id, min)
-    assert podium(matches_by_id, feeders, results) == Podium(champion=1, runner_up=3, third_places=[2])
+    assert podium(matches_by_id, feeders, _outcomes(matches_by_id, feeders, results)) == Podium(champion=1, runner_up=3, third_places=[2])
 
 
 def test_podium_before_the_final_is_played():
     matches_by_id = matches_from_pairs([(1, 2), (3, 4)])
     feeders = build_feeder_index(list(matches_by_id.values()))
-    assert podium(matches_by_id, feeders, {}) == Podium(champion=None, runner_up=None, third_places=[])
+    assert podium(matches_by_id, feeders, _outcomes(matches_by_id, feeders, {})) == Podium(champion=None, runner_up=None, third_places=[])
 
 
 def test_podium_ignores_a_result_naming_a_team_not_in_the_final():
     matches_by_id = matches_from_pairs([(1, 2), (3, 4)])
     feeders, results = _play_out(matches_by_id, min)
     results[final_match(matches_by_id).id] = 99
-    assert podium(matches_by_id, feeders, results).runner_up is None
+    assert podium(matches_by_id, feeders, _outcomes(matches_by_id, feeders, results)).runner_up is None
 
 
 def _scores(points_by_user):
@@ -361,8 +369,82 @@ def test_ranked_places_share_a_place_on_tied_points_and_keep_everyone():
     assert [(place, s.user_id) for place, s in ranked_places(scores)] == [(1, 1), (1, 2), (1, 3), (4, 4), (5, 5)]
 
 
-def test_decided_matches_lists_winner_and_loser_of_each_game_in_bracket_order():
+def test_played_games_lists_winner_and_loser_of_each_game_in_bracket_order():
     matches_by_id = matches_from_pairs([(1, 2), (3, None)])
     feeders, results = _play_out(matches_by_id, max)
-    decided = [(m.round, winner, loser) for m, winner, loser in decided_matches(matches_by_id, feeders, results)]
+    decided = [(m.round, winner, loser) for m, winner, loser in played_games(matches_by_id, feeders, _outcomes(matches_by_id, feeders, results))]
     assert decided == [(1, 2, 1), (2, 3, 2)]  # the bye isn't a game
+
+
+def test_settle_gives_a_walkover_against_a_withdrawn_entrant():
+    matches_by_id, feeders = _build_4_team_fixture()
+    outcomes = _outcomes(matches_by_id, feeders, {}, withdrawn={2})
+    assert outcomes.winners == {100: 1}
+    assert outcomes.walkovers == {100}
+    assert outcomes.played == {}
+
+
+def test_settle_waits_for_the_other_side_before_a_later_walkover():
+    matches_by_id, feeders = _build_4_team_fixture()
+    # 1 withdrew after winning match 100, so the final's winner is whoever wins match 101.
+    assert 200 not in _outcomes(matches_by_id, feeders, {100: 1}, withdrawn={1}).decided
+    outcomes = _outcomes(matches_by_id, feeders, {100: 1, 101: 3}, withdrawn={1})
+    assert outcomes.winners == {100: 1, 101: 3, 200: 3}
+    assert outcomes.walkovers == {200}
+
+
+def test_settle_keeps_results_played_before_a_withdrawal():
+    matches_by_id, feeders = _build_4_team_fixture()
+    outcomes = _outcomes(matches_by_id, feeders, {100: 1, 101: 3, 200: 1}, withdrawn={1})
+    assert outcomes.played == {100: 1, 101: 3, 200: 1}
+    assert outcomes.stale == []
+
+
+def test_settle_gives_a_walkover_into_the_slot_a_skip_left_empty():
+    matches_by_id, feeders = _build_4_team_fixture()
+    outcomes = _outcomes(matches_by_id, feeders, {101: 3}, skips={100: (1, 2)})
+    assert outcomes.skipped == {100}
+    assert outcomes.winners == {101: 3, 200: 3}
+    assert outcomes.walkovers == {200}
+
+
+def test_settle_leaves_a_match_empty_when_nobody_is_left_to_play_it():
+    matches_by_id, feeders = _build_4_team_fixture()
+    outcomes = _outcomes(matches_by_id, feeders, {}, skips={100: (1, 2)}, withdrawn={3, 4})
+    assert outcomes.empty == {101, 200}
+    assert outcomes.winners == {}
+    assert outcomes.decided == {100, 101, 200}
+
+
+def test_settle_drops_a_skip_once_its_matchup_changes():
+    matches_by_id, feeders = _build_4_team_fixture()
+    # The final was skipped as 1 vs 3, then match 100 was corrected to 2.
+    outcomes = _outcomes(matches_by_id, feeders, {100: 2, 101: 3}, skips={200: (1, 3)})
+    assert outcomes.stale == [200]
+    assert outcomes.skipped == set()
+
+
+def test_settle_lets_a_withdrawn_bye_through_to_a_walkover():
+    matches_by_id = matches_from_pairs([(1, 2), (3, None)])
+    feeders = build_feeder_index(list(matches_by_id.values()))
+    final = final_match(matches_by_id).id
+    outcomes = _outcomes(matches_by_id, feeders, {0: 1}, withdrawn={3})
+    assert outcomes.winners[final] == 1
+    assert final in outcomes.walkovers
+
+
+def test_podium_leaves_out_an_entrant_who_lost_by_walkover():
+    matches_by_id = matches_from_pairs([(1, 2), (3, 4)])
+    feeders = build_feeder_index(list(matches_by_id.values()))
+    final = final_match(matches_by_id).id
+    outcomes = _outcomes(matches_by_id, feeders, {0: 1, 1: 3}, withdrawn={3})
+    assert podium(matches_by_id, feeders, outcomes) == Podium(champion=1, runner_up=None, third_places=[2, 4])
+    assert final in outcomes.walkovers
+
+
+def test_podium_has_no_champion_after_a_skipped_final():
+    matches_by_id = matches_from_pairs([(1, 2), (3, 4)])
+    feeders = build_feeder_index(list(matches_by_id.values()))
+    final = final_match(matches_by_id).id
+    outcomes = _outcomes(matches_by_id, feeders, {0: 1, 1: 3}, skips={final: (1, 3)})
+    assert podium(matches_by_id, feeders, outcomes) == Podium(champion=None, runner_up=None, third_places=[2, 4])

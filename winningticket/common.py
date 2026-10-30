@@ -14,7 +14,7 @@ from discord import app_commands
 import db
 from bracket import Match, resolve_all_slots
 from embeds import render_bracket_embed
-from labels import matchup_label, name_taken_message, team_label
+from labels import bracket_notes, matchup_label, name_taken_message, team_label
 
 log = logging.getLogger("winningticket")
 
@@ -200,11 +200,25 @@ async def edit_signups_message(client: discord.Client, tournament: sqlite3.Row, 
 def load_bracket_embed(conn: sqlite3.Connection, tournament: sqlite3.Row) -> discord.Embed:
     """The tournament's real bracket as it stands, with every result recorded so far."""
     matches_by_id, feeders, teams_by_id = db.load_bracket(conn, tournament["id"])
-    results_by_match = db.get_results(conn, tournament["id"])
-    slots = resolve_all_slots(matches_by_id, results_by_match.get, feeders)
+    outcomes = db.get_outcomes(conn, tournament["id"])
+    slots = resolve_all_slots(matches_by_id, outcomes.winners.get, feeders)
     return render_bracket_embed(
-        tournament["name"], tournament["status"], matches_by_id, feeders, slots, results_by_match, teams_by_id
+        tournament["name"], tournament["status"], matches_by_id, feeders, slots, outcomes.winners, teams_by_id,
+        bracket_notes(matches_by_id, slots, outcomes, teams_by_id),
     )
+
+
+async def announce(interaction: discord.Interaction, public: str, private: str) -> None:
+    """Reply `private` to whoever ran the command, and post `public` in the channel. If the
+    post fails, they're told what it would have said."""
+    await interaction.response.send_message(private, ephemeral=True)
+    if interaction.channel is not None:
+        try:
+            await interaction.channel.send(public)
+            return
+        except discord.HTTPException:
+            pass
+    await interaction.followup.send(f"This couldn't be posted in the channel:\n{public}", ephemeral=True)
 
 
 class MemberCooldown:
@@ -281,13 +295,13 @@ class MatchPicker(BotView):
     options and a large bracket has more matches than that."""
 
     def __init__(self, matches: list[Match], slots: dict, teams_by_id: dict, on_pick: MatchCallback,
-                 results_by_match: dict[int, int] | None = None, timeout: int = 300) -> None:
+                 decided: set[int] = frozenset(), timeout: int = 300) -> None:
         super().__init__(timeout=timeout)
         self.matches = matches
         self.slots = slots
         self.teams_by_id = teams_by_id
         self.on_pick = on_pick
-        self.results_by_match = results_by_match or {}
+        self.decided = decided
         self.page = 0
         self.page_count = (len(matches) + MAX_SELECT_OPTIONS - 1) // MAX_SELECT_OPTIONS
         self._show_page()
@@ -298,7 +312,7 @@ class MatchPicker(BotView):
         options = []
         for match in self.matches[start:start + MAX_SELECT_OPTIONS]:
             label = matchup_label(match, self.slots, self.teams_by_id)
-            if match.id in self.results_by_match:
+            if match.id in self.decided:
                 label += " (has result)"
             options.append(discord.SelectOption(label=label[:100], value=str(match.id)))
         placeholder = "Select a match..."

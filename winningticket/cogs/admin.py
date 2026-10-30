@@ -1,16 +1,20 @@
 from __future__ import annotations
 
+import sqlite3
+
 import discord
 from discord import app_commands
 from discord.ext import commands
 
 import db
 from bracket import Match, bracket_order, matches_with_both_teams, resolve_all_slots
+from bracket_changes import WITHDRAWABLE_STATUSES, skip_and_describe, withdraw_and_describe
 from common import (
     BotView,
     MatchPicker,
     TournamentSession,
     WinnerPicker,
+    announce,
     any_entrant_autocomplete,
     any_tournament_autocomplete,
     edit_signups_message,
@@ -23,6 +27,8 @@ from embeds import EMBED_DESCRIPTION_LIMIT, mention
 from labels import ban_lines, dropped_results_note, feedback_page, join_within, team_label
 
 STATUS_CHOICES = [app_commands.Choice(name=status, value=status) for status in db.FORCEABLE_STATUSES]
+# Dropping out is the player's own call, through /match dropout.
+ORGANIZER_WITHDRAWALS = [app_commands.Choice(name=reason, value=reason) for reason in ("withdrawn", "disqualified")]
 
 
 class ConfirmView(BotView):
@@ -194,11 +200,11 @@ class AdminCog(commands.Cog):
             session = await self._load_session(interaction, conn, tournament)
             if session is None:
                 return
-            results_by_match = db.get_results(conn, session.tournament_id)
+            outcomes = db.get_outcomes(conn, session.tournament_id)
         finally:
             conn.close()
 
-        slots = resolve_all_slots(session.matches_by_id, results_by_match.get, session.feeders_by_target)
+        slots = resolve_all_slots(session.matches_by_id, outcomes.winners.get, session.feeders_by_target)
         known = matches_with_both_teams(session.matches_by_id, slots)
         if not known:
             await interaction.response.send_message("No matches have both teams known yet.", ephemeral=True)
@@ -244,7 +250,7 @@ class AdminCog(commands.Cog):
                     await winner_interaction.response.edit_message(
                         content=f"**{winner_label}** already won this match, so there's nothing to change.", view=None
                     )
-                elif now.winner is not None:
+                elif now.winner is not None or now.skipped:
                     await winner_interaction.response.edit_message(
                         content=f"This match already has a recorded result. Overwrite with **{winner_label}**? "
                                 f"Later results that depended on the old winner will be cleared.",
@@ -261,11 +267,11 @@ class AdminCog(commands.Cog):
 
         await interaction.response.send_message(
             "Select a match to force a result for:",
-            view=MatchPicker(known, slots, session.teams_by_id, ask_for_winner, results_by_match),
+            view=MatchPicker(known, slots, session.teams_by_id, ask_for_winner, outcomes.decided),
             ephemeral=True,
         )
 
-    @group.command(name="clearresult", description="Delete a recorded match result")
+    @group.command(name="clearresult", description="Delete a recorded match result or skip")
     @app_commands.describe(tournament="Tournament name")
     @app_commands.autocomplete(tournament=tournament_name_autocomplete)
     async def clearresult(self, interaction: discord.Interaction, tournament: str) -> None:
@@ -274,17 +280,21 @@ class AdminCog(commands.Cog):
             session = await self._load_session(interaction, conn, tournament)
             if session is None:
                 return
-            results_by_match = db.get_results(conn, session.tournament_id)
+            outcomes = db.get_outcomes(conn, session.tournament_id)
         finally:
             conn.close()
 
-        slots = resolve_all_slots(session.matches_by_id, results_by_match.get, session.feeders_by_target)
-        decided = sorted((m for m in session.matches_by_id.values() if m.id in results_by_match), key=bracket_order)
+        slots = resolve_all_slots(session.matches_by_id, outcomes.winners.get, session.feeders_by_target)
+        # Walkovers follow from withdrawals, so they're undone with /admin reinstate instead.
+        clearable = set(outcomes.played) | outcomes.skipped
+        decided = sorted((m for m in session.matches_by_id.values() if m.id in clearable), key=bracket_order)
         if not decided:
             await interaction.response.send_message("No recorded results to clear.", ephemeral=True)
             return
 
         async def confirm_clear(pick_interaction: discord.Interaction, match: Match) -> None:
+            shown = (outcomes.winners.get(match.id), match.id in outcomes.skipped)
+
             async def clear(confirm_interaction: discord.Interaction) -> None:
                 conn = db.get_connection()
                 try:
@@ -292,11 +302,10 @@ class AdminCog(commands.Cog):
                     # re-recorded it, or changed the matchup since it opened.
                     now = db.match_now(conn, session.tournament_id, match.id)
                     refusal = outdated_pick_message(now, slots[match.id])
-                    if refusal is None and now.winner is None:
+                    if refusal is None and now.winner is None and not now.skipped:
                         refusal = "That result was already cleared."
-                    elif refusal is None and now.winner != results_by_match[match.id]:
-                        refusal = (f"That result has changed since the menu was opened: "
-                                   f"**{team_label(session.teams_by_id, now.winner)}** won. Run the command again.")
+                    elif refusal is None and (now.winner, now.skipped) != shown:
+                        refusal = "That result has changed since the menu was opened. Run the command again."
                     if refusal is None:
                         dropped = db.clear_result(conn, session.tournament_id, match.id)
                 finally:
@@ -316,6 +325,123 @@ class AdminCog(commands.Cog):
         await interaction.response.send_message(
             "Select a result to clear:",
             view=MatchPicker(decided, slots, session.teams_by_id, confirm_clear),
+            ephemeral=True,
+        )
+
+    async def _find_entrant(self, interaction: discord.Interaction, conn, tournament: str,
+                            entrant: str) -> tuple[sqlite3.Row, sqlite3.Row] | None:
+        """The tournament and entrant named, if entrants can still be withdrawn or
+        reinstated, or None after saying why not."""
+        tournament_row = await resolve_tournament(interaction, conn, tournament)
+        if tournament_row is None:
+            return None
+        if tournament_row["status"] not in WITHDRAWABLE_STATUSES:
+            await interaction.response.send_message(f"**{tournament}** has finished.", ephemeral=True)
+            return None
+        team = db.get_team_by_name(conn, tournament_row["id"], entrant)
+        if team is None:
+            await interaction.response.send_message(f"No entrant named '{entrant}' in **{tournament}**.", ephemeral=True)
+            return None
+        return tournament_row, team
+
+    @group.command(name="withdraw", description="Withdraw or disqualify an entrant, giving their remaining matches to their opponents")
+    @app_commands.describe(tournament="Tournament name", entrant="Entrant to take out", reason="Shown publicly")
+    @app_commands.autocomplete(tournament=tournament_name_autocomplete, entrant=team_name_autocomplete)
+    @app_commands.choices(reason=ORGANIZER_WITHDRAWALS)
+    async def withdraw(self, interaction: discord.Interaction, tournament: str, entrant: str, reason: str) -> None:
+        conn = db.get_connection()
+        try:
+            found = await self._find_entrant(interaction, conn, tournament, entrant)
+            if found is None:
+                return
+            tournament_row, team = found
+            if team["withdrawn"]:
+                await interaction.response.send_message(f"**{entrant}** has already left **{tournament}**.", ephemeral=True)
+                return
+            lines, dropped = withdraw_and_describe(conn, tournament_row, team, reason, interaction.user.id)
+        finally:
+            conn.close()
+        await announce(interaction, "\n".join(lines),
+                       f"Done. Undo it with `/admin reinstate`.{dropped_results_note(dropped)}")
+
+    @group.command(name="reinstate", description="Undo a dropout, withdrawal or disqualification")
+    @app_commands.describe(tournament="Tournament name", entrant="Entrant to bring back")
+    @app_commands.autocomplete(tournament=tournament_name_autocomplete, entrant=team_name_autocomplete)
+    async def reinstate(self, interaction: discord.Interaction, tournament: str, entrant: str) -> None:
+        conn = db.get_connection()
+        try:
+            found = await self._find_entrant(interaction, conn, tournament, entrant)
+            if found is None:
+                return
+            tournament_row, team = found
+            if not team["withdrawn"]:
+                await interaction.response.send_message(f"**{entrant}** is still playing.", ephemeral=True)
+                return
+            dropped = db.reinstate_entrant(conn, tournament_row["id"], team["id"])
+        finally:
+            conn.close()
+        await announce(interaction, f"↩️ **{entrant}** is back in **{tournament}**.",
+                       f"Reinstated **{entrant}**. The walkovers they gave are undone.{dropped_results_note(dropped)}")
+
+    @group.command(name="skipmatch", description="Call a match off with no winner")
+    @app_commands.describe(tournament="Tournament name")
+    @app_commands.autocomplete(tournament=tournament_name_autocomplete)
+    async def skipmatch(self, interaction: discord.Interaction, tournament: str) -> None:
+        conn = db.get_connection()
+        try:
+            session = await self._load_session(interaction, conn, tournament)
+            if session is None:
+                return
+            outcomes = db.get_outcomes(conn, session.tournament_id)
+        finally:
+            conn.close()
+
+        slots = resolve_all_slots(session.matches_by_id, outcomes.winners.get, session.feeders_by_target)
+        skippable = [m for m in matches_with_both_teams(session.matches_by_id, slots) if m.id not in outcomes.skipped]
+        if not skippable:
+            await interaction.response.send_message("No matches have both teams known yet.", ephemeral=True)
+            return
+
+        async def confirm_skip(pick_interaction: discord.Interaction, match: Match) -> None:
+            teams = slots[match.id]
+            names = " vs ".join(f"**{team_label(session.teams_by_id, team)}**" for team in teams)
+
+            async def skip(confirm_interaction: discord.Interaction) -> None:
+                conn = db.get_connection()
+                try:
+                    now = db.match_now(conn, session.tournament_id, match.id)
+                    refusal = outdated_pick_message(now, teams)
+                    if refusal is None and now.skipped:
+                        refusal = "That match was already called off."
+                    if refusal is None:
+                        tournament_row = db.get_tournament(conn, session.tournament_id)
+                        lines, dropped = skip_and_describe(conn, tournament_row, match.id, teams,
+                                                           confirm_interaction.user.id)
+                finally:
+                    conn.close()
+                if refusal is not None:
+                    await confirm_interaction.response.edit_message(content=refusal, view=None)
+                    return
+                await confirm_interaction.response.edit_message(
+                    content=f"✅ Called off.{dropped_results_note(dropped)}", view=None
+                )
+                if confirm_interaction.channel is not None:
+                    try:
+                        await confirm_interaction.channel.send("\n".join(lines))
+                    except discord.HTTPException:
+                        await confirm_interaction.followup.send(
+                            "The announcement couldn't be posted in this channel.", ephemeral=True
+                        )
+
+            await pick_interaction.response.edit_message(
+                content=f"Call off {names} with no winner? Picks on it won't score, and "
+                        f"whoever they'd have played next advances by walkover.",
+                view=ConfirmView(on_confirm=skip),
+            )
+
+        await interaction.response.send_message(
+            "Select a match to call off:",
+            view=MatchPicker(skippable, slots, session.teams_by_id, confirm_skip, outcomes.decided),
             ephemeral=True,
         )
 

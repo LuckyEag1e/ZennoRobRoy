@@ -59,6 +59,26 @@ class UserScore:
     possible_picks: int
 
 
+@dataclass
+class Outcomes:
+    """How every decided match ended, worked out by settle() from what was recorded."""
+
+    winners: dict[int, int]  # match id -> winner, for played games and walkovers
+    walkovers: set[int]  # matches in `winners` won without a game
+    skipped: set[int]  # matches someone called off with no winner
+    empty: set[int]  # matches with nobody left to play them, after withdrawals or skips
+    stale: list[int]  # recorded results and skips that no longer fit the bracket
+
+    @property
+    def played(self) -> dict[int, int]:
+        """Winners of games that were really played. Only these score picks or change ratings."""
+        return {match_id: winner for match_id, winner in self.winners.items() if match_id not in self.walkovers}
+
+    @property
+    def decided(self) -> set[int]:
+        return set(self.winners) | self.skipped | self.empty
+
+
 WinnerLookup = Callable[[int], Optional[int]]
 
 
@@ -249,24 +269,52 @@ def matches_with_both_teams(
     return sorted(known, key=bracket_order)
 
 
-def stale_results(
+def settle(
     matches_by_id: dict[int, Match],
     feeders_by_target: dict[int, dict[str, Match]],
-    results_by_match: dict[int, int],
-) -> list[int]:
-    """Match ids whose recorded winner is no longer one of the two teams in that match,
-    which happens after an earlier result is changed or cleared. Dropping one result can
-    make a later one stale too, so the bracket is walked in order against what remains."""
-    remaining = dict(results_by_match)
-    stale = []
+    recorded: dict[int, int],
+    skips: dict[int, tuple[Optional[int], Optional[int]]],
+    withdrawn: set[int],
+) -> Outcomes:
+    """Work out how every match ended from what was recorded: `recorded` winners, `skips`
+    (each with the matchup it called off), and the `withdrawn` entrants.
+
+    A match nobody recorded is still decided once both of its sides are settled and at
+    least one is missing: the one entrant still playing wins by walkover, and a match
+    with nobody left is empty. A recorded result is stale once its winner is no longer in
+    the match, and a skip once the matchup has changed, which happens after an earlier
+    result is changed or cleared. The bracket is walked in order, so each match is judged
+    against what's left of the ones before it."""
+    outcomes = Outcomes(winners={}, walkovers=set(), skipped=set(), empty=set(), stale=[])
+
+    def side_settled(feeder: Optional[Match]) -> bool:
+        return feeder is None or is_bye(feeder) or feeder.id in outcomes.decided
+
     for match in sorted(matches_by_id.values(), key=bracket_order):
-        winner = remaining.get(match.id)
-        if winner is None:
+        if is_bye(match):
             continue
-        if winner not in resolve_slot(match, matches_by_id, remaining.get, feeders_by_target):
-            del remaining[match.id]
-            stale.append(match.id)
-    return stale
+        teams = resolve_slot(match, matches_by_id, outcomes.winners.get, feeders_by_target)
+        if match.id in recorded:
+            if recorded[match.id] in teams:
+                outcomes.winners[match.id] = recorded[match.id]
+                continue
+            outcomes.stale.append(match.id)
+        elif match.id in skips:
+            if skips[match.id] == teams:
+                outcomes.skipped.add(match.id)
+                continue
+            outcomes.stale.append(match.id)
+
+        feeders = feeders_by_target.get(match.id, {})
+        if not all(side_settled(feeders.get(side)) for side in ("A", "B")):
+            continue
+        present = [team for team in teams if team is not None and team not in withdrawn]
+        if not present:
+            outcomes.empty.add(match.id)
+        elif len(present) == 1:
+            outcomes.winners[match.id] = present[0]
+            outcomes.walkovers.add(match.id)
+    return outcomes
 
 
 def next_opponent(
@@ -360,34 +408,35 @@ def pick_distribution(
     return counts
 
 
-def decided_matches(
+def played_games(
     matches_by_id: dict[int, Match],
     feeders_by_target: dict[int, dict[str, Match]],
-    results_by_match: dict[int, int],
+    outcomes: Outcomes,
 ) -> list[tuple[Match, int, int]]:
-    """(match, winner, loser) for every game with a result, in bracket order. A result
-    naming a team that isn't in its match is left out, since it has no loser."""
-    slots = resolve_all_slots(matches_by_id, results_by_match.get, feeders_by_target)
-    decided = []
+    """(match, winner, loser) for every game that was really played, in bracket order.
+    A result naming a team that isn't in its match is left out, since it has no loser."""
+    slots = resolve_all_slots(matches_by_id, outcomes.winners.get, feeders_by_target)
+    games = []
     for match in sorted(matches_by_id.values(), key=bracket_order):
-        winner = results_by_match.get(match.id)
+        winner = outcomes.played.get(match.id)
         team_a, team_b = slots[match.id]
         if winner is not None and winner in (team_a, team_b) and None not in (team_a, team_b):
-            decided.append((match, winner, team_b if winner == team_a else team_a))
-    return decided
+            games.append((match, winner, team_b if winner == team_a else team_a))
+    return games
 
 
 def podium(
     matches_by_id: dict[int, Match],
     feeders_by_target: dict[int, dict[str, Match]],
-    results_by_match: dict[int, int],
+    outcomes: Outcomes,
 ) -> Podium:
-    """The final's winner and loser, and the losers of the games that fed into the final."""
-    loser_of = {match.id: loser for match, _, loser in decided_matches(matches_by_id, feeders_by_target, results_by_match)}
+    """The final's winner and loser, and the losers of the games that fed into the final.
+    Losing without playing (by walkover) doesn't earn a place."""
+    loser_of = {match.id: loser for match, _, loser in played_games(matches_by_id, feeders_by_target, outcomes)}
     final = final_match(matches_by_id)
     semi_finals = [m for m in feeders_by_target.get(final.id, {}).values() if m is not None and not is_bye(m)]
     third_places = [loser_of[m.id] for m in semi_finals if m.id in loser_of]
-    return Podium(results_by_match.get(final.id), loser_of.get(final.id), third_places)
+    return Podium(outcomes.winners.get(final.id), loser_of.get(final.id), third_places)
 
 
 def ranked_places(scores: list[UserScore]) -> list[tuple[int, UserScore]]:

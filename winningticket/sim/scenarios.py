@@ -70,6 +70,7 @@ class Scenario:
     co_organizer: bool = False     # a second organizer records results alongside the first
     tournaments: int = 1           # played one after another by the same people, so later ones are seeded by rating
     format: str = "single_elim"    # the only format the bot supports so far
+    dropouts: bool = False         # as play starts, entrants drop out or are disqualified, and a game is called off
 
 
 SCENARIOS = {
@@ -89,6 +90,8 @@ SCENARIOS = {
                  ((DILIGENT, 3), (CASUAL, 3), (CHAOTIC, 2)), SLOPPY, guests=8, entry="csv", co_organizer=True),
         Scenario("season", "Two tournaments in a row: a guest joins Discord in between, and the second is seeded by rating.",
                  ((DILIGENT, 4), (CASUAL, 3), (CHAOTIC, 1)), SLOPPY, guests=2, tournaments=2),
+        Scenario("dropouts", "As play starts, a player drops out, a guest is disqualified and a game is called off.",
+                 ((DILIGENT, 4), (CASUAL, 4)), SLOPPY, guests=2, dropouts=True),
     ]
 }
 
@@ -113,6 +116,9 @@ class TournamentRun:
     # A guest from the last tournament who has since joined Discord, and the entrant name
     # the organizer links to them once they've agreed to it by signing up.
     newcomer: Optional[tuple[Player, str, str]] = None
+    # Entrants who have left, and matches called off, which the real results play around.
+    out: set[int] = field(default_factory=set)
+    called_off: set[int] = field(default_factory=set)
 
     # -- reading the bot's state --------------------------------------------------------
 
@@ -385,6 +391,8 @@ class TournamentRun:
         await self._player_turns()
         await self._housekeeping()
         await self.sim.run(org, "tournament lock", name=self.name)
+        if self.scenario.dropouts:
+            await self._lose_entrants()
         await self._play_matches()
         # A last look over every result before concluding. Fixing an early one can drop the
         # final's result, and then there are games left to record.
@@ -589,7 +597,7 @@ class TournamentRun:
             if match.id not in results:
                 continue
             real = self._real_winner(match.id, matches_by_id, feeders)
-            if results[match.id] != real and real in resolve_slot(match, matches_by_id, results.get, feeders):
+            if real is not None and results[match.id] != real and real in resolve_slot(match, matches_by_id, results.get, feeders):
                 await self._fix_result(organizer, match.id, real, teams_by_id)
                 results = self._bracket()[3]  # the fix may have dropped later results
 
@@ -609,18 +617,71 @@ class TournamentRun:
         await self.sim.click(org, message, team_label(teams_by_id, winner)[:80])
         await self.sim.click(org, message, "Confirm")
 
-    def _real_winner(self, match_id: int, matches_by_id, feeders) -> int:
-        """Who really wins this match, decided by skill the first time anyone asks."""
+    def _real_winner(self, match_id: int, matches_by_id, feeders) -> Optional[int]:
+        """Who really wins this match, decided by skill the first time anyone asks. An
+        entrant who has left loses without playing, and a called-off game has no winner."""
         if match_id not in self.real_winners:
             team_a, team_b = self._real_matchup(match_id, matches_by_id, feeders)
-            a_wins = 1 / (1 + 10 ** ((self.skill_of(team_b) - self.skill_of(team_a)) / 400))
-            self.real_winners[match_id] = team_a if self.rng.random() < a_wins else team_b
+            present = [team for team in (team_a, team_b) if team is not None and team not in self.out]
+            if match_id in self.called_off or not present:
+                self.real_winners[match_id] = None
+            elif len(present) == 1:
+                self.real_winners[match_id] = present[0]
+            else:
+                a_wins = 1 / (1 + 10 ** ((self.skill_of(team_b) - self.skill_of(team_a)) / 400))
+                self.real_winners[match_id] = team_a if self.rng.random() < a_wins else team_b
         return self.real_winners[match_id]
 
-    def _real_matchup(self, match_id: int, matches_by_id, feeders) -> tuple[int, int]:
+    def _real_matchup(self, match_id: int, matches_by_id, feeders) -> tuple[Optional[int], Optional[int]]:
         """The two entrants who really reached this match."""
         return resolve_slot(matches_by_id[match_id], matches_by_id,
                             lambda feeder_id: self._real_winner(feeder_id, matches_by_id, feeders), feeders)
+
+    async def _lose_entrants(self) -> None:
+        """Before any game is recorded: a player drops out, the organizer disqualifies an
+        entrant with no account (a sloppy one withdraws the wrong entrant first and
+        reinstates them), and an opening game is called off. Real results are only decided
+        once games are recorded, so every simulated game takes these into account."""
+        org = self.organizer.user
+        quitter = self.rng.choice([p for p in self.players if self._entrant_name(p) is not None and p is not self.banned])
+        name = await self.tournament_name(quitter, "match dropout")
+        if self.rng.random() < quitter.competence.typo:
+            await self.sim.run(quitter.user, "match dropout", tournament=name, confirm_name=name.upper())
+        await self.sim.run(quitter.user, "match dropout", tournament=name, confirm_name=name)
+        if name == self.name:
+            self._expect_withdrawn(self._entrant_name(quitter), "dropped")
+
+        guests = [guest for guest in self.guest_skill if self._entrant(guest) is not None]
+        others = [self._entrant_name(p) for p in self.players if p is not quitter and self._entrant_name(p) is not None]
+        if others and self.rng.random() < self.organizer.style.wrong_order:
+            wrong = self.rng.choice(others)
+            await self.sim.run(org, "admin withdraw", tournament=self.name, entrant=wrong, reason="withdrawn")
+            await self.sim.run(org, "admin reinstate", tournament=self.name, entrant=wrong)
+        if guests:
+            guest = self.rng.choice(guests)
+            await self.sim.run(org, "admin withdraw", tournament=self.name, entrant=guest, reason="disqualified")
+            self._expect_withdrawn(guest, "disqualified")
+
+        reply = await self.sim.run(org, "admin skipmatch", tournament=self.name)
+        menu = _menu(reply.sent)
+        matches_by_id, _, _, results = self._bracket()
+        opening = [option.value for option in (menu.options if menu else [])
+                   if matches_by_id[int(option.value)].round == 1 and int(option.value) not in results]
+        if opening:
+            match_id = self.rng.choice(opening)
+            await self.sim.choose(org, reply.sent, match_id)
+            await self.sim.click(org, reply.sent, "Confirm")
+            self.called_off.add(int(match_id))
+
+    def _expect_withdrawn(self, entrant: str, reason: str) -> None:
+        conn = db.get_connection()
+        try:
+            team = db.get_team_by_name(conn, self.tournament_id, entrant)
+        finally:
+            conn.close()
+        self.out.add(team["id"])
+        if team["withdrawn"] != reason:
+            self.sim._problem(f"{entrant} should be {reason}, but the bot has them as {team['withdrawn']}")
 
     # -- the final comparison ------------------------------------------------------------
 
@@ -779,6 +840,7 @@ class TournamentRun:
                     self.sim._problem(f"match {match_id} shows a matchup that wasn't played")
                 elif winner != self._real_winner(match_id, matches_by_id, feeders):
                     self.sim._problem(f"match {match_id}'s stored winner isn't the one who really won")
+            played = db.get_outcomes(conn, self.tournament_id).played
             podium, _, scores = db.load_final_results(conn, self.tournament_id)
             final = final_match(matches_by_id)
             if podium.champion != self._real_winner(final.id, matches_by_id, feeders):
@@ -795,7 +857,7 @@ class TournamentRun:
                 elif picks[match.id] not in resolve_slot(match, matches_by_id, picks.get, feeders):
                     self.sim._problem(f"user {user_id} picked a team that isn't in match {match.id} of their own bracket")
         expected = {
-            user_id: sum(2 ** (matches_by_id[m].played_round - 1) for m, team in picks.items() if results.get(m) == team)
+            user_id: sum(2 ** (matches_by_id[m].played_round - 1) for m, team in picks.items() if played.get(m) == team)
             for user_id, picks in predictions.items()
         }
         actual = {score.user_id: score.points for score in scores}

@@ -5,18 +5,20 @@ from discord import app_commands
 from discord.ext import commands
 
 import db
-from bracket import Match, matches_with_both_teams, next_opponent, pick_distribution, resolvable_matches, resolve_all_slots
+from bracket import Match, matches_with_both_teams, pick_distribution, resolvable_matches, resolve_all_slots
+from bracket_changes import WITHDRAWABLE_STATUSES, withdraw_and_describe
 from common import (
     MatchPicker,
     TournamentSession,
     WinnerPicker,
+    announce,
     outdated_pick_message,
     requires_manage_server,
     resolve_tournament,
     tournament_name_autocomplete,
 )
 from embeds import render_match_stats_embed
-from labels import team_label
+from labels import advance_text, team_label
 
 
 async def _record_and_announce(interaction: discord.Interaction, session: TournamentSession,
@@ -33,27 +35,18 @@ async def _record_and_announce(interaction: discord.Interaction, session: Tourna
         if refusal is None and now.winner is not None:
             refusal = (f"Someone already recorded this match: **{team_label(session.teams_by_id, now.winner)}** won. "
                        f"Use `/admin setresult` to change it.")
+        if refusal is None and now.skipped:
+            refusal = "This match was called off. Use `/admin setresult` to record a winner anyway."
         if refusal is None:
             db.record_result(conn, session.tournament_id, match.id, winner_id, interaction.user.id)
+            outcomes = db.get_outcomes(conn, session.tournament_id)
     finally:
         conn.close()
     if refusal is not None:
         await interaction.response.edit_message(content=refusal, view=None)
         return
-
-    conn = db.get_connection()
-    try:
-        if match.feeds_into_match_id is None:
-            advance_text = f"🏆 **{winner_label}** is the champion of {session.tournament_name}!"
-        else:
-            results_by_match = db.get_results(conn, session.tournament_id)
-            opponent = next_opponent(match, session.feeders_by_target, results_by_match.get)
-            advance_text = (
-                f"**{winner_label}** advances to Round {session.matches_by_id[match.feeds_into_match_id].played_round} "
-                f"to face {team_label(session.teams_by_id, opponent)}."
-            )
-    finally:
-        conn.close()
+    advance = advance_text(match, winner_id, session.matches_by_id, session.feeders_by_target, outcomes,
+                           session.teams_by_id, session.tournament_name)
 
     # The announcement tells the organizer everything, so their menu just goes away,
     # unless the announcement can't be posted.
@@ -62,7 +55,7 @@ async def _record_and_announce(interaction: discord.Interaction, session: Tourna
     if interaction.channel is not None:
         try:
             await interaction.channel.send(
-                f"📣 Round {match.played_round}: **{winner_label}** defeats **{loser_label}**. {advance_text}"
+                f"📣 Round {match.played_round}: **{winner_label}** defeats **{loser_label}**. {advance}"
             )
             announced = True
         except discord.HTTPException:
@@ -71,7 +64,7 @@ async def _record_and_announce(interaction: discord.Interaction, session: Tourna
         await interaction.delete_original_response()
     else:
         await interaction.edit_original_response(
-            content=f"✅ Result recorded, but it couldn't be announced here. {advance_text}", view=None
+            content=f"✅ Result recorded, but it couldn't be announced here. {advance}", view=None
         )
 
 
@@ -101,13 +94,13 @@ class ResultsCog(commands.Cog):
                 )
                 return
             session = TournamentSession.load(conn, tournament_row)
-            results_by_match = db.get_results(conn, session.tournament_id)
+            outcomes = db.get_outcomes(conn, session.tournament_id)
         finally:
             conn.close()
 
-        slots = resolve_all_slots(session.matches_by_id, results_by_match.get, session.feeders_by_target)
+        slots = resolve_all_slots(session.matches_by_id, outcomes.winners.get, session.feeders_by_target)
         pending = resolvable_matches(
-            session.matches_by_id, session.feeders_by_target, results_by_match.get, set(results_by_match)
+            session.matches_by_id, session.feeders_by_target, outcomes.winners.get, outcomes.decided
         )
         if not pending:
             await interaction.response.send_message(
@@ -134,6 +127,36 @@ class ResultsCog(commands.Cog):
             view=MatchPicker(pending, slots, session.teams_by_id, ask_for_winner),
             ephemeral=True,
         )
+
+    @match_group.command(name="dropout", description="Drop out of a tournament, giving your remaining matches to your opponents")
+    @app_commands.describe(tournament="Tournament name", confirm_name="Retype the tournament name to confirm")
+    @app_commands.autocomplete(tournament=tournament_name_autocomplete)
+    async def dropout(self, interaction: discord.Interaction, tournament: str, confirm_name: str) -> None:
+        if confirm_name != tournament:
+            await interaction.response.send_message("Confirmation name didn't match. You're still in.", ephemeral=True)
+            return
+        conn = db.get_connection()
+        try:
+            tournament_row = await resolve_tournament(interaction, conn, tournament)
+            if tournament_row is None:
+                return
+            team_id = db.get_entrant_team_id(conn, tournament_row["id"], interaction.user.id)
+            team = db.get_teams(conn, tournament_row["id"]).get(team_id)
+            if team is None:
+                refusal = f"You aren't an entrant in **{tournament}**."
+            elif team["withdrawn"]:
+                refusal = f"You've already left **{tournament}**."
+            elif tournament_row["status"] not in WITHDRAWABLE_STATUSES:
+                refusal = f"**{tournament}** has finished, so there's nothing left to drop out of."
+            else:
+                refusal = None
+                lines, _ = withdraw_and_describe(conn, tournament_row, team, "dropped", interaction.user.id)
+        finally:
+            conn.close()
+        if refusal is not None:
+            await interaction.response.send_message(refusal, ephemeral=True)
+            return
+        await announce(interaction, "\n".join(lines), f"You've dropped out of **{tournament}**.")
 
     @match_group.command(name="stats", description="See the pool's pick breakdown for a matchup")
     @app_commands.describe(tournament="Tournament name")

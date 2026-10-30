@@ -288,14 +288,14 @@ class TournamentCog(commands.Cog):
             tournament = await self._resolve_for_next_status(interaction, conn, name, "concluded")
             if tournament is None:
                 return
-            result, teams_by_id, scores = db.load_final_results(conn, tournament["id"])
-            if result.champion is None:
+            if not db.final_decided(conn, tournament["id"]):
                 await interaction.response.send_message(
                     f"**{name}**'s final has no result yet, so it can't be concluded. "
                     f"Record it with `/match result` first.",
                     ephemeral=True,
                 )
                 return
+            result, teams_by_id, scores = db.load_final_results(conn, tournament["id"])
             # Post before archiving: once concluded, nothing can find the tournament to post again.
             await interaction.response.send_message(embed=render_final_results_embed(name, result, teams_by_id, scores))
             db.set_tournament_status(conn, tournament["id"], "concluded")
