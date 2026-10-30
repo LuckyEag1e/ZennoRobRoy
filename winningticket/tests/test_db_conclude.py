@@ -66,11 +66,11 @@ def test_concluded_tournament_keeps_its_results(conn):
     assert len(db.get_teams(conn, tournament_id)) == 4
 
 
-def test_concluded_name_can_be_reused(conn):
-    old_id = _concluded_tournament(conn)
-    new_id = import_tournament(conn, 1, "Cup", 1, parse_csv(BRACKET_CSV))
-    assert db.get_tournament_by_name(conn, 1, "Cup")["id"] == new_id
-    assert len(db.get_results(conn, old_id)) == 3
+def test_concluded_name_cant_be_reused(conn):
+    _concluded_tournament(conn)
+    with pytest.raises(sqlite3.IntegrityError):
+        db.create_tournament(conn, 1, "Cup", 1)
+    db.create_tournament(conn, 2, "Cup", 1)  # another server's names are its own
 
 
 def test_active_names_must_still_be_unique(conn):
@@ -132,8 +132,48 @@ def test_final_results_name_the_podium_and_score_the_players(conn):
     assert db.load_scores(conn, tournament_id) == scores
 
 
-def test_a_concluded_tournament_can_still_be_recognised_by_name(conn):
-    _concluded_tournament(conn)
-    assert db.has_concluded_tournament(conn, 1, "Cup")
-    assert not db.has_concluded_tournament(conn, 1, "Other")
-    assert not db.has_concluded_tournament(conn, 2, "Cup")
+def test_a_concluded_tournament_can_still_be_found_by_name(conn):
+    tournament_id = _concluded_tournament(conn)
+    assert db.get_concluded_tournament_by_name(conn, 1, "Cup")["id"] == tournament_id
+    assert db.get_concluded_tournament_by_name(conn, 1, "Other") is None
+    assert db.get_concluded_tournament_by_name(conn, 2, "Cup") is None
+    _completed_tournament(conn, "Live")
+    assert db.get_concluded_tournament_by_name(conn, 1, "Live") is None
+
+
+def test_version_6_database_gets_single_elimination_for_existing_tournaments(tmp_path):
+    conn = db.get_connection(tmp_path / "v6.db")
+    v6_table = "\n".join(line for line in db._tournaments_table_sql("tournaments").splitlines() if "format" not in line)
+    v6_table = v6_table.replace("DEFAULT 'random',", "DEFAULT 'random'")
+    conn.executescript(v6_table + "PRAGMA user_version = 6;")
+    conn.execute("INSERT INTO tournaments (guild_id, name, created_by) VALUES (1, 'Cup', 1)")
+    conn.commit()
+
+    db.init_db(conn)
+    assert db.get_tournament_by_name(conn, 1, "Cup")["format"] == "single_elim"
+    conn.close()
+
+
+def test_migration_renames_all_but_the_newest_of_a_reused_name(tmp_path):
+    conn = db.get_connection(tmp_path / "v5.db")
+    v5_table = db._tournaments_table_sql("tournaments")
+    conn.executescript(v5_table + """
+        CREATE UNIQUE INDEX idx_tournaments_active_name ON tournaments(guild_id, name) WHERE status != 'concluded';
+        PRAGMA user_version = 5;""")
+    for guild, name, status, created_at in [
+        (1, "Cup", "concluded", "2026-03-01T10:00:00.000Z"),
+        (1, "Cup", "concluded", "2026-03-01T18:00:00.000Z"),
+        (1, "Cup (2026-03-01)", "concluded", "2026-04-01T10:00:00.000Z"),
+        (1, "Cup", "setup", "2026-05-01T10:00:00.000Z"),
+        (2, "Cup", "concluded", "2026-03-01T10:00:00.000Z"),
+    ]:
+        conn.execute("INSERT INTO tournaments (guild_id, name, created_by, status, created_at) VALUES (?, ?, 1, ?, ?)",
+                     (guild, name, status, created_at))
+    conn.commit()
+
+    db.init_db(conn)
+    names = [row["name"] for row in conn.execute("SELECT name FROM tournaments ORDER BY id")]
+    assert names == ["Cup (2026-03-01, 2)", "Cup (2026-03-01, 3)", "Cup (2026-03-01)", "Cup", "Cup"]
+    with pytest.raises(sqlite3.IntegrityError):
+        db.create_tournament(conn, 1, "Cup (2026-03-01)", 1)
+    conn.close()

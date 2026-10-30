@@ -54,19 +54,28 @@ out, e.g. `create Demo example_bracket.csv` in the local CLI below.
 ## Usage
 
 Admin:
-- `/registration open name:<name> [closes_in_hours:<hours>]`: take sign-ups instead of
-  uploading a CSV. Members enter with `/register`. Sign-ups close after `closes_in_hours`
-  (or with `/registration close name:<name>`), and then the entrants are drawn into a
-  bracket at random, with byes filling it out to a power of two.
+- `/registration open name:<name> [closes_in_hours:<hours>] [seeding:standard|slide|random]`:
+  take sign-ups instead of uploading a CSV. Members enter with `/register`. Sign-ups close
+  after `closes_in_hours` (or with `/registration close name:<name>`), and then the entrants
+  are drawn into a bracket, with byes for the top seeds filling it out to a power of two.
+  `standard` (the default) seeds by rating with the top seeds playing the lowest first,
+  `slide` has them play mid-ranked seeds first, and `random` draws without seeds.
 - `/registration add tournament:<name> [user:<member>] [name:<text>]`: sign up a member
-  for them, or an entrant with no Discord account. `/registration remove` withdraws anyone.
+  for them (by name only, unless they've agreed to link their data), or an entrant with no
+  Discord account. `/registration remove` withdraws anyone. A member can't sign up under
+  the name of an entrant with no account, since anyone can set their display name to match.
+- `/admin linkplayer tournament:<name> entrant:<name> user:<member>`: link an entrant in any
+  tournament to the member who plays as them, such as one entered by name before they agreed,
+  or an old CSV entrant. `/admin unlinkplayer tournament:<name> entrant:<name>` undoes it,
+  keeping their agreement and other entries.
 - `/tournament create name:<name> csv_file:<attach bracket.csv>`
 - `/tournament open name:<name>` — let members start `/predict`
 - `/tournament lock name:<name>` — stop prediction submissions, start recording real results
 - `/match result tournament:<name>` — pick a ready match and record who really won
 - `/tournament conclude name:<name>` — archive a completed tournament and post its podium
-  and top pick'em scorers. Its results stay in the database (for future seeding), but it
-  disappears from every command and its name can be reused.
+  and top pick'em scorers. Its results stay in the database (for future seeding), and from
+  then on only `/history` shows it, and nothing can delete it or change its results.
+  Its name can't be used for a new tournament.
 - `/admin ...` — troubleshooting/correction commands (force status, force/overwrite a
   result, clear a result, edit a team's name/seed, clear a user's predictions, delete
   a tournament). All require the Manage Server permission.
@@ -80,7 +89,9 @@ Everyone:
 - `/features`: a short summary of what the bot does and what's planned
 - `/feedback`: send the organizers anonymous feedback (once every 5 minutes)
 - `/register tournament:<name>` / `/unregister tournament:<name>`: sign up for, or withdraw
-  from, a tournament that's taking entrants
+  from, a tournament that's taking entrants. The first time, a private notice asks whether to
+  link your entries, results and rating to your account, or enter by name only
+- `/optout confirm:opt out`: unlink your entries, results and rating from your account
 - `/registration entrants name:<name>`: see who has signed up
 - `/predict tournament:<name>` — click through and fill out your bracket (round 2+
   options are built from your own picks, just like ESPN/Yahoo bracket pools)
@@ -91,6 +102,10 @@ Everyone:
   Both keep one post per tournament in the channel and update it as results come
   in. Asking again while it's still in view gets a private link to it instead of
   another post.
+- `/history list` — every concluded tournament with its champion, number of entrants,
+  format, singles or teams, and the date it finished
+- `/history bracket|seeding|leaderboard tournament:<name>` — look back at a concluded
+  tournament's final bracket, how it was seeded, and its prediction leaderboard (only you see the reply)
 
 ## Local CLI (no Discord needed)
 
@@ -106,9 +121,10 @@ Commands mirror the slash commands: `create <name> <csv>`, `regopen <name> [--cl
 `unregister <name>`, `entrants <name>`, `regadd <name> <entrant> [user_id]`, `regremove <name> <entrant>`,
 `regclose <name>`, `open <name>`, `predict <name>`,
 `lock <name>`, `conclude <name>`, `matchresult <name>`, `matchstats <name>`, `mypicks <name>`, `bracket <name>`,
-`leaderboard <name>`, `tournaments`, `features`, `feedback <message>`, and the admin set: `admin_setstatus`, `admin_delete`,
+`leaderboard <name>`, `tournaments`, `history`, `history_bracket <name>`, `history_seeding <name>`,
+`history_leaderboard <name>`, `features`, `feedback <message>`, and the admin set: `admin_setstatus`, `admin_delete`,
 `admin_editteam`, `admin_setresult`, `admin_clearresult`, `admin_clearpredictions`, `admin_feedback`,
-`admin_deletefeedback`, `admin_ban`, `admin_unban`, `admin_bans`.
+`admin_deletefeedback`, `admin_ban`, `admin_unban`, `admin_bans`, `admin_linkplayer`, `admin_unlinkplayer`.
 Use `as <user_id> <name>` to switch which simulated user you're acting as (so you can
 submit multiple different predictions and see the leaderboard play out). Commands that
 take more than one argument (like `create`) need quotes around a multi-word name;

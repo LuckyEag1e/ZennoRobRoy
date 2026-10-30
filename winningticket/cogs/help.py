@@ -24,13 +24,17 @@ class HelpCog(commands.Cog):
     @group.command(name="players", description="Commands for filling out and checking your bracket")
     async def players(self, interaction: discord.Interaction) -> None:
         embed = _command_list_embed("Player commands", [
-            ("/register tournament:<name>", "Sign up for a tournament that's taking entrants (`/unregister` to withdraw)."),
+            ("/register tournament:<name>", "Sign up for a tournament that's taking entrants (`/unregister` to withdraw). The first time, you choose whether to link your entries, results and rating to your account."),
+            ("/optout confirm:opt out", "Unlink your entries, results and rating from your account if you agreed before."),
             ("/registration entrants name:<name>", "See who has signed up."),
+            ("/rating", "See your Elo rating from past tournaments, which decides your seed. Only you see it."),
             ("/predict tournament:<name>", "Fill out your bracket prediction, round by round."),
             ("/mypicks tournament:<name>", "See your saved picks and current score."),
             ("/tournament bracket name:<name>", "See the real tournament bracket's progress."),
             ("/tournament leaderboard name:<name>", "See the standings."),
             ("/match stats tournament:<name>", "See what % of the pool picked each side of a matchup."),
+            ("/history list", "See every concluded tournament, with its champion, size, format and date."),
+            ("/history bracket tournament:<name>", "Look back at a concluded tournament. `/history seeding` and `/history leaderboard` show how it was seeded and how the pool did."),
             ("/features", "What the bot can be used for, and what's coming."),
             ("/feedback", "Send the organizers anonymous feedback."),
         ])
@@ -44,9 +48,13 @@ class HelpCog(commands.Cog):
              "Take sign-ups:\n"
              "`/registration open name:<name> closes_in_hours:<hours>`\n"
              "Players enter with `/register` and can see who's in with `/registration entrants`. "
-             "Leave out `closes_in_hours` to close sign-ups by hand. `/registration add` signs up "
-             "a member for them, or an entrant with no Discord account, and `/registration remove` "
-             "withdraws anyone.\n"
+             "Leave out `closes_in_hours` to close sign-ups by hand. `seeding:` picks how the "
+             "bracket is drawn: `standard` (the default) seeds by rating with the top seeds playing "
+             "the lowest first, `slide` has them play mid-ranked seeds first so the lowest aren't "
+             "knocked out straight away, and `random` draws at random. "
+             "`/registration add` signs up "
+             "a member for them (by name only, unless they've agreed to link their data), or an "
+             "entrant with no Discord account, and `/registration remove` withdraws anyone.\n"
              "Or build it from a bracket CSV:\n"
              "`/tournament create name:<name> csv_file:<file>`\n"
              "The CSV needs a `team_a,team_b` header and one row per round-1 matchup in "
@@ -54,9 +62,11 @@ class HelpCog(commands.Cog):
              "Leave one side blank to give that entrant a bye. A CSV tournament skips step 2."),
             ("2. Close sign-ups",
              "`/registration close name:<name>`\n"
-             "This happens automatically once `closes_in_hours` passes. The entrants are drawn "
-             "into a bracket at random, with byes filling it out, and the bracket is posted "
-             "to the channel where sign-ups opened."),
+             "This happens automatically once `closes_in_hours` passes. Entrants are seeded by "
+             "their Elo rating from past tournaments, and the top seeds get any byes. Players "
+             "who haven't played yet count as average. Give `seeding:` here to override the "
+             "choice made when sign-ups opened. The bracket is posted to the channel where "
+             "sign-ups opened."),
             ("3. Open predictions",
              "`/tournament open name:<name>`\n"
              "Lets players start filling out brackets with `/predict`."),
@@ -76,9 +86,9 @@ class HelpCog(commands.Cog):
             ("7. Conclude it",
              "`/tournament conclude name:<name>`\n"
              "Once the final is recorded, this posts the podium and the top pick'em scorers "
-             "to the channel. The tournament's results are kept, but it's removed from every "
-             "command and its name is free for a new tournament. Only a completed tournament "
-             "can be concluded."),
+             "to the channel. The tournament's results are kept and count toward players' "
+             "ratings. From then on only `/history` shows it, and its name can't be used "
+             "again. Only a completed tournament can be concluded."),
             ("Fixing mistakes",
              "Wrong result, bad team name, etc.? See `/help admin`."),
         ])
@@ -91,9 +101,12 @@ class HelpCog(commands.Cog):
             ("/admin setstatus tournament:<name> status:<status>", "Force a tournament's status directly, bypassing the normal open/lock flow."),
             ("/admin setresult tournament:<name>", "Force or overwrite any known matchup's result (e.g. for testing)."),
             ("/admin clearresult tournament:<name>", "Delete a recorded match result."),
-            ("/admin editteam tournament:<name> team:<name>", "Fix a team's name or seed after import."),
+            ("/admin editteam tournament:<name> team:<name>", "Fix an entrant's name or seed after import."),
             ("/admin clearpredictions tournament:<name> user:<member>", "Wipe one user's saved predictions."),
             ("/admin deletetournament tournament:<name> confirm_name:<name>", "Permanently delete a tournament and all its data."),
+            ("/rating user:<member>", "See any member's Elo rating. Members can only see their own."),
+            ("/admin linkplayer tournament:<name> entrant:<name> user:<member>", "Link an entrant to the member who plays as them, such as one entered by name before they agreed, so its games count for their rating."),
+            ("/admin unlinkplayer tournament:<name> entrant:<name>", "Unlink the member behind an entrant, such as one linked to the wrong entry. Their agreement and other entries stay as they are."),
             ("/admin feedback [page:<n>]", "Read anonymous feedback, newest first. `/admin deletefeedback number:<n>` removes one."),
             ("/admin ban user:<member> [reason:<text>]", "Block a member from using the bot. `/admin unban` undoes it, and `/admin bans` lists everyone banned."),
         ])

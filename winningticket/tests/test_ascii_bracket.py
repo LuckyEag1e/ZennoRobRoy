@@ -15,6 +15,12 @@ def _strip_ansi(text: str) -> str:
     return _ANSI_RE.sub("", text)
 
 
+def _final_junction(text: str) -> str:
+    """The raw line where the final's two sides meet: the only junction with nothing after its winner."""
+    return next(line for line in text.splitlines()
+                if "├" in _strip_ansi(line) and not _strip_ansi(line).rstrip().endswith(("┐", "┘")))
+
+
 def _line_for(text: str, substring: str) -> str:
     """The raw (ANSI-included) line whose stripped content contains substring."""
     for line in text.splitlines():
@@ -109,9 +115,9 @@ def test_render_tree_draws_a_connector_between_rounds():
     matches, teams = _4_team_bracket()
     text = _render(matches, teams)
 
-    assert "┐" in text
-    assert "┘" in text
-    assert "├─" in text
+    stripped = _strip_ansi(text)
+    assert "├ TBD─┐" in stripped  # the junction names its winner, and the line carries on to the next game
+    assert "├ TBD─┘" in stripped
 
 
 def test_render_tree_winner_is_bold_loser_is_underlined_once_decided():
@@ -148,15 +154,14 @@ def test_render_tree_round1_and_round2_use_different_colors():
     text = _render(matches, teams, results={1: 1, 2: 3, 3: 1})  # fully decided
 
     round1_line = _line_for(text, "+Alpha")
-    champion_line = _line_for(text, "├─")
-    assert _color_code(round1_line) != _color_code(champion_line)
+    assert _color_code(round1_line) != _color_code(_final_junction(text))
 
 
 def test_render_tree_decided_final_shows_champion_name_bold():
     matches, teams = _4_team_bracket()
     text = _render(matches, teams, results={1: 1, 2: 3, 3: 1})
-    champion_line = _line_for(text, "├─")
-    assert "Alpha" in _strip_ansi(champion_line)
+    champion_line = _final_junction(text)
+    assert _strip_ansi(champion_line).strip() == "├+Alpha"
     assert _is_bold(champion_line)
 
 
@@ -179,9 +184,10 @@ def test_render_tree_connects_each_game_from_its_own_junction():
     lines = [line.rstrip() for line in stripped.splitlines()]
     ash = next(i for i, line in enumerate(lines) if "Ash" in line)
     assert lines[ash].endswith("─┐")
-    assert "├─┐" in lines[ash + 1] and lines[ash + 1].endswith("+Ash")
-    assert lines[ash + 2].startswith("-Birch") and lines[ash + 2].endswith("┘ │")
-    assert lines[ash + 4].startswith(" Cedar") and lines[ash + 4].endswith("───┘ │")
+    assert lines[ash + 1].endswith("├+Ash─┐")
+    assert lines[ash + 2].startswith("-Birch") and lines[ash + 2].endswith("─┘     │")
+    assert lines[ash + 3].endswith("├ TBD─┐")
+    assert lines[ash + 4].startswith(" Cedar") and lines[ash + 4].endswith("───┘     │")
 
 
 def test_render_tree_colours_both_sides_of_a_game_alike():
@@ -278,3 +284,17 @@ def test_render_tree_no_final_summary_before_semifinals_decided():
     text = _render(matches, teams, results={})
     assert "Final:" not in text
     assert "Champion:" not in text
+
+
+def test_render_tree_names_winners_on_the_junction_up_to_16_lines_then_in_a_column():
+    def first_round_junction(count: int) -> str:
+        matches = matches_from_pairs([(n, n + 1) for n in range(1, count + 1, 2)])
+        teams = {n: _team(f"Player {n}") for n in range(1, count + 1)}
+        first_game = next(m for m in matches.values() if m.round == 1 and m.team_a_id == 1)
+        lines = _strip_ansi(_render(matches, teams, results={first_game.id: 1})).splitlines()
+        return lines[lines.index("```ansi") + 2].rstrip()
+
+    assert first_round_junction(16).endswith("├+Play…─┐")  # cut short, since it widens every later round
+    # 32 lines would be too wide for a phone that way, so the winner sits in the right-hand column.
+    junction = first_round_junction(32)
+    assert "├─┐" in junction and junction.endswith(" +Player 1")

@@ -57,6 +57,32 @@ def test_a_taken_name_gets_a_number(conn):
     assert [e["name"] for e in db.get_entrants(conn, tournament_id)] == names
 
 
+def test_a_name_only_entrant_cant_take_a_name_already_in_use(conn):
+    tournament_id = _open_with(conn, 1)
+    assert db.register_entrant(conn, tournament_id, "Guest", None) is not None
+    assert db.register_entrant(conn, tournament_id, "Guest", None) is None
+    assert db.register_entrant(conn, tournament_id, "Player 1", None) is None
+    assert len(db.get_teams(conn, tournament_id)) == 2
+
+
+def test_a_member_cant_sign_up_under_a_name_only_entrants_name(conn):
+    tournament_id = _open_with(conn, 0)
+    db.register_entrant(conn, tournament_id, "Sam", None)
+    assert db.register_entrant(conn, tournament_id, "Sam", 7) is None
+    assert [(e["name"], e["user_id"]) for e in db.get_entrants(conn, tournament_id)] == [("Sam", None)]
+
+
+def test_unlinking_leaves_the_entry_under_its_name(conn):
+    tournament_id = _open_with(conn, 1)
+    db.record_agreement(conn, 1, 1)
+    team_id = db.get_entrant_team_id(conn, tournament_id, 1)
+    assert db.unlink_entrant(conn, team_id) == 1
+    assert [(e["name"], e["user_id"]) for e in db.get_entrants(conn, tournament_id)] == [("Player 1", None)]
+    assert db.has_agreed(conn, 1, 1)
+    assert db.unlink_entrant(conn, team_id) is None  # nobody left to unlink
+    assert db.register_entrant(conn, tournament_id, "Player 1", 1) is None  # the name stays with the entry
+
+
 def test_unregistering_removes_the_team(conn):
     tournament_id = _open_with(conn, 2)
     assert db.unregister_entrant(conn, tournament_id, 1)
