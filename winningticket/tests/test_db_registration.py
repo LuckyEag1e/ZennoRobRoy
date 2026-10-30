@@ -228,15 +228,6 @@ def test_version_2_database_keeps_its_registration_details(tmp_path):
     conn.close()
 
 
-def test_the_unused_took_over_column_is_dropped(tmp_path):
-    conn = db.get_connection(tmp_path / "test.db")
-    db.init_db(conn)
-    conn.execute("ALTER TABLE team_members ADD COLUMN took_over INTEGER NOT NULL DEFAULT 0")
-    db.init_db(conn)
-    assert "took_over" not in {row["name"] for row in conn.execute("PRAGMA table_info(team_members)")}
-    conn.close()
-
-
 def test_a_team_cant_be_renamed_to_another_teams_name(conn):
     tournament_id = _open_with(conn, 2)
     first, second = (e["team_id"] for e in db.get_entrants(conn, tournament_id))

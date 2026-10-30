@@ -206,24 +206,13 @@ def init_db(conn: sqlite3.Connection) -> None:
     else:
         _rebuild_tournaments_table(conn)
         _add_column_if_missing(conn, "live_posts", "shown", "TEXT")
-        # Some older databases have this column, and nothing reads it.
-        _drop_column_if_present(conn, "team_members", "took_over")
     conn.commit()
-
-
-def _columns(conn: sqlite3.Connection, table: str) -> set[str]:
-    return {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
 
 
 def _add_column_if_missing(conn: sqlite3.Connection, table: str, column: str, definition: str) -> None:
     """For a new column on a table that has no constraint changes, which SQLite can add in place."""
-    if column not in _columns(conn, table):
+    if column not in {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}:
         conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
-
-
-def _drop_column_if_present(conn: sqlite3.Connection, table: str, column: str) -> None:
-    if column in _columns(conn, table):
-        conn.execute(f"ALTER TABLE {table} DROP COLUMN {column}")
 
 
 def _rebuild_tournaments_table(conn: sqlite3.Connection) -> None:
