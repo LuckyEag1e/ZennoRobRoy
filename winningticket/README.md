@@ -62,12 +62,12 @@ Admin:
   `slide` has them play mid-ranked seeds first, and `random` draws without seeds.
 - `/registration add tournament:<name> [user:<member>] [name:<text>]`: sign up a member
   for them (by name only, unless they've agreed to link their data), or an entrant with no
-  Discord account. `/registration remove` withdraws anyone. A member who has agreed and
-  signs up under the name of an entrant with no account takes that entry over.
-- `/admin unlinkplayer tournament:<name> entrant:<name>`: unlink the member behind one
-  entrant, keeping their agreement and other entries, such as a member who took over
-  someone else's entry under the same name.
-  `/admin linkplayer` links an entrant in a concluded tournament to the member who played as them.
+  Discord account. `/registration remove` withdraws anyone. A member can't sign up under
+  the name of an entrant with no account, since anyone can set their display name to match.
+- `/admin linkplayer tournament:<name> entrant:<name> user:<member>`: link an entrant in any
+  tournament to the member who plays as them, such as one entered by name before they agreed,
+  or an old CSV entrant. `/admin unlinkplayer tournament:<name> entrant:<name>` undoes it,
+  keeping their agreement and other entries.
 - `/tournament create name:<name> csv_file:<attach bracket.csv>`
 - `/tournament open name:<name>` — let members start `/predict`
 - `/tournament lock name:<name>` — stop prediction submissions, start recording real results

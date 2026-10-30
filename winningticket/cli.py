@@ -47,6 +47,7 @@ from labels import (
     feedback_page,
     history_line,
     matchup_label,
+    name_held_message,
     name_taken_message,
     opted_out_message,
     pick_review_lines,
@@ -321,7 +322,9 @@ class WinningTicketCLI(cmd.Cmd):
                 print(f"{self.user_name} signed up by name only. {OPTED_OUT_NOTE}")
                 return
             db.record_agreement(self.conn, GUILD_ID, self.user_id)
-        db.register_entrant(self.conn, tournament["id"], self.user_name, self.user_id)
+        if db.register_entrant(self.conn, tournament["id"], self.user_name, self.user_id) is None:
+            print(name_held_message(tournament["name"], self.user_name).replace("**", ""))
+            return
         print(f"{self.user_name} signed up ({len(db.get_entrants(self.conn, tournament['id']))} entered so far).")
 
     def do_optout(self, arg: str) -> None:
@@ -376,7 +379,8 @@ class WinningTicketCLI(cmd.Cmd):
                 user_id = None
         entrant = db.register_entrant(self.conn, tournament["id"], parts[1], user_id)
         if entrant is None:
-            print(f"'{parts[0]}' already has an entrant named '{parts[1]}'.")
+            link_hint = " Use 'admin_linkplayer' to link them to it." if user_id is not None else ""
+            print(f"'{parts[0]}' already has an entrant named '{parts[1]}'.{link_hint}")
             return
         _, entrant_name = entrant
         print(f"Signed up {entrant_name} ({len(db.get_entrants(self.conn, tournament['id']))} entered so far).")
@@ -591,7 +595,7 @@ class WinningTicketCLI(cmd.Cmd):
         print("Updated.")
 
     def do_admin_linkplayer(self, arg: str) -> None:
-        "Link an entrant in a concluded tournament to the user who played as them, so its games count for their rating: admin_linkplayer <name> <entrant> <user_id>"
+        "Link an entrant to the user who plays as them, so its games count for their rating: admin_linkplayer <name> <entrant> <user_id>"
         parts = shlex.split(arg)
         if len(parts) != 3:
             print("usage: admin_linkplayer <name> <entrant> <user_id>")
@@ -602,11 +606,12 @@ class WinningTicketCLI(cmd.Cmd):
         except ValueError:
             print("user_id must be an integer")
             return
-        tournament = self._require_concluded(name)
+        tournament = db.get_tournament_by_name_any_status(self.conn, GUILD_ID, name)
         if tournament is None:
+            print(f"No tournament named '{name}'.")
             return
         if not db.has_agreed(self.conn, GUILD_ID, user_id):
-            print(f"{user_label(user_id)} hasn't agreed to link their data, so their old entries can't be linked to them.")
+            print(f"{user_label(user_id)} hasn't agreed to link their data, so entries can't be linked to them.")
             return
         entrant_row = db.get_team_by_name(self.conn, tournament["id"], entrant)
         if entrant_row is None:
@@ -642,7 +647,7 @@ class WinningTicketCLI(cmd.Cmd):
             return
         print(f"Unlinked {user_label(user_id)} from {entrant} in '{name}'.")
         if tournament["status"] == "registration":
-            print("If they signed up again they'd take this entry back, so use 'regadd' with another name to enter them separately.")
+            print("To enter them separately, use 'regadd' with another name.")
 
     def do_admin_setresult(self, arg: str) -> None:
         "Force/overwrite any known matchup's result: admin_setresult <name>"

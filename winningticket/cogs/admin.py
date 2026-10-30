@@ -13,11 +13,8 @@ from common import (
     WinnerPicker,
     any_entrant_autocomplete,
     any_tournament_autocomplete,
-    concluded_entrant_autocomplete,
-    concluded_tournament_autocomplete,
     edit_signups_message,
     outdated_pick_message,
-    resolve_concluded_tournament,
     resolve_tournament,
     team_name_autocomplete,
     tournament_name_autocomplete,
@@ -93,19 +90,20 @@ class AdminCog(commands.Cog):
         if tournament_row["status"] == "registration":
             await edit_signups_message(self.bot, tournament_row, f"📝 Sign-ups for **{tournament}** were cancelled.")
 
-    @group.command(name="linkplayer", description="Link an entrant in a concluded tournament to the member who played as them")
-    @app_commands.describe(tournament="Concluded tournament", entrant="Entrant the member played as", user="Member to link")
-    @app_commands.autocomplete(tournament=concluded_tournament_autocomplete, entrant=concluded_entrant_autocomplete)
+    @group.command(name="linkplayer", description="Link an entrant to the member who plays as them")
+    @app_commands.describe(tournament="Tournament name", entrant="Entrant the member plays as", user="Member to link")
+    @app_commands.autocomplete(tournament=any_tournament_autocomplete, entrant=any_entrant_autocomplete)
     async def linkplayer(self, interaction: discord.Interaction, tournament: str, entrant: str, user: discord.Member) -> None:
         conn = db.get_connection()
         try:
-            tournament_row = await resolve_concluded_tournament(interaction, conn, tournament)
+            tournament_row = db.get_tournament_by_name_any_status(conn, interaction.guild_id, tournament)
             if tournament_row is None:
+                await interaction.response.send_message(f"No tournament named '{tournament}' in this server.", ephemeral=True)
                 return
             label = tournament_row["name"]
             if not db.has_agreed(conn, interaction.guild_id, user.id):
                 await interaction.response.send_message(
-                    f"{user.mention} hasn't agreed to link their data to their account, so their old entries "
+                    f"{user.mention} hasn't agreed to link their data to their account, so entries "
                     f"can't be linked to them. They're asked when they next use `/register`.",
                     ephemeral=True,
                 )
@@ -130,7 +128,7 @@ class AdminCog(commands.Cog):
             )
             return
         await interaction.response.send_message(
-            f"🔗 Linked {user.mention} to **{entrant}** in **{label}**. Their games there against other linked members now count for their rating.",
+            f"🔗 Linked {user.mention} to **{entrant}** in **{label}**. Its games against other linked members count toward their rating.",
             ephemeral=True,
         )
 
@@ -157,8 +155,7 @@ class AdminCog(commands.Cog):
         content = (f"Unlinked {mention(user_id)} from **{entrant}** in **{tournament}**. "
                    f"Their agreement and other entries are unchanged.")
         if tournament_row["status"] == "registration":
-            content += (" If they signed up again they'd take this entry back, so to enter them separately, "
-                        "use `/registration add` with them and another name.")
+            content += " To enter them separately, use `/registration add` with them and another name."
         await interaction.response.send_message(content, ephemeral=True)
 
     @group.command(name="editteam", description="Fix an entrant's name or seed")

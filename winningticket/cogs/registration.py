@@ -24,7 +24,7 @@ from common import (
     tournament_name_autocomplete,
 )
 from embeds import EMBED_DESCRIPTION_LIMIT, mention
-from labels import CONSENT_NOTICE, OPTED_OUT_NOTE, draw_description, entrant_lines, join_within
+from labels import CONSENT_NOTICE, OPTED_OUT_NOTE, draw_description, entrant_lines, join_within, name_held_message
 from tournament_builder import (
     MAX_CLOSES_IN_HOURS,
     MIN_CLOSES_IN_HOURS,
@@ -104,7 +104,9 @@ class ConsentView(BotView):
                 return
             if linked:
                 db.record_agreement(conn, interaction.guild_id, user.id)
-                db.register_entrant(conn, self.tournament_id, user.display_name, user.id)
+                if db.register_entrant(conn, self.tournament_id, user.display_name, user.id) is None:
+                    await interaction.response.edit_message(content=name_held_message(name, user.display_name), view=None)
+                    return
                 content = (f"✅ You're signed up for **{name}** ({db.entrant_count(conn, self.tournament_id)} entered "
                            f"so far). If you change your mind, `/optout` unlinks your data.")
             else:
@@ -290,9 +292,10 @@ class RegistrationCog(commands.Cog):
                 conn, tournament_row["id"], name or user.display_name, user.id if linked else None
             )
             if entrant is None:
+                link_hint = ", or link them to it with `/admin linkplayer`" if linked else ""
                 await interaction.response.send_message(
                     f"**{tournament}** already has an entrant named '{name or user.display_name}'. "
-                    f"Pick another name.", ephemeral=True
+                    f"Pick another name{link_hint}.", ephemeral=True
                 )
                 return
             _, entrant_name = entrant
@@ -349,7 +352,11 @@ class RegistrationCog(commands.Cog):
                     CONSENT_NOTICE, view=ConsentView(self, tournament_row["id"]), ephemeral=True
                 )
                 return
-            db.register_entrant(conn, tournament_row["id"], interaction.user.display_name, interaction.user.id)
+            if db.register_entrant(conn, tournament_row["id"], interaction.user.display_name, interaction.user.id) is None:
+                await interaction.response.send_message(
+                    name_held_message(tournament, interaction.user.display_name), ephemeral=True
+                )
+                return
             await interaction.response.send_message(
                 f"✅ You're signed up for **{tournament}** ({db.entrant_count(conn, tournament_row['id'])} entered so far).",
                 ephemeral=True,

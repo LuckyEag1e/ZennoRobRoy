@@ -652,36 +652,49 @@ class TournamentRun:
             self.sim._problem(f"round 1 isn't paired for {tournament['seeding_mode']} seeding")
 
     async def separate_shared_names(self) -> None:
-        """A player who opted out shares a display name with one who agreed afterwards, so
-        that one took over the opted-out player's entry. The organizer unlinks it, which
-        must give it back under its name alone, and enters the other player under another name."""
+        """A player who opted out shares a display name with one who agreed, and the
+        second was refused at sign-up instead of being handed the first one's entry. They
+        ask to be linked to it, the organizer does so before realizing it isn't theirs,
+        then unlinks them and enters them under another name."""
         org = self.organizer.user
         for player in self.players:
             if player.user.id not in self.name_only:
                 continue
             name = player.user.display_name
-            conn = db.get_connection()
-            try:
-                taker = next((e["user_id"] for e in db.get_entrants(conn, self.tournament_id)
-                              if e["name"] == name and e["user_id"] is not None), None)
-            finally:
-                conn.close()
-            if taker is None:
+            if self._entrant(name) != (name, None):
+                self.sim._problem(f"{name}'s entry was handed to a member who only shares the name")
                 continue
-            [picked, *_] = await self.sim.autocomplete(org, "admin unlinkplayer", "tournament", self.name[:2])
-            await self.sim.autocomplete(org, "admin unlinkplayer", "entrant", name[:2], tournament=picked)
+            namesake = next((p for p in self.players if p is not player and p.user.display_name == name
+                             and p.agrees and self._entrant_name(p) is None), None)
+            if namesake is None:
+                continue
+            [picked, *_] = await self.sim.autocomplete(org, "admin linkplayer", "tournament", self.name[:2])
+            await self.sim.autocomplete(org, "admin linkplayer", "entrant", name[:2], tournament=picked)
+            await self.sim.run(org, "admin linkplayer", tournament=picked, entrant=name, user=namesake.user)
             await self.sim.run(org, "admin unlinkplayer", tournament=picked, entrant=name)
-            taker_user = next(p.user for p in self.players if p.user.id == taker)
-            await self.sim.run(org, "registration add", tournament=self.name, user=taker_user, name=f"{name} too")
-            conn = db.get_connection()
-            try:
-                entrants = db.get_entrants(conn, self.tournament_id)
-            finally:
-                conn.close()
-            if (name, None) not in [(e["name"], e["user_id"]) for e in entrants]:
+            await self.sim.run(org, "registration add", tournament=self.name, user=namesake.user, name=f"{name} too")
+            if self._entrant(name) != (name, None):
                 self.sim._problem(f"/admin unlinkplayer didn't leave {name} under its name alone")
-            if not any(e["user_id"] == taker and e["name"] != name for e in entrants):
-                self.sim._problem(f"{name}'s taker couldn't be entered under another name after /admin unlinkplayer")
+            if self._entrant_name(namesake) != f"{name} too":
+                self.sim._problem(f"{name}'s namesake couldn't be entered under another name after /admin unlinkplayer")
+
+    def _entrant(self, name: str) -> Optional[tuple[str, Optional[int]]]:
+        """(name, linked user id or None) for this tournament's entrant called `name`, or None."""
+        conn = db.get_connection()
+        try:
+            rows = [(e["name"], e["user_id"]) for e in db.get_entrants(conn, self.tournament_id) if e["name"] == name]
+        finally:
+            conn.close()
+        return rows[0] if rows else None
+
+    def _entrant_name(self, player: Player) -> Optional[str]:
+        """The name of the entrant linked to `player` in this tournament, or None."""
+        conn = db.get_connection()
+        try:
+            return next((e["name"] for e in db.get_entrants(conn, self.tournament_id)
+                         if e["user_id"] == player.user.id), None)
+        finally:
+            conn.close()
 
     async def welcome_a_guest(self) -> Optional[tuple[Player, str, str]]:
         """After a tournament: a guest who played without a Discord account joins. The
@@ -832,7 +845,7 @@ async def _play(sim: Simulation, scenario: Scenario, rng: random.Random) -> None
                                   agrees=rng.random() < AGREES_TO_LINK))
     if scenario.duplicate_names and len(players) > 1:
         players[1].user.display_name = players[0].user.display_name
-        # If the one who opts out signs up first, the other takes over their entry by agreeing.
+        # If the one who opts out signs up first, the other is refused their own name by agreeing.
         players[0].agrees, players[1].agrees = False, True
     co_organizer = Organizer(sim.add_user(2, "Co-organizer", organizer=True), scenario.organizer) if scenario.co_organizer else None
     newcomer = None

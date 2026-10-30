@@ -116,11 +116,37 @@ def test_an_organizer_can_only_link_a_member_who_agreed(world):
     assert _entry("Ace again") == ("Ace again", member.id)
 
 
-def test_agreeing_takes_over_an_entry_an_organizer_added_by_name(world):
+def test_a_member_named_like_an_entrant_added_by_name_waits_for_an_organizer_to_link_them(world):
     sim, organizer, member = world
-    asyncio.run(sim.run(organizer, "registration add", tournament="Cup", user=member))
-    asyncio.run(sign_up(sim, member, "Cup", agree=True))
+
+    async def sign_up_then_link():
+        await sim.run(organizer, "registration add", tournament="Cup", user=member)
+        refused = await sign_up(sim, member, "Cup", agree=True)
+        unlinked = _entry("Ace")
+        await sim.run(organizer, "admin linkplayer", tournament="Cup", entrant="Ace", user=member)
+        return refused, unlinked
+
+    refused, unlinked = asyncio.run(sign_up_then_link())
+    assert not refused.public and "ask an organizer to link you" in refused.content
+    assert unlinked == ("Ace", None) and _agreed(member.id)
     assert _entry("Ace") == ("Ace", member.id) and _entry("Ace (2)") is None
+    assert not sim.issues
+
+
+def test_an_impostor_cant_take_or_withdraw_someone_elses_entry(world):
+    sim, organizer, member = world
+    impostor = sim.add_user(20, "Ace")
+
+    async def impersonate():
+        await sign_up(sim, member, "Cup", agree=False)
+        refused = await sign_up(sim, impostor, "Cup", agree=True)
+        withdrawn = (await sim.run(impostor, "unregister", tournament="Cup")).sent
+        return refused, withdrawn
+
+    refused, withdrawn = asyncio.run(impersonate())
+    assert "already has an entrant named Ace" in refused.content
+    assert "aren't signed up" in withdrawn.content
+    assert _entry("Ace") == ("Ace", None)
 
 
 def test_an_organizer_cant_add_a_member_by_name_twice(world):
@@ -130,19 +156,20 @@ def test_an_organizer_cant_add_a_member_by_name_twice(world):
     assert "already has an entrant named 'Ace'" in again.content and _entry("Ace (2)") is None
 
 
-def test_an_organizer_can_separate_a_member_who_took_over_an_entry(world):
+def test_an_organizer_can_separate_a_member_linked_to_the_wrong_entry(world):
     sim, organizer, member = world
 
-    async def take_over_then_separate():
+    async def link_then_separate():
+        await sign_up(sim, member, "Shield", agree=True)
         await sim.run(organizer, "registration add", tournament="Cup", user=None, name="Ace")
-        await sign_up(sim, member, "Cup", agree=True)
-        took_over = _entry("Ace")
+        await sim.run(organizer, "admin linkplayer", tournament="Cup", entrant="Ace", user=member)
+        linked = _entry("Ace")
         reply = (await sim.run(organizer, "admin unlinkplayer", tournament="Cup", entrant="Ace")).sent
         await sim.run(organizer, "registration add", tournament="Cup", user=member, name="Ace B")
-        return took_over, reply
+        return linked, reply
 
-    took_over, reply = asyncio.run(take_over_then_separate())
-    assert took_over == ("Ace", member.id)
+    linked, reply = asyncio.run(link_then_separate())
+    assert linked == ("Ace", member.id)
     assert not reply.public and "Unlinked" in reply.content and "/registration add" in reply.content
     assert _entry("Ace") == ("Ace", None) and _entry("Ace B") == ("Ace B", member.id)
     assert _agreed(member.id)

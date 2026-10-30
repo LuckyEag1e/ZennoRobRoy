@@ -442,19 +442,17 @@ def get_teams(conn: sqlite3.Connection, tournament_id: int) -> dict[int, sqlite3
 def register_entrant(conn: sqlite3.Connection, tournament_id: int, name: str,
                      user_id: int | None) -> tuple[int, str] | None:
     """Sign up a one-person team and return its (team id, name). With no `user_id` it's
-    just a name, with no Discord account behind it, and None is returned if the name is
-    taken, since two name-only entrants with one name couldn't be told apart.
+    just a name, with no Discord account behind it.
 
-    A member signing up under the name of an entrant with no account behind it takes that
-    entry over, since it's most likely theirs: added by an organizer before they agreed,
-    or from when they opted out. If it was someone else's, unlink_entrant undoes it. Any other taken name gets a number added, so admin
-    commands that find teams by name still work."""
+    Nothing is saved, and None is returned, if the name belongs to an entrant with no
+    account behind it, or to anyone when there's no `user_id`: two name-only entrants
+    with one name couldn't be told apart. That entrant may well be this member, entered
+    by name before they agreed, but anyone can set their display name to match, so only
+    an organizer links them to it (/admin linkplayer). A name taken by another member
+    gets a number added, so admin commands that find teams by name still work."""
     existing = get_team_by_name(conn, tournament_id, name)
-    if existing is not None and user_id is None:
+    if existing is not None and (user_id is None or not team_member_ids(conn, existing["id"])):
         return None
-    if existing is not None and not team_member_ids(conn, existing["id"]):
-        link_team_member(conn, tournament_id, existing["id"], user_id)
-        return existing["id"], name
     taken = {team["name"] for team in get_teams(conn, tournament_id).values()}
     unique_name = name
     number = 2

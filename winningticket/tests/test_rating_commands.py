@@ -85,7 +85,7 @@ def test_members_can_only_see_their_own_rating(world):
     assert "Ace" in asyncio.run(sim.run(organizer, "rating", user=ace)).sent.embed.title
 
 
-def test_linkplayer_only_works_on_concluded_tournaments(world):
+def test_linkplayer_also_works_while_sign_ups_are_open(world):
     sim, organizer, ace, _, _ = world
 
     async def link_to_an_open_one():
@@ -95,8 +95,12 @@ def test_linkplayer_only_works_on_concluded_tournaments(world):
         return offered, (await sim.run(organizer, "admin linkplayer", tournament="New Cup", entrant="Ace", user=ace)).sent
 
     offered, reply = asyncio.run(link_to_an_open_one())
-    assert offered == ["Old Cup"]
-    assert "hasn't concluded yet" in reply.content
+    assert offered == ["New Cup", "Old Cup"]
+    assert "Linked" in reply.content
+    conn = db.get_connection()
+    new_cup = db.get_tournament_by_name(conn, GUILD_ID, "New Cup")
+    assert db.get_entrant_team_id(conn, new_cup["id"], ace.id) is not None
+    conn.close()
 
 
 def test_a_concluded_tournament_cant_be_deleted(world):

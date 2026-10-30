@@ -116,6 +116,12 @@ OPTED_OUT_NOTE = (
 OPT_OUT_CONFIRMATION = "opt out"
 
 
+def name_held_message(tournament: str, name: str) -> str:
+    """Why a member can't sign up under the name of an entrant with no account behind it."""
+    return (f"**{tournament}** already has an entrant named {name} with no account behind it. If that's you, "
+            f"ask an organizer to link you to it. If not, ask them to add you under another name.")
+
+
 def opted_out_message(unlinked: int) -> str:
     """What /optout says once it's done."""
     if not unlinked:

@@ -131,10 +131,6 @@ async def concluded_tournament_autocomplete(
     return _matching_choices((t["name"] for t in tournaments), current)
 
 
-async def concluded_entrant_autocomplete(interaction: discord.Interaction, current: str) -> list[app_commands.Choice[str]]:
-    return _entrant_choices(interaction, current, db.get_concluded_tournament_by_name)
-
-
 async def any_tournament_autocomplete(
     interaction: discord.Interaction, current: str
 ) -> list[app_commands.Choice[str]]:
