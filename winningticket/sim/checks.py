@@ -115,6 +115,11 @@ def database_problems(conn: sqlite3.Connection, guild_id: int) -> list[str]:
             problems.append(f"'{name}' is {status} but already has {len(outcomes.played)} results")
         if status in ("completed", "concluded") and not final_decided:
             problems.append(f"'{name}' is {status} but its final has no result")
+        voted = {row["match_id"] for row in conn.execute(
+            "SELECT r.match_id FROM result_reports r JOIN matches m ON m.id = r.match_id WHERE m.tournament_id = ?",
+            (tournament["id"],))}
+        if voted & outcomes.decided:
+            problems.append(f"'{name}' still has players' votes on decided matches: {sorted(voted & outcomes.decided)}")
         if status == "in_progress" and final_decided:
             problems.append(f"'{name}' has a decided final but is still in_progress")
     for row in conn.execute("SELECT id FROM feedback WHERE trim(message) = ''"):

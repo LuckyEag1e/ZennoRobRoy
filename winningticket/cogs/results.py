@@ -1,15 +1,22 @@
 from __future__ import annotations
 
+import logging
+import sqlite3
+from datetime import datetime, timedelta, timezone
+from typing import Awaitable, Callable
+
 import discord
 from discord import app_commands
-from discord.ext import commands
+from discord.ext import commands, tasks
 
 import db
+import reports
 from bracket import Match, matches_with_both_teams, pick_distribution, resolvable_matches, resolve_all_slots
-from bracket_changes import WITHDRAWABLE_STATUSES, withdraw_and_describe
+from bracket_changes import WITHDRAWABLE_STATUSES, new_walkovers, withdraw_and_describe
 from common import (
     MatchPicker,
     TournamentSession,
+    WinnerCallback,
     WinnerPicker,
     announce,
     outdated_pick_message,
@@ -17,14 +24,74 @@ from common import (
     resolve_tournament,
     tournament_name_autocomplete,
 )
-from embeds import render_match_stats_embed
-from labels import advance_text, team_label
+from embeds import mention, render_match_stats_embed
+from labels import advance_text, result_line, team_label
+
+
+log = logging.getLogger("winningticket")
+
+# A report post whose sending never finished (the bot stopped mid-send) is given up after
+# this long, so the next check can post it again.
+STUCK_POST_AFTER = timedelta(minutes=1)
+
+
+async def refresh_report_post(client: discord.Client, conn: sqlite3.Connection, post: sqlite3.Row) -> None:
+    """Edit a match's report post to say what it should now, and forget it once that's
+    how the match ended."""
+    text, final = reports.post_text(conn, post, mention)
+    if text != post["shown"] and not await edit_report_post(client, conn, post, text):
+        return
+    if final:
+        db.delete_report_post(conn, post["match_id"])
+    else:
+        db.set_report_post(conn, post["match_id"], post["message_id"], text)
+
+
+async def edit_report_post(client: discord.Client, conn: sqlite3.Connection, post: sqlite3.Row, text: str) -> bool:
+    """Change what a report post says. False if it's gone, in which case it's forgotten,
+    since there's nothing left to edit."""
+    channel = client.get_channel(post["channel_id"])
+    if channel is None:
+        log.warning("Can't find channel %s to update a report post", post["channel_id"])
+        return True  # perhaps only for now, so it's tried again
+    try:
+        await channel.get_partial_message(post["message_id"]).edit(content=text)
+    except discord.NotFound:
+        db.delete_report_post(conn, post["match_id"])
+        return False
+    return True
+
+
+async def open_report_post(client: discord.Client, conn: sqlite3.Connection, match_id: int, channel_id: int,
+                           teams: tuple[int, int]) -> None:
+    """Post a match's report message, or bring the one it already has up to date."""
+    if not db.claim_report_post(conn, match_id, channel_id, teams):
+        post = db.get_report_post(conn, match_id)
+        if post["message_id"] is not None:
+            await refresh_report_post(client, conn, post)
+        return
+    text, _ = reports.post_text(conn, db.get_report_post(conn, match_id), mention)
+    message = await post_in(client, channel_id, text)
+    if message is None:
+        db.delete_report_post(conn, match_id)  # so the next check tries again
+    else:
+        db.set_report_post(conn, match_id, message.id, text)
+
+
+async def post_in(client: discord.Client, channel_id: int, text: str) -> discord.Message | None:
+    channel = client.get_channel(channel_id)
+    if channel is None:
+        log.warning("Can't find channel %s to post: %s", channel_id, text)
+        return None
+    try:
+        return await channel.send(text)
+    except discord.HTTPException:
+        log.exception("Couldn't post to channel %s", channel_id)
+        return None
 
 
 async def _record_and_announce(interaction: discord.Interaction, session: TournamentSession,
                                match: Match, winner_id: int, loser_id: int) -> None:
-    winner_label = team_label(session.teams_by_id, winner_id)
-    loser_label = team_label(session.teams_by_id, loser_id)
     conn = db.get_connection()
     try:
         # Checked and saved with no await in between, so nothing can change the match in the gap.
@@ -40,6 +107,7 @@ async def _record_and_announce(interaction: discord.Interaction, session: Tourna
         if refusal is None:
             db.record_result(conn, session.tournament_id, match.id, winner_id, interaction.user.id)
             outcomes = db.get_outcomes(conn, session.tournament_id)
+            report_post = db.get_report_post(conn, match.id)
     finally:
         conn.close()
     if refusal is not None:
@@ -52,20 +120,38 @@ async def _record_and_announce(interaction: discord.Interaction, session: Tourna
     # unless the announcement can't be posted.
     await interaction.response.defer()
     announced = False
-    if interaction.channel is not None:
-        try:
-            await interaction.channel.send(
-                f"📣 Round {match.played_round}: **{winner_label}** defeats **{loser_label}**. {advance}"
-            )
+    try:
+        if report_post is not None and report_post["message_id"] is not None:
+            # Players were already told about their votes here, so that message shows the result.
+            conn = db.get_connection()
+            try:
+                await refresh_report_post(interaction.client, conn, report_post)
+            finally:
+                conn.close()
             announced = True
-        except discord.HTTPException:
-            pass
+        elif interaction.channel is not None:
+            await interaction.channel.send(result_line(match, winner_id, loser_id, session.teams_by_id, advance))
+            announced = True
+    except discord.HTTPException:
+        pass
     if announced:
         await interaction.delete_original_response()
     else:
         await interaction.edit_original_response(
             content=f"✅ Result recorded, but it couldn't be announced here. {advance}", view=None
         )
+
+
+class ReportPicker(WinnerPicker):
+    """A player's vote on who won their match, plus Take Back Vote once their side has voted."""
+
+    def __init__(self, team_a: int, team_b: int, teams_by_id: dict, on_pick: WinnerCallback,
+                 on_take_back: Callable[[discord.Interaction], Awaitable[None]] | None) -> None:
+        super().__init__(team_a, team_b, teams_by_id, on_pick)
+        if on_take_back is not None:
+            button = discord.ui.Button(label="Take Back Vote", style=discord.ButtonStyle.secondary)
+            button.callback = on_take_back
+            self.add_item(button)
 
 
 class ResultsCog(commands.Cog):
@@ -75,6 +161,149 @@ class ResultsCog(commands.Cog):
     match_group = app_commands.Group(
         name="match", description="Record and view match results/stats", guild_only=True
     )
+
+    async def cog_load(self) -> None:
+        self.settle_reports.start()
+
+    async def cog_unload(self) -> None:
+        self.settle_reports.cancel()
+
+    @tasks.loop(seconds=5)
+    async def settle_reports(self) -> None:
+        """Warn about and then give unanswered votes as they fall due, and keep each
+        match's report post saying what it should, which also catches results recorded
+        by organizers. An exception escaping a tasks.loop stops it until the bot restarts,
+        so every error is logged, one match at a time."""
+        try:
+            conn = db.get_connection()
+            try:
+                now = datetime.now(timezone.utc)
+                for step in reports.due_steps(conn, now):
+                    try:
+                        await self._take_step(conn, step)
+                    except Exception:
+                        log.exception("Couldn't %s the vote on match %s", step.kind, step.vote["match_id"])
+                for post in db.get_report_posts(conn):
+                    try:
+                        if post["message_id"] is not None:
+                            await refresh_report_post(self.bot, conn, post)
+                        elif now - db.from_db_time(post["updated_at"]) > STUCK_POST_AFTER:
+                            db.delete_report_post(conn, post["match_id"])  # its sending never finished
+                    except Exception:
+                        log.exception("Couldn't update the report post for match %s", post["match_id"])
+            finally:
+                conn.close()
+        except Exception:
+            log.exception("Couldn't check on reported results")
+
+    @settle_reports.before_loop
+    async def _wait_until_ready(self) -> None:
+        await self.bot.wait_until_ready()
+
+    async def _take_step(self, conn: sqlite3.Connection, step: reports.DueStep) -> None:
+        vote = step.vote
+        if step.kind == "warn":
+            teams = db.match_now(conn, vote["tournament_id"], vote["match_id"]).teams
+            await open_report_post(self.bot, conn, vote["match_id"], vote["channel_id"], teams)
+            return
+        text = reports.give_win(conn, vote)
+        if text is None:
+            return  # the votes changed since they were checked
+        post = db.get_report_post(conn, vote["match_id"])
+        if post is not None and await edit_report_post(self.bot, conn, post, text):
+            db.delete_report_post(conn, post["match_id"])
+        else:
+            await post_in(self.bot, vote["channel_id"], text)
+
+    @match_group.command(name="report", description="Report who won your match")
+    @app_commands.describe(tournament="Tournament name")
+    @app_commands.autocomplete(tournament=tournament_name_autocomplete)
+    async def report(self, interaction: discord.Interaction, tournament: str) -> None:
+        conn = db.get_connection()
+        try:
+            tournament_row = await resolve_tournament(interaction, conn, tournament)
+            if tournament_row is None:
+                return
+            found = reports.find_reportable_match(conn, tournament_row, interaction.user.id)
+            teams_by_id = db.get_teams(conn, tournament_row["id"])
+        finally:
+            conn.close()
+        if isinstance(found, str):
+            await interaction.response.send_message(found, ephemeral=True)
+            return
+
+        team_a, team_b = found.teams
+        prompt = (f"Round {found.match.played_round}: **{team_label(teams_by_id, team_a)}** vs "
+                  f"**{team_label(teams_by_id, team_b)}**. Who won?")
+        if found.vote is not None:
+            prompt += (f" Your side reported that **{team_label(teams_by_id, found.vote['winner_team_id'])}** won. "
+                       f"Pick again to change it.")
+
+        async def vote(vote_interaction: discord.Interaction, winner_id: int, loser_id: int) -> None:
+            await self._vote(vote_interaction, tournament_row["id"], found, winner_id)
+
+        async def take_back(take_back_interaction: discord.Interaction) -> None:
+            await self._take_back(take_back_interaction, tournament_row["id"], found)
+
+        await interaction.response.send_message(
+            prompt, view=ReportPicker(team_a, team_b, teams_by_id, vote, take_back if found.vote else None),
+            ephemeral=True,
+        )
+
+    @staticmethod
+    def _still_reportable(conn: sqlite3.Connection, tournament_id: int, user_id: int,
+                          shown: reports.ReportableMatch) -> reports.ReportableMatch | str:
+        """The voter's match as it is now, or why the menu they opened earlier no longer applies."""
+        now = reports.find_reportable_match(conn, db.get_tournament(conn, tournament_id), user_id)
+        if not isinstance(now, str) and (now.match.id, now.team_id, now.teams) != (shown.match.id, shown.team_id, shown.teams):
+            return "This match has changed since the menu was opened. Run `/match report` again."
+        return now
+
+    async def _vote(self, interaction: discord.Interaction, tournament_id: int, shown: reports.ReportableMatch,
+                    winner_id: int) -> None:
+        conn = db.get_connection()
+        try:
+            # Checked and saved with no await in between, so nothing can change the match in the gap.
+            found = self._still_reportable(conn, tournament_id, interaction.user.id, shown)
+            if isinstance(found, str):
+                await interaction.response.edit_message(content=found, view=None)
+                return
+            tournament = db.get_tournament(conn, tournament_id)
+            before = db.get_outcomes(conn, tournament_id)
+            outcome = db.submit_report(conn, tournament_id, found.match.id, found.team_id, winner_id,
+                                       interaction.user.id, interaction.channel_id)
+            teams_by_id = db.get_teams(conn, tournament_id)
+            private = reports.vote_reply(outcome, found, winner_id, teams_by_id)
+            await interaction.response.edit_message(content=private, view=None)
+
+            post = db.get_report_post(conn, found.match.id)
+            if post is not None and post["message_id"] is not None:
+                await refresh_report_post(self.bot, conn, post)
+            elif outcome == "disputed":
+                await open_report_post(self.bot, conn, found.match.id, interaction.channel_id, found.teams)
+            elif outcome in ("agreed", "skipped"):
+                lines = [reports.ending_text(conn, tournament, found.match)]
+                if outcome == "skipped":
+                    lines += new_walkovers(conn, tournament, before)
+                await post_in(self.bot, interaction.channel_id, "\n".join(lines))
+        finally:
+            conn.close()
+
+    async def _take_back(self, interaction: discord.Interaction, tournament_id: int,
+                         shown: reports.ReportableMatch) -> None:
+        conn = db.get_connection()
+        try:
+            found = self._still_reportable(conn, tournament_id, interaction.user.id, shown)
+            if isinstance(found, str) or not db.take_back_report(conn, found.match.id, found.team_id):
+                await interaction.response.edit_message(
+                    content=found if isinstance(found, str) else "Your side has no vote to take back.", view=None)
+                return
+            await interaction.response.edit_message(content="Your vote is taken back.", view=None)
+            post = db.get_report_post(conn, found.match.id)
+            if post is not None and post["message_id"] is not None:
+                await refresh_report_post(self.bot, conn, post)
+        finally:
+            conn.close()
 
     @match_group.command(name="result", description="Record the real outcome of a ready match")
     @app_commands.describe(tournament="Tournament name")

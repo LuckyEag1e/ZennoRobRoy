@@ -46,6 +46,9 @@ START_OVER = "Start Over"
 # How many players agree to link their data when they first sign up.
 AGREES_TO_LINK = 0.8
 
+# Rounds an organizer waits for players to report before recording results themselves.
+ORGANIZER_PATIENCE = 3
+
 # One per tournament in a scenario, since a concluded tournament's name can't be reused.
 TOURNAMENT_NAMES = ["Spring Cup", "Summer Cup", "Autumn Cup", "Winter Cup"]
 
@@ -71,6 +74,7 @@ class Scenario:
     tournaments: int = 1           # played one after another by the same people, so later ones are seeded by rating
     format: str = "single_elim"    # the only format the bot supports so far
     dropouts: bool = False         # as play starts, entrants drop out or are disqualified, and a game is called off
+    self_reported: bool = False    # players report their own matches; organizers settle the rest
 
 
 SCENARIOS = {
@@ -90,6 +94,9 @@ SCENARIOS = {
                  ((DILIGENT, 3), (CASUAL, 3), (CHAOTIC, 2)), SLOPPY, guests=8, entry="csv", co_organizer=True),
         Scenario("season", "Two tournaments in a row: a guest joins Discord in between, and the second is seeded by rating.",
                  ((DILIGENT, 4), (CASUAL, 3), (CHAOTIC, 1)), SLOPPY, guests=2, tournaments=2),
+        Scenario("reported", "Players report their own results at once, a chaotic one sometimes falsely, and organizers settle disputes.",
+                 ((DILIGENT, 3), (CASUAL, 3), (CHAOTIC, 2)), SLOPPY, guests=1, crowded=True, simultaneous=True,
+                 self_reported=True),
         Scenario("dropouts", "As play starts, a player drops out, a guest is disqualified and a game is called off.",
                  ((DILIGENT, 4), (CASUAL, 4)), SLOPPY, guests=2, dropouts=True),
     ]
@@ -252,6 +259,48 @@ class TournamentRun:
             if self.rng.random() < c.double_click:
                 await self.sim.click(user, message, label, late=True)
             message = clicked.sent
+
+    async def report_result(self, player: Player) -> None:
+        """/match report on their own match. They name who really won, except that a
+        player who goes off script sometimes claims a game they lost. They skip a matchup
+        they never played, which shows up while an earlier result is wrong."""
+        reply = await self.sim.run(player.user, "match report", tournament=await self.tournament_name(player, "match report"))
+        message = reply.sent
+        buttons = [item.label for item in message.view.children] if message is not None and message.view is not None else []
+        if len(buttons) < 2:
+            return
+        matches_by_id, feeders, teams_by_id, results = self._bracket()
+        label_to_team = {team_label(teams_by_id, team)[:80]: team for team in teams_by_id}
+        shown = (label_to_team[buttons[0]], label_to_team[buttons[1]])
+        match = next(m for m in matches_by_id.values()
+                     if set(resolve_slot(m, matches_by_id, results.get, feeders)) == set(shown))
+        if set(self._real_matchup(match.id, matches_by_id, feeders)) != set(shown):
+            return
+        winner = self._real_winner(match.id, matches_by_id, feeders)
+        own = next(team for team in shown if self._is_players_team(player, team))
+        if self.rng.random() < player.competence.off_script / 2:
+            winner = own
+        await self.sim.click(player.user, message, team_label(teams_by_id, winner)[:80])
+        if self.rng.random() < player.competence.double_click:
+            await self.sim.click(player.user, message, team_label(teams_by_id, winner)[:80], late=True)
+
+    def _is_players_team(self, player: Player, team_id: int) -> bool:
+        conn = db.get_connection()
+        try:
+            return player.user.id in db.team_member_ids(conn, team_id)
+        finally:
+            conn.close()
+
+    async def let_time_pass(self) -> None:
+        """Six minutes go by, as they would between rounds, so the bot's check warns about
+        votes nobody answered and then gives them."""
+        conn = db.get_connection()
+        with conn:
+            for table, column in (("result_reports", "reported_at"), ("report_posts", "updated_at")):
+                conn.execute(f"UPDATE {table} SET {column} = strftime('%Y-%m-%dT%H:%M:%fZ', {column}, '-6 minutes')")
+        conn.close()
+        cog = self.sim.cogs["ResultsCog"]
+        await self.sim.run_background("report check", lambda: cog.settle_reports.coro(cog))
 
     async def match_stats(self, player: Player) -> None:
         reply = await self.sim.run(player.user, "match stats",
@@ -532,34 +581,69 @@ class TournamentRun:
 
     async def _play_matches(self) -> None:
         organizers = [self.organizer] + ([self.co_organizer] if self.co_organizer else [])
+        idle_rounds = 0
         while self.status() == "in_progress":
+            decided_before = self._decided_count()
             found_a_match = []
+            # Where players report their own results, an organizer only steps in for what
+            # players can't settle, or once nothing has moved for a while.
+            leave_to_players = self.scenario.self_reported and idle_rounds < ORGANIZER_PATIENCE
             onlookers = [p.take_turn(self) for p in self.rng.sample(self.players, min(2, len(self.players)))]
-            await self._all_at_once([self._organizer_round(o, found_a_match) for o in organizers] + onlookers
-                                    + [self.refresh_live_posts()])
+            reporters = [self.report_result(p) for p in self.players
+                         if self.scenario.self_reported and self.rng.random() < p.competence.reports]
+            await self._all_at_once([self._organizer_round(o, found_a_match, leave_to_players) for o in organizers]
+                                    + onlookers + reporters + [self.refresh_live_posts()])
             await self.refresh_live_posts()
             self.check_live_posts()
-            if not found_a_match and self.status() == "in_progress":
+            await self.let_time_pass()
+            idle_rounds = 0 if self._decided_count() > decided_before else idle_rounds + 1
+            if idle_rounds > 2 * ORGANIZER_PATIENCE and self.status() == "in_progress":
+                self.sim._problem("nothing has been decided for many rounds, so the tournament can't finish")
+                return
+            if not self.scenario.self_reported and not found_a_match and self.status() == "in_progress":
                 self.sim._problem("no organizer could record any result, so the tournament can't finish")
                 return
 
-    async def _organizer_round(self, organizer: Organizer, found_a_match: list) -> None:
+    def _decided_count(self) -> int:
+        conn = db.get_connection()
+        try:
+            return len(db.get_outcomes(conn, self.tournament_id).decided)
+        finally:
+            conn.close()
+
+    async def _organizer_round(self, organizer: Organizer, found_a_match: list, leave_to_players: bool = False) -> None:
         """Correct any result this organizer got wrong earlier, then record one more."""
         await self._review_results(organizer)
-        if await self._record_one_result(organizer):
+        if await self._record_one_result(organizer, leave_to_players):
             found_a_match.append(organizer)
 
-    async def _record_one_result(self, organizer: Organizer) -> bool:
+    def _needs_an_organizer(self, match_id: int) -> bool:
+        """Whether players can't settle this match themselves: they disagree, or one side
+        has no Discord account to report with."""
+        matches_by_id, feeders, _, results = self._bracket()
+        conn = db.get_connection()
+        try:
+            teams = resolve_slot(matches_by_id[match_id], matches_by_id, results.get, feeders)
+            return len(db.get_reports(conn, match_id)) == 2 or any(not db.team_member_ids(conn, t) for t in teams)
+        finally:
+            conn.close()
+
+    async def _record_one_result(self, organizer: Organizer, leave_to_players: bool = False) -> bool:
         """Record the real result of a ready match. False if the menu had none to offer.
         With two organizers, the other may record the same match first; the bot should
-        then refuse this one."""
+        then refuse this one. With `leave_to_players`, only a match players can't settle."""
         org, style = organizer.user, organizer.style
         reply = await self.sim.run(org, "match result", tournament=self.name)
         message = reply.sent
         menu = _menu(message)
         if menu is None:
             return False
-        match_id = int(self.rng.choice(menu.options).value)
+        choices = [int(option.value) for option in menu.options]
+        if leave_to_players:
+            choices = [match_id for match_id in choices if self._needs_an_organizer(match_id)]
+            if not choices:
+                return False
+        match_id = self.rng.choice(choices)
         await self.sim.choose(org, message, str(match_id))
         buttons = [item.label for item in message.view.children] if message.view is not None else []
         if len(buttons) != 2:
@@ -642,6 +726,7 @@ class TournamentRun:
         entrant with no account (a sloppy one withdraws the wrong entrant first and
         reinstates them), and an opening game is called off. Real results are only decided
         once games are recorded, so every simulated game takes these into account."""
+        self.status()  # so the coverage table files these under the stage they happen in
         org = self.organizer.user
         quitter = self.rng.choice([p for p in self.players if self._entrant_name(p) is not None and p is not self.banned])
         name = await self.tournament_name(quitter, "match dropout")

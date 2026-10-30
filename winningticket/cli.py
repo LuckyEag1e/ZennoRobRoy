@@ -16,6 +16,7 @@ from pathlib import Path
 
 import csv_import
 import db
+import reports
 import tournament_builder
 from ascii_bracket import prediction_marker, real_result_marker, render_tree
 from bracket import (
@@ -32,7 +33,7 @@ from bracket import (
     resolve_slot,
     rounds,
 )
-from bracket_changes import WITHDRAWABLE_STATUSES, skip_and_describe, withdraw_and_describe
+from bracket_changes import WITHDRAWABLE_STATUSES, new_walkovers, skip_and_describe, withdraw_and_describe
 from labels import (
     CONSENT_NOTICE,
     CURRENT_FEATURES,
@@ -108,6 +109,7 @@ class WinningTicketCLI(cmd.Cmd):
 
     def onecmd(self, line: str) -> bool:
         self._close_due_registrations()
+        self._settle_due_reports()
         command = self.parseline(line)[0]
         if command and command not in ALLOWED_WHEN_BANNED and db.is_banned(self.conn, GUILD_ID, self.user_id):
             print("An admin has blocked you from using WinningTicket. Use 'as' to switch user.")
@@ -131,6 +133,41 @@ class WinningTicketCLI(cmd.Cmd):
                 print(f"Registration for '{name}' couldn't close automatically: {e!r}")
                 continue
             print(f"Registration for '{name}' closed automatically; {count} entrants {draw_description(tournament['seeding_mode'])}.")
+
+    def _settle_due_reports(self) -> None:
+        """The bot warns about and gives unanswered votes, and updates each match's report
+        post, from a background loop. The CLI has none, so it does the same before each
+        command, printing what the bot would post or edit."""
+        for step in reports.due_steps(self.conn, datetime.now(timezone.utc)):
+            vote = step.vote
+            if step.kind == "warn":
+                teams = db.match_now(self.conn, vote["tournament_id"], vote["match_id"]).teams
+                self._open_report_post(vote["match_id"], teams)
+            else:
+                text = reports.give_win(self.conn, vote)
+                if text is not None:
+                    db.delete_report_post(self.conn, vote["match_id"])
+                    print(text)
+        for post in db.get_report_posts(self.conn):
+            self._refresh_report_post(post)
+
+    def _open_report_post(self, match_id: int, teams: tuple[int, int]) -> None:
+        # The CLI has no messages, so every post gets message id 0.
+        if db.claim_report_post(self.conn, match_id, 0, teams):
+            text, _ = reports.post_text(self.conn, db.get_report_post(self.conn, match_id), user_label)
+            db.set_report_post(self.conn, match_id, 0, text)
+            print(text)
+        else:
+            self._refresh_report_post(db.get_report_post(self.conn, match_id))
+
+    def _refresh_report_post(self, post) -> None:
+        text, final = reports.post_text(self.conn, post, user_label)
+        if text != post["shown"]:
+            print(f"(report post edited) {text}")
+        if final:
+            db.delete_report_post(self.conn, post["match_id"])
+        else:
+            db.set_report_post(self.conn, post["match_id"], post["message_id"], text)
 
     def _update_prompt(self) -> None:
         self.prompt = f"(tourney:{self.user_name}) "
@@ -506,6 +543,47 @@ class WinningTicketCLI(cmd.Cmd):
             print(f"'{tournament['name']}' must be locked first (use 'lock'). Current status: {tournament['status']}.")
             return
         self._pick_and_record_result(tournament, allow_overwrite=False)
+
+    def do_matchreport(self, arg: str) -> None:
+        "Report who won your match, as the current user: matchreport <name>"
+        tournament = self._require_tournament(arg.strip())
+        if tournament is None:
+            return
+        found = reports.find_reportable_match(self.conn, tournament, self.user_id)
+        if isinstance(found, str):
+            print(found)
+            return
+        teams_by_id = db.get_teams(self.conn, tournament["id"])
+        team_a, team_b = found.teams
+        prompt = f"Round {found.match.played_round}: [1] {team_label(teams_by_id, team_a)}  [2] {team_label(teams_by_id, team_b)}"
+        if found.vote is not None:
+            prompt += f"  [t] take back your side's vote for {team_label(teams_by_id, found.vote['winner_team_id'])}"
+        choice = input(prompt + "  > ").strip().lower()
+        if choice == "t" and found.vote is not None:
+            db.take_back_report(self.conn, found.match.id, found.team_id)
+            print("Your vote is taken back.")
+            post = db.get_report_post(self.conn, found.match.id)
+            if post is not None:
+                self._refresh_report_post(post)
+            return
+        if choice not in ("1", "2"):
+            print("Invalid choice.")
+            return
+        winner_id = team_a if choice == "1" else team_b
+        before = db.get_outcomes(self.conn, tournament["id"])
+        outcome = db.submit_report(self.conn, tournament["id"], found.match.id, found.team_id, winner_id,
+                                   self.user_id, 0)
+        print(reports.vote_reply(outcome, found, winner_id, teams_by_id))
+        post = db.get_report_post(self.conn, found.match.id)
+        if post is not None:
+            self._refresh_report_post(post)
+        elif outcome == "disputed":
+            self._open_report_post(found.match.id, found.teams)
+        elif outcome in ("agreed", "skipped"):
+            print(reports.ending_text(self.conn, tournament, found.match))
+            if outcome == "skipped":
+                for line in new_walkovers(self.conn, tournament, before):
+                    print(line)
 
     def do_dropout(self, arg: str) -> None:
         "Drop the current user out, giving their remaining matches to their opponents: dropout <name>"

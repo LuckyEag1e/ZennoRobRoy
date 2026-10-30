@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Callable, Optional
 
 from bracket import (
@@ -91,6 +92,40 @@ def advance_text(match: Match, winner: int, matches_by_id: dict[int, Match], fee
     return f"{name} advances to Round {next_round}{by_walkover} to face {team_label(teams_by_id, opponent)}."
 
 
+def result_line(match: Match, winner: int, loser: int, teams_by_id: dict, advance: str) -> str:
+    """The public announcement of a played game, with `advance` saying where the winner goes."""
+    return (f"📣 Round {match.played_round}: **{team_label(teams_by_id, winner)}** defeats "
+            f"**{team_label(teams_by_id, loser)}**. {advance}")
+
+
+def report_warning(match: Match, reporter: int, winner: int, silent: str, deadline: datetime,
+                   teams_by_id: dict) -> str:
+    """The public warning that only one side has reported. `silent` names the other side,
+    by mention where it can, since they're the ones who need to answer."""
+    claim = "reports winning" if winner == reporter else f"reports that **{team_label(teams_by_id, winner)}** won"
+    return (f"⏳ Round {match.played_round}: **{team_label(teams_by_id, reporter)}** {claim}. {silent}, if that's "
+            f"wrong, use `/match report` by <t:{int(deadline.timestamp())}:R>. Otherwise the win goes to "
+            f"**{team_label(teams_by_id, winner)}**.")
+
+
+def report_dispute(match: Match, teams: tuple[int, int], teams_by_id: dict) -> str:
+    team_a, team_b = (team_label(teams_by_id, team) for team in teams)
+    return f"⚠️ Round {match.played_round}: **{team_a}** and **{team_b}** each report winning. An organizer will record the result."
+
+
+def report_timed_out(match: Match, winner: int, loser: int, teams_by_id: dict, advance: str) -> str:
+    """What a warning becomes once its deadline passes and the reporter is given the win."""
+    return (f"⏰ Round {match.played_round}: **{team_label(teams_by_id, loser)}** didn't report in time, so "
+            f"**{team_label(teams_by_id, winner)}** gets the win. {advance}")
+
+
+def report_withdrawn(match: Match, teams: tuple[int, int], teams_by_id: dict) -> str:
+    """What a warning or dispute becomes once its votes are gone without a result, because
+    they were taken back or an earlier result changed who's in the match."""
+    team_a, team_b = (team_label(teams_by_id, team) for team in teams)
+    return f"Round {match.played_round}: the report on **{team_a}** vs **{team_b}** no longer stands."
+
+
 def walkover_lines(before: Outcomes, after: Outcomes, matches_by_id: dict[int, Match], feeders_by_target: dict,
                    teams_by_id: dict, tournament_name: str) -> list[str]:
     """One line per entrant given a walkover between `before` and `after`, saying where it
@@ -102,10 +137,18 @@ def walkover_lines(before: Outcomes, after: Outcomes, matches_by_id: dict[int, M
         if winner in announced:
             continue  # advance_text already passes over their later walkovers
         announced.add(winner)
-        lines.append(f"Round {match.played_round}: **{team_label(teams_by_id, winner)}** wins by walkover. "
-                     + advance_text(match, winner, matches_by_id, feeders_by_target, after, teams_by_id,
-                                    tournament_name))
+        lines.append(walkover_line(match, winner, teams_by_id, advance_text(
+            match, winner, matches_by_id, feeders_by_target, after, teams_by_id, tournament_name)))
     return lines
+
+
+def walkover_line(match: Match, winner: int, teams_by_id: dict, advance: str) -> str:
+    return f"Round {match.played_round}: **{team_label(teams_by_id, winner)}** wins by walkover. {advance}"
+
+
+def called_off_line(match: Match, teams: tuple[int, int], teams_by_id: dict) -> str:
+    names = " vs ".join(f"**{team_label(teams_by_id, team)}**" for team in teams)
+    return f"📣 Round {match.played_round}: {names} was called off with no winner."
 
 
 def withdrawal_line(entrant_name: str, reason: str, tournament_name: str) -> str:
@@ -304,8 +347,8 @@ CURRENT_FEATURES = [
     "sign-ups close. Organizers can still build a bracket from a CSV instead.",
     "**Automatic seeding:** each player's Elo rating from past tournaments decides their "
     "seed, so the strongest players don't meet early. `/rating` shows yours.",
-    "**Live results:** organizers record results as games finish, the bot announces who "
-    "advances, and anyone can check the bracket or see how the pool picked each matchup.",
+    "**Live results:** players report their own results, organizers settle disagreements, "
+    "and the bot announces who advances. Anyone can check the bracket or the pool's picks.",
     "**Dropouts:** players can drop out, and organizers can disqualify entrants or call "
     "a match off. The bracket plays on with walkovers.",
     "**Final results:** concluding a tournament posts the podium and the top predictors, "
@@ -313,8 +356,6 @@ CURRENT_FEATURES = [
     "**Anonymous feedback** for the organizers.",
 ]
 PLANNED_FEATURES = [
-    "**Self-reported results:** both players confirm a match result, and organizers only "
-    "step in when they disagree.",
     "**More formats:** double elimination and round robin.",
     "**Team tournaments** with two or more players per entrant.",
 ]

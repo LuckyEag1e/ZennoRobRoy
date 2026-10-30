@@ -30,6 +30,7 @@ class HelpCog(commands.Cog):
             ("/rating", "See your Elo rating from past tournaments, which decides your seed. Only you see it."),
             ("/predict tournament:<name>", "Fill out your bracket prediction, round by round."),
             ("/mypicks tournament:<name>", "See your saved picks and current score."),
+            ("/match report tournament:<name>", "Report who won your match. It's recorded once your opponent agrees, or after 10 minutes with no answer from them (they're reminded in the channel halfway through). Until then you can change your vote or take it back."),
             ("/match dropout tournament:<name> confirm_name:<name>", "Drop out of a tournament you're playing in. Your remaining matches go to your opponents."),
             ("/tournament bracket name:<name>", "See the real tournament bracket's progress."),
             ("/tournament leaderboard name:<name>", "See the standings."),
@@ -74,14 +75,16 @@ class HelpCog(commands.Cog):
             ("4. Lock it",
              "`/tournament lock name:<name>`\n"
              "Do this once the real tournament is about to start. It stops new or changed "
-             "predictions, and from then on `/match result` records what actually happens."),
+             "predictions, and from then on results are reported and recorded."),
             ("5. Record results",
+             "Players report their own matches with `/match report`. When both sides agree, or "
+             "one side doesn't answer within 10 minutes, the result is recorded and announced. "
+             "When they disagree, the bot posts it in the channel for you to settle:\n"
              "`/match result tournament:<name>`\n"
-             "As real games finish, pick a ready match from the list, then pick the winner. "
-             "Repeat for each match, in any order, until a champion is decided. The bot "
-             "announces each result and who advances in the channel. If someone can't play "
-             "on, withdraw them or call the match off (`/help admin`): their opponents "
-             "advance by walkover, and the games that weren't played score no picks."),
+             "Pick a ready match, then the winner. Use it too for matches against an entrant "
+             "with no Discord account, who can't report. If someone can't play on, withdraw "
+             "them or call the match off (`/help admin`): their opponents advance by walkover, "
+             "and games that weren't played score no picks."),
             ("6. Check progress anytime",
              "`/tournament bracket name:<name>`: the live bracket\n"
              "`/tournament leaderboard name:<name>`: standings\n"

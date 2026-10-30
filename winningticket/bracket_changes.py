@@ -7,7 +7,7 @@ import sqlite3
 
 import db
 from bracket import Outcomes
-from labels import team_label, walkover_lines, withdrawal_line
+from labels import called_off_line, walkover_lines, withdrawal_line
 
 # Withdrawing only makes sense while there are matches left to hand over.
 WITHDRAWABLE_STATUSES = ("setup", "predictions_open", "in_progress")
@@ -19,7 +19,7 @@ def withdraw_and_describe(conn: sqlite3.Connection, tournament: sqlite3.Row, tea
     gave, and the ids of results dropped."""
     before = db.get_outcomes(conn, tournament["id"])
     dropped = db.withdraw_entrant(conn, tournament["id"], team["id"], reason, withdrawn_by)
-    return [withdrawal_line(team["name"], reason, tournament["name"])] + _new_walkovers(conn, tournament, before), dropped
+    return [withdrawal_line(team["name"], reason, tournament["name"])] + new_walkovers(conn, tournament, before), dropped
 
 
 def skip_and_describe(conn: sqlite3.Connection, tournament: sqlite3.Row, match_id: int, teams: tuple[int, int],
@@ -28,14 +28,12 @@ def skip_and_describe(conn: sqlite3.Connection, tournament: sqlite3.Row, match_i
     gave, and the ids of results dropped."""
     before = db.get_outcomes(conn, tournament["id"])
     dropped = db.skip_match(conn, tournament["id"], match_id, teams, skipped_by)
-    match = db.get_matches(conn, tournament["id"])[match_id]
-    teams_by_id = db.get_teams(conn, tournament["id"])
-    names = " vs ".join(f"**{team_label(teams_by_id, team)}**" for team in teams)
-    headline = f"📣 Round {match.played_round}: {names} was called off with no winner."
-    return [headline] + _new_walkovers(conn, tournament, before), dropped
+    headline = called_off_line(db.get_matches(conn, tournament["id"])[match_id], teams, db.get_teams(conn, tournament["id"]))
+    return [headline] + new_walkovers(conn, tournament, before), dropped
 
 
-def _new_walkovers(conn: sqlite3.Connection, tournament: sqlite3.Row, before: Outcomes) -> list[str]:
+def new_walkovers(conn: sqlite3.Connection, tournament: sqlite3.Row, before: Outcomes) -> list[str]:
+    """Lines announcing the walkovers given since `before`."""
     matches_by_id, feeders, teams_by_id = db.load_bracket(conn, tournament["id"])
     return walkover_lines(before, db.get_outcomes(conn, tournament["id"]), matches_by_id, feeders, teams_by_id,
                           tournament["name"])
