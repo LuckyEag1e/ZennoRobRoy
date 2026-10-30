@@ -11,12 +11,15 @@ from common import (
     MatchPicker,
     TournamentSession,
     WinnerPicker,
+    any_entrant_autocomplete,
+    any_tournament_autocomplete,
     concluded_entrant_autocomplete,
     concluded_tournament_autocomplete,
     edit_signups_message,
     outdated_pick_message,
     resolve_concluded_tournament,
     resolve_tournament,
+    signups_message,
     team_name_autocomplete,
     tournament_name_autocomplete,
 )
@@ -112,6 +115,13 @@ class AdminCog(commands.Cog):
             if entrant_row is None:
                 await interaction.response.send_message(f"No entrant named '{entrant}' in **{label}**.", ephemeral=True)
                 return
+            # Entrants are one player each, and a second member would make its games team games.
+            existing = db.team_member_ids(conn, entrant_row["id"])
+            if existing:
+                await interaction.response.send_message(
+                    f"**{entrant}** in **{label}** is already linked to {mention(existing[0])}.", ephemeral=True
+                )
+                return
             linked = db.link_team_member(conn, tournament_row["id"], entrant_row["id"], user.id)
         finally:
             conn.close()
@@ -125,8 +135,46 @@ class AdminCog(commands.Cog):
             ephemeral=True,
         )
 
-    @group.command(name="editteam", description="Fix a team's name or seed")
-    @app_commands.describe(tournament="Tournament name", team="Team to edit", new_name="New name (optional)", new_seed="New seed (optional)")
+    @group.command(name="unlinkplayer", description="Unlink the member behind an entrant, keeping their agreement and other entries")
+    @app_commands.describe(tournament="Tournament name", entrant="Entrant to unlink")
+    @app_commands.autocomplete(tournament=any_tournament_autocomplete, entrant=any_entrant_autocomplete)
+    async def unlinkplayer(self, interaction: discord.Interaction, tournament: str, entrant: str) -> None:
+        conn = db.get_connection()
+        try:
+            tournament_row = db.get_tournament_by_name_any_status(conn, interaction.guild_id, tournament)
+            if tournament_row is None:
+                await interaction.response.send_message(f"No tournament named '{tournament}' in this server.", ephemeral=True)
+                return
+            entrant_row = db.get_team_by_name(conn, tournament_row["id"], entrant)
+            if entrant_row is None:
+                await interaction.response.send_message(f"No entrant named '{entrant}' in **{tournament}**.", ephemeral=True)
+                return
+            try:
+                unlinked = db.unlink_entrant(conn, tournament_row["id"], entrant_row["id"])
+            except db.OwnEntryError as e:
+                await interaction.response.send_message(
+                    f"**{entrant}** is {mention(e.user_id)}'s own entry, so there's nothing to separate. "
+                    f"`/registration remove` withdraws it.", ephemeral=True
+                )
+                return
+            if unlinked is None:
+                await interaction.response.send_message(f"**{entrant}** isn't linked to anyone.", ephemeral=True)
+                return
+            user_id, new_name = unlinked
+            content = (f"Unlinked {mention(user_id)} from **{entrant}** in **{tournament}**. "
+                       f"Their agreement and other entries are unchanged.")
+            if new_name is not None:
+                content += f" They're entered separately as **{new_name}**."
+            await interaction.response.send_message(content, ephemeral=True)
+            if new_name is not None:
+                await edit_signups_message(
+                    self.bot, tournament_row, signups_message(tournament_row, db.entrant_count(conn, tournament_row["id"]))
+                )
+        finally:
+            conn.close()
+
+    @group.command(name="editteam", description="Fix an entrant's name or seed")
+    @app_commands.describe(tournament="Tournament name", team="Entrant to edit", new_name="New name (optional)", new_seed="New seed (optional)")
     @app_commands.autocomplete(tournament=tournament_name_autocomplete, team=team_name_autocomplete)
     async def edit_team(self, interaction: discord.Interaction, tournament: str, team: str,
                          new_name: str | None = None, new_seed: int | None = None) -> None:
@@ -137,20 +185,20 @@ class AdminCog(commands.Cog):
                 return
             team_row = db.get_team_by_name(conn, tournament_row["id"], team)
             if team_row is None:
-                await interaction.response.send_message(f"No team named '{team}' in **{tournament}**.", ephemeral=True)
+                await interaction.response.send_message(f"No entrant named '{team}' in **{tournament}**.", ephemeral=True)
                 return
             if new_name is None and new_seed is None:
                 await interaction.response.send_message("Provide new_name and/or new_seed.", ephemeral=True)
                 return
             if new_name is not None and db.team_name_taken(conn, tournament_row["id"], new_name, team_row["id"]):
                 await interaction.response.send_message(
-                    f"**{tournament}** already has a team named '{new_name}'.", ephemeral=True
+                    f"**{tournament}** already has an entrant named '{new_name}'.", ephemeral=True
                 )
                 return
             db.update_team(conn, team_row["id"], new_name, new_seed, seed_given=new_seed is not None)
         finally:
             conn.close()
-        await interaction.response.send_message(f"Updated team '{team}'.", ephemeral=True)
+        await interaction.response.send_message(f"Updated entrant '{team}'.", ephemeral=True)
 
     @group.command(name="setresult", description="Force-set (or overwrite) a match's real result")
     @app_commands.describe(tournament="Tournament name")

@@ -77,6 +77,20 @@ def test_history_runs_oldest_first_and_leaves_no_account_entrants_empty(conn):
     assert db.get_tournament(conn, tournament_id)["status"] == "concluded"
 
 
+def test_correcting_an_early_result_keeps_its_place_in_the_history(conn):
+    tournament_id = _signups(conn, [("Ace", 1), ("Blaze", 2), ("Comet", 3), ("Dash", 4)], "random")
+    close_registration(conn, tournament_id, random.Random(0))
+    _play_out(conn, tournament_id, min)
+    db.set_tournament_status(conn, tournament_id, "concluded")
+    before = db.load_match_history(conn, GUILD)
+    first_game = min(db.get_matches(conn, tournament_id).values(), key=lambda match: (match.played_round, match.id))
+    # Re-recording the same winner, as a correction would, gives the result a new timestamp.
+    conn.execute("UPDATE match_results SET recorded_at = '2999-01-01T00:00:00.000Z' WHERE match_id = ?",
+                 (first_game.id,))
+    conn.commit()
+    assert db.load_match_history(conn, GUILD) == before
+
+
 def test_closing_by_rating_writes_seeds_in_rating_order(conn):
     _concluded(conn, [("Ace", 1), ("Blaze", 2), ("Comet", 3), ("Dash", 4)])  # Ace wins every game
     tournament_id = _signups(conn, [("Dash", 4), ("Newcomer", 5), ("Ace", 1), ("Comet", 3), ("Blaze", 2)])

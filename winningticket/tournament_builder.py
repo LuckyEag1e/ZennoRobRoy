@@ -49,17 +49,20 @@ def close_registration(conn: sqlite3.Connection, tournament_id: int, rng: random
     RegistrationClosedError if it was already closed. On any error nothing is saved, so
     closing can simply be tried again."""
     rng = rng or random  # the module itself, so seeding it (as the simulator does) makes draws repeatable
+    tournament = db.get_tournament(conn, tournament_id)
+    if tournament is None:
+        raise RegistrationClosedError(f"Tournament {tournament_id} no longer exists.")
+    seeding_mode = seeding_mode or tournament["seeding_mode"]
+    # Replayed before the close starts writing, so the database isn't locked meanwhile.
+    ratings = None if seeding_mode == "random" else compute_ratings(db.load_match_history(conn, tournament["guild_id"]))
     with conn:
         if not db.claim_registration_close(conn, tournament_id):
             raise RegistrationClosedError(f"Registration for tournament {tournament_id} has already closed.")
-        tournament = db.get_tournament(conn, tournament_id)
         members_by_team = db.get_members_by_team(conn, tournament_id)
-        seeding_mode = seeding_mode or tournament["seeding_mode"]
         db.set_seeding_mode(conn, tournament_id, seeding_mode)  # the one used, for the history
-        if seeding_mode == "random":
+        if ratings is None:
             order = rng.sample(sorted(members_by_team), len(members_by_team))
         else:
-            ratings = compute_ratings(db.load_match_history(conn, tournament["guild_id"]))
             order = rating_order(members_by_team, ratings, rng)
             db.set_team_seeds(conn, order)
         build_matches(conn, tournament_id, seeded_pairs(order, slide=seeding_mode == "slide"))

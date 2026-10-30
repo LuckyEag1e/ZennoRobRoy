@@ -42,8 +42,6 @@ _STATUS_SQL_LIST = ", ".join(f"'{status}'" for status in STATUSES)
 # at random. seeding.seeded_pairs shows the difference.
 SEEDING_MODES = ("standard", "slide", "random")
 _SEEDING_SQL_LIST = ", ".join(f"'{mode}'" for mode in SEEDING_MODES)
-# Tournament formats. Only single elimination exists so far; double elimination and round
-# robin are planned.
 FORMATS = ("single_elim",)
 _FORMAT_SQL_LIST = ", ".join(f"'{format}'" for format in FORMATS)
 
@@ -106,6 +104,9 @@ CREATE TABLE IF NOT EXISTS team_members (
     team_id         INTEGER NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
     tournament_id   INTEGER NOT NULL REFERENCES tournaments(id) ON DELETE CASCADE,
     user_id         INTEGER NOT NULL,
+    -- 1 if the member took over an entry that was already there under their name, so
+    -- withdrawing gives that entry back instead of deleting it.
+    took_over       INTEGER NOT NULL DEFAULT 0,
     UNIQUE (tournament_id, user_id)
 );
 CREATE INDEX IF NOT EXISTS idx_team_members_team ON team_members(team_id);
@@ -208,6 +209,7 @@ def init_db(conn: sqlite3.Connection) -> None:
     else:
         _rebuild_tournaments_table(conn)
         _add_column_if_missing(conn, "live_posts", "shown", "TEXT")
+        _add_column_if_missing(conn, "team_members", "took_over", "INTEGER NOT NULL DEFAULT 0")
     conn.commit()
 
 
@@ -233,7 +235,7 @@ def _rebuild_tournaments_table(conn: sqlite3.Connection) -> None:
         columns = [
             row["name"] for row in conn.execute("PRAGMA table_info(tournaments_new)") if row["name"] in old_columns
         ]
-        # Version 4 called standard seeding 'auto'.
+        # Older databases call standard seeding 'auto'.
         values = ["CASE seeding_mode WHEN 'auto' THEN 'standard' ELSE seeding_mode END" if column == "seeding_mode"
                   else column for column in columns]
         conn.execute(f"INSERT INTO tournaments_new ({', '.join(columns)}) SELECT {', '.join(values)} FROM tournaments")
@@ -346,6 +348,11 @@ def get_concluded_summaries(conn: sqlite3.Connection, guild_id: int) -> list[Con
             for r in rows]
 
 
+def get_tournament_by_name_any_status(conn: sqlite3.Connection, guild_id: int, name: str) -> sqlite3.Row | None:
+    """Names are never reused, so this is the one tournament that has had `name`."""
+    return conn.execute("SELECT * FROM tournaments WHERE guild_id = ? AND name = ?", (guild_id, name)).fetchone()
+
+
 def get_concluded_tournament_by_name(conn: sqlite3.Connection, guild_id: int, name: str) -> sqlite3.Row | None:
     return conn.execute(
         "SELECT * FROM tournaments WHERE guild_id = ? AND name = ? AND status = 'concluded'", (guild_id, name)
@@ -426,37 +433,104 @@ def get_teams(conn: sqlite3.Connection, tournament_id: int) -> dict[int, sqlite3
 
 
 def register_entrant(conn: sqlite3.Connection, tournament_id: int, name: str,
-                     user_id: int | None) -> tuple[int, str]:
+                     user_id: int | None) -> tuple[int, str] | None:
     """Sign up a one-person team and return its (team id, name). With no `user_id` it's
-    just a name, with no Discord account behind it. A name already taken in this
-    tournament gets a number added, so admin commands that find teams by name still work."""
+    just a name, with no Discord account behind it, and None is returned if the name is
+    taken, since two name-only entrants with one name couldn't be told apart.
+
+    A member signing up under the name of an entrant with no account behind it takes that
+    entry over, since it's most likely theirs: added by an organizer before they agreed,
+    or from when they opted out. Any other taken name gets a number added, so admin
+    commands that find teams by name still work."""
+    existing = get_team_by_name(conn, tournament_id, name)
+    if existing is not None and user_id is None:
+        return None
+    if existing is not None and not team_member_ids(conn, existing["id"]):
+        with conn:
+            conn.execute(
+                "INSERT INTO team_members (team_id, tournament_id, user_id, took_over) VALUES (?, ?, ?, 1)",
+                (existing["id"], tournament_id, user_id),
+            )
+        return existing["id"], name
+    unique_name = _unused_name(conn, tournament_id, name)
+    with conn:
+        team_id = _insert_entrant(conn, tournament_id, unique_name, user_id)
+    return team_id, unique_name
+
+
+def _unused_name(conn: sqlite3.Connection, tournament_id: int, name: str) -> str:
+    """`name`, or `name` with the lowest number added that no team in the tournament has."""
     taken = {team["name"] for team in get_teams(conn, tournament_id).values()}
     unique_name = name
     number = 2
     while unique_name in taken:
         unique_name = f"{name} ({number})"
         number += 1
+    return unique_name
+
+
+def _insert_entrant(conn: sqlite3.Connection, tournament_id: int, name: str, user_id: int | None) -> int:
+    """Add a one-person team without committing, and return its id."""
+    team_id = conn.execute(
+        "INSERT INTO teams (tournament_id, name, seed) VALUES (?, ?, NULL)", (tournament_id, name)
+    ).lastrowid
+    if user_id is not None:
+        conn.execute(
+            "INSERT INTO team_members (team_id, tournament_id, user_id) VALUES (?, ?, ?)",
+            (team_id, tournament_id, user_id),
+        )
+    return team_id
+
+
+class OwnEntryError(Exception):
+    """Raised when unlinking, during sign-ups, an entry the member made themselves. Left
+    name-only, it would be marked as taken over once they signed up again, so withdrawing
+    it is the way to remove them instead."""
+
+    def __init__(self, user_id: int) -> None:
+        super().__init__(f"User {user_id} made this entry themselves")
+        self.user_id = user_id
+
+
+def unlink_entrant(conn: sqlite3.Connection, tournament_id: int, team_id: int) -> tuple[int, str | None] | None:
+    """Unlink the member behind one entrant, leaving the entrant under its name and the
+    member's agreement and other entries as they are. During sign-ups this is for a member
+    who took the entry over from someone else (see register_entrant): they're entered again
+    on their own under a numbered name, and OwnEntryError is raised for any other entry.
+    Returns (their user id, the name they were re-entered under or None), or None if
+    nobody was linked."""
+    membership = conn.execute("SELECT user_id, took_over FROM team_members WHERE team_id = ?", (team_id,)).fetchone()
+    if membership is None:
+        return None
+    user_id = membership["user_id"]
     with conn:
-        team_id = conn.execute(
-            "INSERT INTO teams (tournament_id, name, seed) VALUES (?, ?, NULL)", (tournament_id, unique_name)
-        ).lastrowid
-        if user_id is not None:
-            conn.execute(
-                "INSERT INTO team_members (team_id, tournament_id, user_id) VALUES (?, ?, ?)",
-                (team_id, tournament_id, user_id),
-            )
-    return team_id, unique_name
+        conn.execute("DELETE FROM team_members WHERE team_id = ? AND user_id = ?", (team_id, user_id))
+        # Read after the delete, which holds the write lock, so sign-ups can't close in between.
+        if get_tournament(conn, tournament_id)["status"] != "registration":
+            return user_id, None
+        if not membership["took_over"]:
+            raise OwnEntryError(user_id)  # rolls the delete back
+        name = conn.execute("SELECT name FROM teams WHERE id = ?", (team_id,)).fetchone()["name"]
+        new_name = _unused_name(conn, tournament_id, name)
+        _insert_entrant(conn, tournament_id, new_name, user_id)
+    return user_id, new_name
 
 
 def unregister_entrant(conn: sqlite3.Connection, tournament_id: int, user_id: int) -> bool:
-    """Withdraw a user's team. Returns False if they weren't registered."""
+    """Withdraw a user's team, or just unlink them from one they took over, so it stays
+    entered under its name. Returns False if they weren't registered."""
     with conn:
-        cur = conn.execute(
-            """DELETE FROM teams WHERE id = (
-                   SELECT team_id FROM team_members WHERE tournament_id = ? AND user_id = ?)""",
+        membership = conn.execute(
+            "SELECT team_id, took_over FROM team_members WHERE tournament_id = ? AND user_id = ?",
             (tournament_id, user_id),
-        )
-    return cur.rowcount > 0
+        ).fetchone()
+        if membership is None:
+            return False
+        if membership["took_over"]:
+            conn.execute("DELETE FROM team_members WHERE team_id = ? AND user_id = ?", (membership["team_id"], user_id))
+        else:
+            conn.execute("DELETE FROM teams WHERE id = ?", (membership["team_id"],))
+    return True
 
 
 def get_entrant_team_id(conn: sqlite3.Connection, tournament_id: int, user_id: int) -> int | None:
@@ -489,6 +563,10 @@ def get_members_by_team(conn: sqlite3.Connection, tournament_id: int) -> dict[in
         if entrant["user_id"] is not None:
             members[entrant["team_id"]].append(entrant["user_id"])
     return members
+
+
+def team_member_ids(conn: sqlite3.Connection, team_id: int) -> list[int]:
+    return [r["user_id"] for r in conn.execute("SELECT user_id FROM team_members WHERE team_id = ?", (team_id,))]
 
 
 def link_team_member(conn: sqlite3.Connection, tournament_id: int, team_id: int, user_id: int) -> bool:
@@ -610,24 +688,18 @@ def load_final_results(conn: sqlite3.Connection, tournament_id: int) -> tuple[Po
 
 
 def load_match_history(conn: sqlite3.Connection, guild_id: int) -> list[PlayedMatch]:
-    """Every decided game in the server's concluded tournaments, oldest first, as the
-    Discord users on each side. Ratings are worked out from this."""
-    timed_games = []
-    for tournament in get_concluded_tournaments(conn, guild_id):
+    """Every decided game in the server's concluded tournaments, as the Discord users on
+    each side, in the order they were played: oldest tournament first, then round by
+    round. Ratings are worked out from this. The order comes from the bracket rather than
+    when results were recorded, because correcting a result re-records it."""
+    games = []
+    for tournament in reversed(get_concluded_tournaments(conn, guild_id)):
         matches_by_id, feeders = _load_matches(conn, tournament["id"])
-        recorded_at = {
-            r["match_id"]: r["recorded_at"] for r in conn.execute(
-                """SELECT mr.match_id, mr.recorded_at FROM match_results mr
-                   JOIN matches m ON m.id = mr.match_id WHERE m.tournament_id = ?""",
-                (tournament["id"],),
-            )
-        }
         members = get_members_by_team(conn, tournament["id"])
-        for match, winner, loser in decided_matches(matches_by_id, feeders, get_results(conn, tournament["id"])):
-            game = PlayedMatch(tuple(members.get(winner, [])), tuple(members.get(loser, [])))
-            timed_games.append((recorded_at[match.id], game))
-    timed_games.sort(key=lambda timed: timed[0])
-    return [game for _, game in timed_games]
+        decided = decided_matches(matches_by_id, feeders, get_results(conn, tournament["id"]))
+        for match, winner, loser in sorted(decided, key=lambda game: game[0].played_round):
+            games.append(PlayedMatch(tuple(members.get(winner, [])), tuple(members.get(loser, []))))
+    return games
 
 
 # -- results ------------------------------------------------------------------

@@ -62,7 +62,12 @@ Admin:
   `slide` has them play mid-ranked seeds first, and `random` draws without seeds.
 - `/registration add tournament:<name> [user:<member>] [name:<text>]`: sign up a member
   for them (by name only, unless they've agreed to link their data), or an entrant with no
-  Discord account. `/registration remove` withdraws anyone.
+  Discord account. `/registration remove` withdraws anyone. A member who has agreed and
+  signs up under the name of an entrant with no account takes that entry over.
+- `/admin unlinkplayer tournament:<name> entrant:<name>`: unlink the member behind one
+  entrant, keeping their agreement and other entries. During sign-ups it only separates a
+  member who took over someone else's entry, entering them again on their own.
+  `/admin linkplayer` links an entrant in a concluded tournament to the member who played as them.
 - `/tournament create name:<name> csv_file:<attach bracket.csv>`
 - `/tournament open name:<name>` — let members start `/predict`
 - `/tournament lock name:<name>` — stop prediction submissions, start recording real results
@@ -119,7 +124,7 @@ Commands mirror the slash commands: `create <name> <csv>`, `regopen <name> [--cl
 `leaderboard <name>`, `tournaments`, `history`, `history_bracket <name>`, `history_seeding <name>`,
 `history_leaderboard <name>`, `features`, `feedback <message>`, and the admin set: `admin_setstatus`, `admin_delete`,
 `admin_editteam`, `admin_setresult`, `admin_clearresult`, `admin_clearpredictions`, `admin_feedback`,
-`admin_deletefeedback`, `admin_ban`, `admin_unban`, `admin_bans`.
+`admin_deletefeedback`, `admin_ban`, `admin_unban`, `admin_bans`, `admin_linkplayer`, `admin_unlinkplayer`.
 Use `as <user_id> <name>` to switch which simulated user you're acting as (so you can
 submit multiple different predictions and see the leaderboard play out). Commands that
 take more than one argument (like `create`) need quotes around a multi-word name;

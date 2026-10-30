@@ -101,11 +101,12 @@ class HelpCog(commands.Cog):
             ("/admin setstatus tournament:<name> status:<status>", "Force a tournament's status directly, bypassing the normal open/lock flow."),
             ("/admin setresult tournament:<name>", "Force or overwrite any known matchup's result (e.g. for testing)."),
             ("/admin clearresult tournament:<name>", "Delete a recorded match result."),
-            ("/admin editteam tournament:<name> team:<name>", "Fix a team's name or seed after import."),
+            ("/admin editteam tournament:<name> team:<name>", "Fix an entrant's name or seed after import."),
             ("/admin clearpredictions tournament:<name> user:<member>", "Wipe one user's saved predictions."),
             ("/admin deletetournament tournament:<name> confirm_name:<name>", "Permanently delete a tournament and all its data."),
             ("/rating user:<member>", "See any member's Elo rating. Members can only see their own."),
             ("/admin linkplayer tournament:<concluded> entrant:<name> user:<member>", "Link an entrant in a concluded tournament to the member who played as them, so its games count for their rating."),
+            ("/admin unlinkplayer tournament:<name> entrant:<name>", "Unlink the member behind an entrant, such as one who took over someone else's entry under the same name. During sign-ups it only separates a member who took an entry over, entering them again on their own."),
             ("/admin feedback [page:<n>]", "Read anonymous feedback, newest first. `/admin deletefeedback number:<n>` removes one."),
             ("/admin ban user:<member> [reason:<text>]", "Block a member from using the bot. `/admin unban` undoes it, and `/admin bans` lists everyone banned."),
         ])

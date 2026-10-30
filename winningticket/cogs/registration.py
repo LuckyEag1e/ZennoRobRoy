@@ -109,16 +109,13 @@ class ConsentView(BotView):
                            f"so far). If you change your mind, `/optout` unlinks your data.")
             else:
                 db.opt_out(conn, interaction.guild_id, user.id)  # unlinks entries from before consent was asked
-                # A name-only entry can't be told apart from another with the same name, so it
-                # mustn't get a number added the way a linked one would.
-                if db.get_team_by_name(conn, self.tournament_id, user.display_name) is not None:
+                if db.register_entrant(conn, self.tournament_id, user.display_name, None) is None:
                     await interaction.response.edit_message(
                         content=f"Someone is already signed up for **{name}** as {user.display_name}. If that's you, "
                                 f"you're in. If not, ask an organizer to add you under another name.",
                         view=None,
                     )
                     return
-                db.register_entrant(conn, self.tournament_id, user.display_name, None)
                 content = (f"✅ You're signed up for **{name}** as {user.display_name} "
                            f"({db.entrant_count(conn, self.tournament_id)} entered so far). {OPTED_OUT_NOTE}")
             await interaction.response.edit_message(content=content, view=None)
@@ -289,9 +286,16 @@ class RegistrationCog(commands.Cog):
                 return
             # A member's entry is only linked to them once they've agreed to it themselves.
             linked = user is not None and db.has_agreed(conn, interaction.guild_id, user.id)
-            _, entrant_name = db.register_entrant(
+            entrant = db.register_entrant(
                 conn, tournament_row["id"], name or user.display_name, user.id if linked else None
             )
+            if entrant is None:
+                await interaction.response.send_message(
+                    f"**{tournament}** already has an entrant named '{name or user.display_name}'. "
+                    f"Pick another name.", ephemeral=True
+                )
+                return
+            _, entrant_name = entrant
             who = f"{entrant_name} ({user.mention})" if linked else entrant_name
             note = (f" They haven't agreed to link their data to their account, so they're entered by name only."
                     if user is not None and not linked else "")

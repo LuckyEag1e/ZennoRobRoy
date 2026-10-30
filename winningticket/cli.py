@@ -315,10 +315,9 @@ class WinningTicketCLI(cmd.Cmd):
             print(CONSENT_NOTICE.replace("**", ""))
             if input("Agree? [y/N] ").strip().lower() != "y":
                 db.opt_out(self.conn, GUILD_ID, self.user_id)
-                if db.get_team_by_name(self.conn, tournament["id"], self.user_name) is not None:
+                if db.register_entrant(self.conn, tournament["id"], self.user_name, None) is None:
                     print(f"Someone is already signed up as {self.user_name}.")
                     return
-                db.register_entrant(self.conn, tournament["id"], self.user_name, None)
                 print(f"{self.user_name} signed up by name only. {OPTED_OUT_NOTE}")
                 return
             db.record_agreement(self.conn, GUILD_ID, self.user_id)
@@ -375,7 +374,11 @@ class WinningTicketCLI(cmd.Cmd):
             if not db.has_agreed(self.conn, GUILD_ID, user_id):
                 print(f"{user_label(user_id)} hasn't agreed to link their data, so they're entered by name only.")
                 user_id = None
-        _, entrant_name = db.register_entrant(self.conn, tournament["id"], parts[1], user_id)
+        entrant = db.register_entrant(self.conn, tournament["id"], parts[1], user_id)
+        if entrant is None:
+            print(f"'{parts[0]}' already has an entrant named '{parts[1]}'.")
+            return
+        _, entrant_name = entrant
         print(f"Signed up {entrant_name} ({len(db.get_entrants(self.conn, tournament['id']))} entered so far).")
 
     def do_regremove(self, arg: str) -> None:
@@ -550,7 +553,7 @@ class WinningTicketCLI(cmd.Cmd):
         print(f"Deleted '{name}'.")
 
     def do_admin_editteam(self, arg: str) -> None:
-        "Fix a team's name/seed: admin_editteam <name> <team> [new_name] [--seed N]"
+        "Fix an entrant's name/seed: admin_editteam <name> <team> [new_name] [--seed N]"
         parts = shlex.split(arg)
         if len(parts) < 2:
             print("usage: admin_editteam <name> <team> [new_name] [--seed N]")
@@ -579,10 +582,10 @@ class WinningTicketCLI(cmd.Cmd):
             return
         team_row = db.get_team_by_name(self.conn, tournament["id"], team)
         if team_row is None:
-            print(f"No team named '{team}' in '{name}'.")
+            print(f"No entrant named '{team}' in '{name}'.")
             return
         if new_name is not None and db.team_name_taken(self.conn, tournament["id"], new_name, team_row["id"]):
-            print(f"'{name}' already has a team named '{new_name}'.")
+            print(f"'{name}' already has an entrant named '{new_name}'.")
             return
         db.update_team(self.conn, team_row["id"], new_name, new_seed, seed_given)
         print("Updated.")
@@ -609,10 +612,42 @@ class WinningTicketCLI(cmd.Cmd):
         if entrant_row is None:
             print(f"No entrant named '{entrant}' in '{name}'.")
             return
+        existing = db.team_member_ids(self.conn, entrant_row["id"])
+        if existing:
+            print(f"{entrant} in '{name}' is already linked to {user_label(existing[0])}.")
+            return
         if not db.link_team_member(self.conn, tournament["id"], entrant_row["id"], user_id):
             print(f"{user_label(user_id)} is already linked to an entrant in '{name}'.")
             return
         print(f"Linked {user_label(user_id)} to {entrant} in '{name}'.")
+
+    def do_admin_unlinkplayer(self, arg: str) -> None:
+        "Unlink the user behind an entrant, keeping their agreement and other entries; during sign-ups, one who took the entry over is re-entered on their own: admin_unlinkplayer <name> <entrant>"
+        parts = shlex.split(arg)
+        if len(parts) != 2:
+            print("usage: admin_unlinkplayer <name> <entrant>")
+            return
+        name, entrant = parts
+        tournament = db.get_tournament_by_name_any_status(self.conn, GUILD_ID, name)
+        if tournament is None:
+            print(f"No tournament named '{name}'.")
+            return
+        entrant_row = db.get_team_by_name(self.conn, tournament["id"], entrant)
+        if entrant_row is None:
+            print(f"No entrant named '{entrant}' in '{name}'.")
+            return
+        try:
+            unlinked = db.unlink_entrant(self.conn, tournament["id"], entrant_row["id"])
+        except db.OwnEntryError as e:
+            print(f"{entrant} is {user_label(e.user_id)}'s own entry, so there's nothing to separate. 'regremove' withdraws it.")
+            return
+        if unlinked is None:
+            print(f"{entrant} isn't linked to anyone.")
+            return
+        user_id, new_name = unlinked
+        print(f"Unlinked {user_label(user_id)} from {entrant} in '{name}'.")
+        if new_name is not None:
+            print(f"They're entered separately as {new_name}.")
 
     def do_admin_setresult(self, arg: str) -> None:
         "Force/overwrite any known matchup's result: admin_setresult <name>"
@@ -802,8 +837,7 @@ class WinningTicketCLI(cmd.Cmd):
 
     def _name_taken(self, name: str) -> bool:
         """True, after saying why, if a tournament already has `name`."""
-        existing = (db.get_tournament_by_name(self.conn, GUILD_ID, name)
-                    or db.get_concluded_tournament_by_name(self.conn, GUILD_ID, name))
+        existing = db.get_tournament_by_name_any_status(self.conn, GUILD_ID, name)
         if existing is not None:
             print(name_taken_message(existing))
         return existing is not None

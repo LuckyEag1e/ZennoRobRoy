@@ -62,7 +62,7 @@ def test_linking_an_old_entrant_shows_up_in_rating(world):
     picked, entrants, only_one_side, again = asyncio.run(link())
     assert picked == old_cup and entrants == ["Ace", "Blaze"]
     assert "provisional" in only_one_side  # a game counts once both sides are linked
-    assert "already linked to an entrant" in again.content
+    assert "already linked to <@11>" in again.content  # entrants are one player each
     assert _rating_reply(sim, organizer, user=ace).split("\n")[0] == "Singles: **1516**"
     assert not sim.issues
 

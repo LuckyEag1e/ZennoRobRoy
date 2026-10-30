@@ -116,6 +116,39 @@ def test_an_organizer_can_only_link_a_member_who_agreed(world):
     assert _entry("Ace again") == ("Ace again", member.id)
 
 
+def test_agreeing_takes_over_an_entry_an_organizer_added_by_name(world):
+    sim, organizer, member = world
+    asyncio.run(sim.run(organizer, "registration add", tournament="Cup", user=member))
+    asyncio.run(sign_up(sim, member, "Cup", agree=True))
+    assert _entry("Ace") == ("Ace", member.id) and _entry("Ace (2)") is None
+
+
+def test_an_organizer_cant_add_a_member_by_name_twice(world):
+    sim, organizer, member = world
+    asyncio.run(sim.run(organizer, "registration add", tournament="Cup", user=member))
+    again = asyncio.run(sim.run(organizer, "registration add", tournament="Cup", user=member)).sent
+    assert "already has an entrant named 'Ace'" in again.content and _entry("Ace (2)") is None
+
+
+def test_an_organizer_can_separate_a_member_who_took_over_an_entry(world):
+    sim, organizer, member = world
+
+    async def take_over_then_separate():
+        await sim.run(organizer, "registration add", tournament="Cup", user=None, name="Ace")
+        await sign_up(sim, member, "Cup", agree=True)
+        took_over = _entry("Ace")
+        reply = (await sim.run(organizer, "admin unlinkplayer", tournament="Cup", entrant="Ace")).sent
+        again = (await sim.run(member, "register", tournament="Cup")).sent
+        return took_over, reply, again
+
+    took_over, reply, again = asyncio.run(take_over_then_separate())
+    assert took_over == ("Ace", member.id)
+    assert not reply.public and "Ace (2)" in reply.content
+    assert _entry("Ace") == ("Ace", None) and _entry("Ace (2)") == ("Ace (2)", member.id)
+    assert _agreed(member.id) and "already signed up" in again.content
+    assert not sim.issues
+
+
 def test_a_notice_answered_after_sign_ups_close_enters_no_one(world):
     sim, organizer, member = world
 
