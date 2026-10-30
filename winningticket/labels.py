@@ -121,6 +121,46 @@ def report_concession(match: Match, reporter: int, winner: int, deadline: dateti
             f"unless **{team_label(teams_by_id, winner)}** reports otherwise.")
 
 
+def report_waiting(match: Match, reporter: int, winner: int, other: int, teams_by_id: dict) -> str:
+    """A vote shown on a match's post before any warning about it."""
+    claim = "reports winning" if winner == reporter else f"reports that **{team_label(teams_by_id, winner)}** won"
+    return (f"⏳ Round {match.played_round}: **{team_label(teams_by_id, reporter)}** {claim}. Waiting for "
+            f"**{team_label(teams_by_id, other)}** to report.")
+
+
+def match_call(match: Match, teams: tuple[int, int], ready: set[int], call_out: str, deadline: datetime,
+               reminder: bool, teams_by_id: dict) -> str:
+    """The public call for a match, asking both sides to ready up. `call_out` names the
+    players being asked, by mention where it can: everyone at first, then in a reminder
+    only those who haven't readied."""
+    status = " · ".join(f"{team_label(teams_by_id, team)} {'✅' if team in ready else '⏳'}" for team in teams)
+    names = " vs ".join(f"**{team_label(teams_by_id, team)}**" for team in teams)
+    ask = (f"{call_out}, you still need to press **Ready Up**" if reminder
+           else f"{call_out}, press **Ready Up** when you're here to play")
+    return (f"🎮 Round {match.played_round}: {names} is up! {ask}. A side that isn't ready "
+            f"<t:{int(deadline.timestamp())}:R> forfeits.\nReady: {status}")
+
+
+def match_waiting_for_room(match: Match, teams: tuple[int, int], teams_by_id: dict) -> str:
+    names = " vs ".join(f"**{team_label(teams_by_id, team)}**" for team in teams)
+    return f"🎮 Round {match.played_round}: {names} is ready. Waiting for a room to come free."
+
+
+def match_playing(match: Match, teams: tuple[int, int], room: str, call_out: str, needs_organizer: bool,
+                  teams_by_id: dict) -> str:
+    """Where a started match is played. `call_out` names its players, by mention where it can."""
+    names = " vs ".join(f"**{team_label(teams_by_id, team)}**" for team in teams)
+    then = ("An organizer needs to watch it there and record the result." if needs_organizer
+            else "When it's over, report the result with `/match report`.")
+    return f"▶️ Round {match.played_round}: {names}. {call_out}, head to {room} and stream your match there. {then}"
+
+
+def match_off(match: Match, teams: tuple[int, int], teams_by_id: dict) -> str:
+    """What a call becomes when an earlier result changed who's in the match."""
+    names = " vs ".join(f"**{team_label(teams_by_id, team)}**" for team in teams)
+    return f"Round {match.played_round}: {names} is off, because an earlier result changed."
+
+
 def report_dispute(match: Match, teams: tuple[int, int], teams_by_id: dict) -> str:
     team_a, team_b = (team_label(teams_by_id, team) for team in teams)
     return f"⚠️ Round {match.played_round}: **{team_a}** and **{team_b}** each report winning. An organizer will record the result."
@@ -387,8 +427,8 @@ CURRENT_FEATURES = [
     "sign-ups close. Organizers can still build a bracket from a CSV instead.",
     "**Automatic seeding:** each player's Elo rating from past tournaments decides their "
     "seed, so the strongest players don't meet early. `/rating` shows yours.",
-    "**Live results:** players report their own results, organizers settle disagreements, "
-    "and the bot announces who advances. Anyone can check the bracket or the pool's picks.",
+    "**Live results:** the bot can call matches into voice rooms as they free up. Players "
+    "ready up, then report their own results, and organizers settle disagreements.",
     "**Dropouts:** players can drop out, and organizers can disqualify entrants or call "
     "a match off. The bracket plays on with walkovers.",
     "**Final results:** concluding a tournament posts the podium and the top predictors, "

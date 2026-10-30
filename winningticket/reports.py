@@ -1,6 +1,6 @@
-"""Players reporting their own results by vote: when a vote the other side hasn't answered
-gets a public warning or wins, and what a match's one public post about its votes says.
-Shared by the bot's background loop and the CLI."""
+"""Players reporting their own results by vote: which match a player can report on, and
+when a vote the other side hasn't answered gets a public warning or wins. Shared by the
+bot's background loop and the CLI."""
 
 from __future__ import annotations
 
@@ -9,22 +9,11 @@ import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from itertools import groupby
-from typing import Callable, Optional
+from typing import Optional
 
 import db
 from bracket import Match, resolvable_matches, resolve_all_slots, resolve_slot
-from labels import (
-    advance_text,
-    called_off_line,
-    report_concession,
-    report_dispute,
-    report_timed_out,
-    report_warning,
-    report_withdrawn,
-    result_line,
-    team_label,
-    walkover_line,
-)
+from labels import advance_text, called_off_line, report_timed_out, result_line, team_label, walkover_line
 
 # A vote claiming a win is warned about publicly after this long without an answer, and
 # given once the other side has had this long to answer the warning.
@@ -48,54 +37,40 @@ def due_steps(conn: sqlite3.Connection, now: datetime) -> list[DueStep]:
         if len(votes) != 1:
             continue
         vote = votes[0]
-        post = db.get_report_post(conn, match_id)
-        if post is None and vote["winner_team_id"] == vote["team_id"]:
+        post = db.get_match_post(conn, match_id)
+        warned = post is not None and post["warned_at"] is not None
+        if not warned and vote["winner_team_id"] == vote["team_id"]:
             if now >= db.from_db_time(vote["reported_at"]) + WARNING_AFTER:
                 steps.append(DueStep("warn", vote))
-        elif (post is None or post["message_id"] is not None) and now >= win_due_at(vote, post):
+        elif (not warned or post["message_id"] is not None) and now >= win_due_at(vote, post):
             steps.append(DueStep("give", vote))
     return steps
 
 
 def win_due_at(vote: sqlite3.Row, post: Optional[sqlite3.Row]) -> datetime:
-    """When the win an unanswered `vote` names is given, as things stand. Once the match
-    has a report post, the other side has a set time from its last change. Before then,
-    a claim waits to be warned about first."""
-    if post is not None:
+    """When the win an unanswered `vote` names is given, as things stand, where `post` is
+    the match's post, if it has one. Once a warning is up, the other side has a set time
+    from the votes' last change. Before then, a claim waits to be warned about first."""
+    if post is not None and post["warned_at"] is not None:
         return answer_deadline(post)
     wait = CONCESSION_AFTER if vote["winner_team_id"] != vote["team_id"] else WARNING_AFTER + ANSWER_WITHIN
     return db.from_db_time(vote["reported_at"]) + wait
 
 
 def answer_deadline(post: sqlite3.Row) -> datetime:
-    return db.from_db_time(post["updated_at"]) + ANSWER_WITHIN
+    """When the other side's time to answer a warned vote runs out."""
+    return db.from_db_time(post["warned_at"]) + ANSWER_WITHIN
+
+
+def warn(conn: sqlite3.Connection, vote: sqlite3.Row) -> None:
+    """Start the warning about an unanswered vote, which the match's post then shows."""
+    teams = db.match_now(conn, vote["tournament_id"], vote["match_id"]).teams
+    db.claim_match_post(conn, vote["match_id"], vote["channel_id"], teams)
+    db.warn_on_match_post(conn, vote["match_id"])
 
 
 def opponent(teams: tuple[Optional[int], Optional[int]], team_id: int) -> Optional[int]:
     return teams[1] if teams[0] == team_id else teams[0]
-
-
-def post_text(conn: sqlite3.Connection, post: sqlite3.Row, player_label: Callable[[int], str]) -> tuple[str, bool]:
-    """What a match's report post should say now, and whether that's its final text: a
-    warning while one side's vote is unanswered, a dispute while the sides disagree, then
-    how the match ended. `player_label` names a user, by mention in Discord."""
-    tournament = db.get_tournament(conn, post["tournament_id"])
-    matches_by_id, _, teams_by_id = db.load_bracket(conn, tournament["id"])
-    match = matches_by_id[post["match_id"]]
-    teams = (post["team_a_id"], post["team_b_id"])
-    votes = db.get_reports(conn, match.id)
-    if len(votes) == 1:
-        vote = votes[0]
-        if vote["winner_team_id"] != vote["team_id"]:
-            return report_concession(match, vote["team_id"], vote["winner_team_id"], answer_deadline(post),
-                                     teams_by_id), False
-        silent_team = opponent(teams, vote["team_id"])
-        silent = " ".join(player_label(user_id) for user_id in db.team_member_ids(conn, silent_team))
-        return report_warning(match, vote["team_id"], silent or f"**{team_label(teams_by_id, silent_team)}**",
-                              answer_deadline(post), teams_by_id), False
-    if len(votes) == 2:
-        return report_dispute(match, teams, teams_by_id), False
-    return ending_text(conn, tournament, match) or report_withdrawn(match, teams, teams_by_id), True
 
 
 def ending_text(conn: sqlite3.Connection, tournament: sqlite3.Row, match: Match) -> Optional[str]:
@@ -163,6 +138,10 @@ def find_reportable_match(conn: sqlite3.Connection, tournament: sqlite3.Row, use
     if not db.team_member_ids(conn, other):
         # Their side could never answer a vote, so the timeout would hand over every such match.
         return f"**{team_label(teams_by_id, other)}** has no Discord account behind them, so an organizer records this match."
+    call = db.get_call(conn, match.id)
+    if tournament["match_slots"] is not None and (call is None or call["started_at"] is None):
+        return (f"Your match in **{name}** hasn't started yet. Once it's called, both sides ready up, "
+                f"and then you can report it.")
     vote = next((v for v in db.get_reports(conn, match.id) if v["team_id"] == team_id), None)
     return ReportableMatch(match, team_id, slots[match.id], vote)
 
@@ -173,7 +152,7 @@ def vote_reply(conn: sqlite3.Connection, outcome: str, found: ReportableMatch, w
     other = team_label(teams_by_id, opponent(found.teams, found.team_id))
     if outcome == "waiting":
         [vote] = db.get_reports(conn, found.match.id)
-        left = win_due_at(vote, db.get_report_post(conn, found.match.id)) - datetime.now(timezone.utc)
+        left = win_due_at(vote, db.get_match_post(conn, found.match.id)) - datetime.now(timezone.utc)
         minutes = max(1, math.ceil(left.total_seconds() / 60))
         wait = f"{minutes} minute{'' if minutes == 1 else 's'}"
         if winner_id == found.team_id:

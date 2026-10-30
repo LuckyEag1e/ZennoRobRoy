@@ -96,8 +96,8 @@ def test_due_steps_warn_a_claim_and_wait_out_a_concession(tournament):
 def test_a_warned_vote_is_given_once_the_warning_has_had_its_time(tournament):
     conn, tid, semi_1, team = tournament
     _vote(conn, tid, semi_1, team["A"], team["A"])
-    db.claim_report_post(conn, semi_1, CHANNEL, (team["A"], team["B"]))
+    reports.warn(conn, db.get_open_reports(conn)[0])
     soon = datetime.now(timezone.utc) + timedelta(minutes=6)
-    assert reports.due_steps(conn, soon) == []  # the post hasn't been sent yet
-    db.set_report_post(conn, semi_1, 1, "warning")
+    assert reports.due_steps(conn, soon) == []  # the warning hasn't been sent yet
+    db.set_match_post(conn, semi_1, 1, "warning", "warning")
     assert [step.kind for step in reports.due_steps(conn, soon)] == ["give"]

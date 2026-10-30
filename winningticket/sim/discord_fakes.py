@@ -100,6 +100,21 @@ class FakeMessage:
         return "\n".join(part for part in parts if part)
 
 
+@dataclass(eq=False)
+class FakeVoiceChannel:
+    id: int
+    name: str
+
+
+class FakeCategory:
+    """A channel category, which matters here only for the voice channels in it."""
+
+    def __init__(self, name: str, voice_channel_count: int) -> None:
+        self.id = next(_ids)
+        self.name = name
+        self.voice_channels = [FakeVoiceChannel(next(_ids), f"Room {n}") for n in range(1, voice_channel_count + 1)]
+
+
 class FakeChannel:
     def __init__(self, on_change, network) -> None:
         self.id = next(_ids)

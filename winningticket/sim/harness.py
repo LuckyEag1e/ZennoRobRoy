@@ -246,14 +246,19 @@ class Simulation:
         the deletion does."""
         await self._turn()
         button = next((item for item in self._items(user, message, late)
-                       if isinstance(item, discord.ui.Button) and item.label == label and not item.disabled), None)
+                       if isinstance(_button_of(item), discord.ui.Button) and _button_of(item).label == label
+                       and not _button_of(item).disabled), None)
         if button is None:
             return None
         self._begin(user, f"clicks [{label}]" + (" again, a moment too late" if late else ""))
         interaction = FakeInteraction(bot=self.bot, user=user, channel=self.channel, guild_id=GUILD_ID,
                                       kind=discord.InteractionType.component, message=message,
-                                      data={"custom_id": button.custom_id})
-        await self._dispatch(interaction, lambda: self._run_item(message.view, button, interaction))
+                                      data={"custom_id": _button_of(button).custom_id})
+        if isinstance(button, discord.ui.DynamicItem):
+            work = lambda: self._run_dynamic_item(_button_of(button), interaction)
+        else:
+            work = lambda: self._run_item(message.view, button, interaction)
+        await self._dispatch(interaction, work)
         return interaction
 
     async def choose(self, user: FakeUser, message: FakeMessage, value: str) -> Optional[FakeInteraction]:
@@ -343,6 +348,19 @@ class Simulation:
     async def _run_item(view: discord.ui.View, item: discord.ui.Item, interaction: FakeInteraction) -> None:
         if await view.interaction_check(interaction):
             await item.callback(interaction)
+
+    async def _run_dynamic_item(self, button: discord.ui.Button, interaction: FakeInteraction) -> None:
+        """Route a click the way discord.py does for buttons registered with
+        add_dynamic_items: rebuild the item from its custom_id, as it would be after a
+        restart, rather than using the one the message was sent with."""
+        for item_class in self.bot.dynamic_items:
+            match = item_class.__discord_ui_compiled_template__.fullmatch(button.custom_id)
+            if match is not None:
+                item = await item_class.from_custom_id(interaction, button, match)
+                if await item.interaction_check(interaction):
+                    await item.callback(interaction)
+                return
+        self._problem(f"nothing handles the button with custom_id {button.custom_id}")
 
     def _items(self, user: FakeUser, message: FakeMessage, late: bool = False) -> list[discord.ui.Item]:
         if (message.deleted and not late) or message.view is None or message.visible_to not in (None, user.id):
@@ -435,9 +453,18 @@ class _CogCollector(FakeBot):
     def __init__(self) -> None:
         super().__init__()
         self.cogs: dict[str, object] = {}
+        self.dynamic_items: list = []
 
     async def add_cog(self, cog) -> None:
         self.cogs[type(cog).__name__] = cog
+
+    def add_dynamic_items(self, *items) -> None:
+        self.dynamic_items.extend(items)
+
+
+def _button_of(item: discord.ui.Item) -> discord.ui.Item:
+    """The button a DynamicItem wraps, or the item itself."""
+    return item.item if isinstance(item, discord.ui.DynamicItem) else item
 
 
 def _organizer_only(command: app_commands.Command) -> bool:
