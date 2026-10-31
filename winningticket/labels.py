@@ -151,7 +151,7 @@ def match_playing(match: Match, teams: tuple[int, int], room: str, call_out: str
     """Where a started match is played. `call_out` names its players, by mention where it can."""
     names = " vs ".join(f"**{team_label(teams_by_id, team)}**" for team in teams)
     then = ("An organizer needs to watch it there and record the result." if needs_organizer
-            else "When it's over, report the result with `/match report`.")
+            else "When it's over, press **Report Result** below, or use `/match report`.")
     return f"▶️ Round {match.played_round}: {names}. {call_out}, head to {room} and stream your match there. {then}"
 
 

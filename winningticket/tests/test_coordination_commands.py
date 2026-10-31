@@ -102,8 +102,31 @@ def test_a_called_match_starts_once_both_sides_ready_up(world):
     assert call.deleted
     room = category.voice_channels[0].id
     assert start.content == (f"▶️ Round 1: **Ace** vs **Blaze**. <@10> and <@11>, head to <#{room}> and stream your "
-                             f"match there. When it's over, report the result with `/match report`.")
-    assert start.view is None
+                             f"match there. When it's over, press **Report Result** below, or use `/match report`.")
+    assert [item.item.label for item in start.view.children] == ["Report Result"]
+    assert not sim.issues
+
+
+def test_players_can_report_from_the_started_match_post(world):
+    sim, organizer, players, tid, teams, matches, category = world
+    _loop(sim)
+    [call] = _posts(sim)
+    _click(sim, players["Ace"], call, "Ready Up")
+    _click(sim, players["Blaze"], call, "Ready Up")
+    [start] = _posts(sim)
+    assert _click(sim, players["Cyan"], start, "Report Result").content == "This isn't your match."
+
+    async def report(user):
+        interaction = await sim.click(user, start, "Report Result")
+        assert interaction.sent.content == "Round 1: **Ace** vs **Blaze**. Who won?" and not interaction.sent.public
+        await sim.click(user, interaction.sent, "Ace")
+    asyncio.run(report(players["Ace"]))
+    [waiting] = _posts(sim)
+    assert waiting is start and [item.item.label for item in start.view.children] == ["Report Result"]
+    asyncio.run(report(players["Blaze"]))
+    [result] = _posts(sim)
+    assert result.content.startswith("📣 Round 1: **Ace** defeats **Blaze**.") and result.view is None
+    assert _outcomes(tid).winners[matches[0]] == teams["Ace"]
     assert not sim.issues
 
 

@@ -193,7 +193,9 @@ class WinningTicketCLI(cmd.Cmd):
         state = match_posts.describe(self.conn, post, user_label, room_label)
         fresh = post["message_id"] is None or (state.ping is not None and state.ping != post["pinged"])
         if fresh or state.text != post["shown"]:
-            print(f"(match post{'' if fresh else ' edited'}) {state.text}" + (" [Ready Up]" if state.ready_button else ""))
+            buttons = [name for name, shown in (("Ready Up", state.ready_button), ("Report Result", state.report_button))
+                       if shown]
+            print(f"(match post{'' if fresh else ' edited'}) {state.text}" + "".join(f" [{name}]" for name in buttons))
             db.set_match_post(self.conn, match_id, 0, state.text, state.ping or post["pinged"])
         if state.final:
             db.delete_match_post(self.conn, match_id)

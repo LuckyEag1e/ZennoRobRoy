@@ -37,6 +37,8 @@ class PostState:
     # editing a message doesn't notify anyone it mentions. None keeps the message as it is.
     ping: Optional[str]
     ready_button: bool
+    # Players can vote on the result from the post, once the bot has started their match.
+    report_button: bool = False
 
 
 def describe(conn: sqlite3.Connection, post: sqlite3.Row, player_label: Callable[[int], str],
@@ -65,6 +67,7 @@ def describe(conn: sqlite3.Connection, post: sqlite3.Row, player_label: Callable
 
     votes = db.get_reports(conn, match.id)
     call = db.get_call(conn, match.id)
+    playing = call is not None and call["room_id"] is not None
     if len(votes) == 2:
         return PostState(report_dispute(match, teams, teams_by_id), False, None, False)
     if len(votes) == 1:
@@ -73,13 +76,13 @@ def describe(conn: sqlite3.Connection, post: sqlite3.Row, player_label: Callable
         if post["warned_at"] is not None and vote["winner_team_id"] != vote["team_id"]:
             text = report_concession(match, vote["team_id"], vote["winner_team_id"], answer_deadline(post),
                                      teams_by_id)
-            return PostState(text, False, None, False)
+            return PostState(text, False, None, False, playing)
         if post["warned_at"] is not None:
             text = report_warning(match, vote["team_id"], call_out([silent]), answer_deadline(post), teams_by_id)
-            return PostState(text, False, f"warning:{silent}", False)
+            return PostState(text, False, f"warning:{silent}", False, playing)
         if call is None or call["started_at"] is not None:
             text = report_waiting(match, vote["team_id"], vote["winner_team_id"], silent, teams_by_id)
-            return PostState(text, False, None, False)
+            return PostState(text, False, None, False, playing)
 
     if call is not None:
         if call["started_at"] is None:
@@ -92,7 +95,7 @@ def describe(conn: sqlite3.Connection, post: sqlite3.Row, player_label: Callable
             return PostState(match_waiting_for_room(match, teams, teams_by_id), False, None, False)
         needs_organizer = not all(db.team_member_ids(conn, team) for team in teams)
         text = match_playing(match, teams, room_label(call["room_id"]), call_out(teams), needs_organizer, teams_by_id)
-        return PostState(text, False, "start", False)
+        return PostState(text, False, "start", False, not needs_organizer)
 
     # Nothing about the match is waiting any more, though it isn't decided.
     if post["pinged"] in CALL_PINGS:

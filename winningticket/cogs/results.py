@@ -3,7 +3,6 @@ from __future__ import annotations
 import logging
 import sqlite3
 from datetime import datetime, timezone
-from typing import Awaitable, Callable
 
 import discord
 from discord import app_commands
@@ -13,11 +12,10 @@ import coordination
 import db
 import reports
 from bracket import Match, matches_with_both_teams, pick_distribution, resolvable_matches, resolve_all_slots
-from bracket_changes import WITHDRAWABLE_STATUSES, new_walkovers, set_result_and_describe, withdraw_and_describe
+from bracket_changes import WITHDRAWABLE_STATUSES, set_result_and_describe, withdraw_and_describe
 from common import (
     MatchPicker,
     TournamentSession,
-    WinnerCallback,
     WinnerPicker,
     announce,
     outdated_pick_message,
@@ -27,7 +25,15 @@ from common import (
 )
 from embeds import mention, render_match_stats_embed
 from labels import team_label
-from posting import ReadyUpButton, announce_match_change, delete_replaced_post, match_rooms, sync_match_post
+from posting import (
+    ReadyUpButton,
+    ReportResultButton,
+    announce_match_change,
+    delete_replaced_post,
+    match_rooms,
+    open_report_menu,
+    sync_match_post,
+)
 
 
 log = logging.getLogger("winningticket")
@@ -65,18 +71,6 @@ async def _record_and_announce(interaction: discord.Interaction, session: Tourna
         await interaction.edit_original_response(
             content=f"✅ Result recorded, but it couldn't be announced here:\n{text}", view=None
         )
-
-
-class ReportPicker(WinnerPicker):
-    """A player's vote on who won their match, plus Take Back Vote once their side has voted."""
-
-    def __init__(self, team_a: int, team_b: int, teams_by_id: dict, on_pick: WinnerCallback,
-                 on_take_back: Callable[[discord.Interaction], Awaitable[None]] | None) -> None:
-        super().__init__(team_a, team_b, teams_by_id, on_pick)
-        if on_take_back is not None:
-            button = discord.ui.Button(label="Take Back Vote", style=discord.ButtonStyle.secondary)
-            button.callback = on_take_back
-            self.add_item(button)
 
 
 class ResultsCog(commands.Cog):
@@ -157,82 +151,7 @@ class ResultsCog(commands.Cog):
             teams_by_id = db.get_teams(conn, tournament_row["id"])
         finally:
             conn.close()
-        if isinstance(found, str):
-            await interaction.response.send_message(found, ephemeral=True)
-            return
-
-        team_a, team_b = found.teams
-        prompt = (f"Round {found.match.played_round}: **{team_label(teams_by_id, team_a)}** vs "
-                  f"**{team_label(teams_by_id, team_b)}**. Who won?")
-        if found.vote is not None:
-            prompt += (f" Your side reported that **{team_label(teams_by_id, found.vote['winner_team_id'])}** won. "
-                       f"Pick again to change it.")
-
-        async def vote(vote_interaction: discord.Interaction, winner_id: int, loser_id: int) -> None:
-            await self._vote(vote_interaction, tournament_row["id"], found, winner_id)
-
-        async def take_back(take_back_interaction: discord.Interaction) -> None:
-            await self._take_back(take_back_interaction, tournament_row["id"], found)
-
-        await interaction.response.send_message(
-            prompt, view=ReportPicker(team_a, team_b, teams_by_id, vote, take_back if found.vote else None),
-            ephemeral=True,
-        )
-
-    @staticmethod
-    def _still_reportable(conn: sqlite3.Connection, tournament_id: int, user_id: int,
-                          shown: reports.ReportableMatch) -> reports.ReportableMatch | str:
-        """The voter's match as it is now, or why the menu they opened earlier no longer applies."""
-        now = reports.find_reportable_match(conn, db.get_tournament(conn, tournament_id), user_id)
-        if not isinstance(now, str) and (now.match.id, now.team_id, now.teams) != (shown.match.id, shown.team_id, shown.teams):
-            return "This match has changed since the menu was opened. Run `/match report` again."
-        return now
-
-    async def _vote(self, interaction: discord.Interaction, tournament_id: int, shown: reports.ReportableMatch,
-                    winner_id: int) -> None:
-        conn = db.get_connection()
-        try:
-            # Checked and saved with no await in between, so nothing can change the match in the gap.
-            found = self._still_reportable(conn, tournament_id, interaction.user.id, shown)
-            if isinstance(found, str):
-                await interaction.response.edit_message(content=found, view=None)
-                return
-            tournament = db.get_tournament(conn, tournament_id)
-            before = db.get_outcomes(conn, tournament_id)
-            outcome = db.submit_report(conn, tournament_id, found.match.id, found.team_id, winner_id,
-                                       interaction.user.id, interaction.channel_id)
-            teams_by_id = db.get_teams(conn, tournament_id)
-            private = reports.vote_reply(conn, outcome, found, winner_id, teams_by_id)
-            await interaction.response.edit_message(content=private, view=None)
-
-            if outcome in ("agreed", "skipped"):
-                lines = [reports.ending_text(conn, tournament, found.match)]
-                if outcome == "skipped":
-                    lines += new_walkovers(conn, tournament, before)
-                await announce_match_change(self.bot, interaction.channel, found.match.id, "\n".join(lines))
-                return
-            post = db.get_match_post(conn, found.match.id)
-            if post is not None and post["message_id"] is not None:
-                await sync_match_post(self.bot, conn, found.match.id)
-            elif outcome == "disputed":
-                db.claim_match_post(conn, found.match.id, interaction.channel_id, found.teams)
-                await sync_match_post(self.bot, conn, found.match.id)
-        finally:
-            conn.close()
-
-    async def _take_back(self, interaction: discord.Interaction, tournament_id: int,
-                         shown: reports.ReportableMatch) -> None:
-        conn = db.get_connection()
-        try:
-            found = self._still_reportable(conn, tournament_id, interaction.user.id, shown)
-            if isinstance(found, str) or not db.take_back_report(conn, found.match.id, found.team_id):
-                await interaction.response.edit_message(
-                    content=found if isinstance(found, str) else "Your side has no vote to take back.", view=None)
-                return
-            await interaction.response.edit_message(content="Your vote is taken back.", view=None)
-            await sync_match_post(self.bot, conn, found.match.id)
-        finally:
-            conn.close()
+        await open_report_menu(interaction, tournament_row["id"], found, teams_by_id)
 
     @match_group.command(name="result", description="Record the real outcome of a ready match")
     @app_commands.describe(tournament="Tournament name")
@@ -354,5 +273,5 @@ class ResultsCog(commands.Cog):
 
 
 async def setup(bot: commands.Bot) -> None:
-    bot.add_dynamic_items(ReadyUpButton)
+    bot.add_dynamic_items(ReadyUpButton, ReportResultButton)
     await bot.add_cog(ResultsCog(bot))

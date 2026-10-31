@@ -270,11 +270,18 @@ class TournamentRun:
             message = clicked.sent
 
     async def report_result(self, player: Player) -> None:
-        """/match report on their own match. They name who really won, except that a
-        player who goes off script sometimes claims a game they lost. They skip a matchup
-        they never played, which shows up while an earlier result is wrong."""
-        reply = await self.sim.run(player.user, "match report", tournament=await self.tournament_name(player, "match report"))
-        message = reply.sent
+        """Report their own match, from the Report Result button on its post when the bot
+        started it (about half the time), or else with /match report. They name who really
+        won, except that a player who goes off script sometimes claims a game they lost.
+        They skip a matchup they never played, which shows up while an earlier result is wrong."""
+        post = next((m for m in self.sim.visible_messages(player.user) if m.public and self._is_own_match_post(player, m)),
+                    None)
+        if post is not None and self.rng.random() < 0.5:
+            reply = await self.sim.click(player.user, post, "Report Result")
+        else:
+            reply = await self.sim.run(player.user, "match report",
+                                       tournament=await self.tournament_name(player, "match report"))
+        message = reply.sent if reply is not None else None
         buttons = [item.label for item in message.view.children] if message is not None and message.view is not None else []
         if len(buttons) < 2:
             return
@@ -296,10 +303,11 @@ class TournamentRun:
     async def ready_up(self, player: Player) -> None:
         """Press Ready Up on the call for their match, unless they're one who doesn't show."""
         call = next((m for m in self.sim.visible_messages(player.user)
-                     if m.public and player.user.mention in (m.content or "") and _ready_button(m) is not None), None)
+                     if m.public and player.user.mention in (m.content or "") and _post_button(m, "ready") is not None),
+                    None)
         if call is None:
             return
-        match_id = int(_ready_button(call).item.custom_id.split(":")[1])
+        match_id = _post_button(call, "ready")
         if match_id not in self.no_shows:
             # Decided once, before anyone can know the match's real result, which plays around it.
             matches_by_id, feeders, _, _ = self._bracket()
@@ -312,6 +320,10 @@ class TournamentRun:
             self.no_shows[match_id].add(own)  # the bot won't let them ready up, so they forfeit
         if own not in self.no_shows[match_id]:
             await self.sim.click(player.user, call, "Ready Up")
+
+    def _is_own_match_post(self, player: Player, message) -> bool:
+        match_id = _post_button(message, "report")
+        return match_id is not None and any(self._is_players_team(player, team) for team in self._call_teams(match_id))
 
     def _call_teams(self, match_id: int) -> tuple[int, int]:
         conn = db.get_connection()
@@ -1020,10 +1032,13 @@ class TournamentRun:
             self.sim._problem(f"leaderboard points {actual} don't match the picks and results {expected}")
 
 
-def _ready_button(message) -> Optional[discord.ui.DynamicItem]:
+def _post_button(message, kind: str) -> Optional[int]:
+    """The match a match post's `kind` button ("ready" or "report") is for, or None if it
+    has no such button."""
     if message.view is None:
         return None
-    return next((item for item in message.view.children if isinstance(item, discord.ui.DynamicItem)), None)
+    return next((int(item.item.custom_id.split(":")[1]) for item in message.view.children
+                 if isinstance(item, discord.ui.DynamicItem) and item.item.custom_id.startswith(f"{kind}:")), None)
 
 
 def _menu(message) -> Optional[discord.ui.Select]:
