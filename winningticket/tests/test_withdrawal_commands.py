@@ -213,3 +213,17 @@ def test_reinstating_waits_for_later_results_to_be_cleared(world):
         assert reinstate_problem(conn, tournament, teams["Cyan"]) is None
     finally:
         conn.close()
+
+
+def test_withdraw_and_reinstate_only_offer_entrants_they_apply_to(world):
+    sim, organizer, ace, tournament_id, teams = world
+
+    async def go():
+        await sim.run(organizer, "admin withdraw", tournament="Cup", entrant="Dune", reason="withdrawn")
+        return (await sim.autocomplete(organizer, "admin withdraw", "entrant", "", tournament="Cup"),
+                await sim.autocomplete(organizer, "admin reinstate", "entrant", "", tournament="Cup"))
+
+    playing, withdrawn = asyncio.run(go())
+    assert sorted(playing) == ["Ace", "Blaze", "Cyan"]
+    assert withdrawn == ["Dune"]
+    assert not sim.issues

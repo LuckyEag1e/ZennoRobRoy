@@ -28,9 +28,11 @@ from common import (
     any_tournament_autocomplete,
     edit_signups_message,
     outdated_pick_message,
+    playing_entrant_autocomplete,
     resolve_tournament,
     team_name_autocomplete,
     tournament_name_autocomplete,
+    withdrawn_entrant_autocomplete,
 )
 from embeds import EMBED_DESCRIPTION_LIMIT, mention
 from labels import ban_lines, dropped_results_note, feedback_page, join_within, reinstated_line, team_label
@@ -379,7 +381,7 @@ class AdminCog(commands.Cog):
 
     @group.command(name="withdraw", description="Withdraw or disqualify an entrant, giving their remaining matches to their opponents")
     @app_commands.describe(tournament="Tournament name", entrant="Entrant to take out", reason="Shown publicly")
-    @app_commands.autocomplete(tournament=tournament_name_autocomplete, entrant=team_name_autocomplete)
+    @app_commands.autocomplete(tournament=tournament_name_autocomplete, entrant=playing_entrant_autocomplete)
     @app_commands.choices(reason=ORGANIZER_WITHDRAWALS)
     async def withdraw(self, interaction: discord.Interaction, tournament: str, entrant: str, reason: str) -> None:
         conn = db.get_connection()
@@ -399,7 +401,7 @@ class AdminCog(commands.Cog):
 
     @group.command(name="reinstate", description="Undo a dropout, withdrawal or disqualification")
     @app_commands.describe(tournament="Tournament name", entrant="Entrant to bring back")
-    @app_commands.autocomplete(tournament=tournament_name_autocomplete, entrant=team_name_autocomplete)
+    @app_commands.autocomplete(tournament=tournament_name_autocomplete, entrant=withdrawn_entrant_autocomplete)
     async def reinstate(self, interaction: discord.Interaction, tournament: str, entrant: str) -> None:
         conn = db.get_connection()
         try:

@@ -100,9 +100,10 @@ async def registration_name_autocomplete(
 
 def _entrant_choices(interaction: discord.Interaction, current: str,
                      find_tournament: Callable[[sqlite3.Connection, int, str], sqlite3.Row | None],
+                     offer: Callable[[sqlite3.Row], bool] = lambda team: True,
                      ) -> list[app_commands.Choice[str]]:
     """Entrants in the tournament picked in the same command's `tournament` option, which
-    `find_tournament` looks up by name."""
+    `find_tournament` looks up by name, limited to those `offer` accepts."""
     tournament_name = getattr(interaction.namespace, "tournament", None)
     if not tournament_name:
         return []
@@ -112,11 +113,21 @@ def _entrant_choices(interaction: discord.Interaction, current: str,
         teams_by_id = db.get_teams(conn, tournament_row["id"]) if tournament_row is not None else {}
     finally:
         conn.close()
-    return _matching_choices((team["name"] for team in teams_by_id.values()), current)
+    return _matching_choices((team["name"] for team in teams_by_id.values() if offer(team)), current)
 
 
 async def team_name_autocomplete(interaction: discord.Interaction, current: str) -> list[app_commands.Choice[str]]:
     return _entrant_choices(interaction, current, db.get_tournament_by_name)
+
+
+async def playing_entrant_autocomplete(interaction: discord.Interaction, current: str) -> list[app_commands.Choice[str]]:
+    """Entrants who haven't left, for withdrawing."""
+    return _entrant_choices(interaction, current, db.get_tournament_by_name, lambda team: not team["withdrawn"])
+
+
+async def withdrawn_entrant_autocomplete(interaction: discord.Interaction, current: str) -> list[app_commands.Choice[str]]:
+    """Entrants who dropped out, were withdrawn or were disqualified, for reinstating."""
+    return _entrant_choices(interaction, current, db.get_tournament_by_name, lambda team: bool(team["withdrawn"]))
 
 
 async def concluded_tournament_autocomplete(
