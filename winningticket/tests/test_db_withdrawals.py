@@ -135,9 +135,10 @@ def test_announcements_say_who_withdrew_and_who_advances(tournament):
 def test_a_skip_announcement_follows_the_walkover_it_gives(tournament):
     conn, tid, semi_1, semi_2, _, team = tournament
     db.record_result(conn, tid, semi_2, team["C"], 1)
-    lines, _ = skip_and_describe(conn, db.get_tournament(conn, tid), semi_1, (team["A"], team["B"]), 1)
+    lines, _ = skip_and_describe(conn, db.get_tournament(conn, tid), semi_1, (team["A"], team["B"]), 1,
+                                 lambda user_id: f"user {user_id}")
     assert lines == [
-        "📣 Round 1: **A** vs **B** was called off with no winner.",
+        "📣 Round 1: **A** vs **B** was called off by user 1 with no winner.",
         "Round 2: **C** wins by walkover. 🏆 **C** is the champion of Test!",
     ]
 

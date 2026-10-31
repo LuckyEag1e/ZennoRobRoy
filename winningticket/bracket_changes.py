@@ -26,12 +26,14 @@ def withdraw_and_describe(conn: sqlite3.Connection, tournament: sqlite3.Row, tea
 
 
 def skip_and_describe(conn: sqlite3.Connection, tournament: sqlite3.Row, match_id: int, teams: tuple[int, int],
-                      skipped_by: int) -> tuple[list[str], list[int]]:
-    """Call a match off. Returns the public lines announcing it, with the walkovers it
-    gave, and the ids of results dropped."""
+                      skipped_by: int, user_label: Callable[[int], str]) -> tuple[list[str], list[int]]:
+    """Call a match off on behalf of the organizer `skipped_by`, named in the announcement
+    with `user_label`. Returns the public lines announcing it, with the walkovers it gave,
+    and the ids of results dropped."""
     before = db.get_outcomes(conn, tournament["id"])
     dropped = db.skip_match(conn, tournament["id"], match_id, teams, skipped_by)
-    headline = called_off_line(db.get_matches(conn, tournament["id"])[match_id], teams, db.get_teams(conn, tournament["id"]))
+    headline = called_off_line(db.get_matches(conn, tournament["id"])[match_id], teams, db.get_teams(conn, tournament["id"]),
+                               user_label(skipped_by))
     return [headline] + new_walkovers(conn, tournament, before), dropped
 
 

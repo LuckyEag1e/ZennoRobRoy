@@ -58,6 +58,7 @@ from labels import (
     pickem_podium_lines,
     podium_lines,
     rating_lines,
+    reinstated_line,
     seeding_lines,
     score_label,
     team_label,
@@ -810,7 +811,7 @@ class WinningTicketCLI(cmd.Cmd):
             print(f"{team['name']} is still playing.")
             return
         dropped = db.reinstate_entrant(self.conn, tournament["id"], team["id"])
-        print(f"{team['name']} is back in '{tournament['name']}'.{dropped_results_note(dropped)}")
+        print(reinstated_line(team["name"], tournament["name"], user_label(self.user_id)) + dropped_results_note(dropped))
 
     def do_admin_skipmatch(self, arg: str) -> None:
         "Call a match off with no winner: admin_skipmatch <name>"
@@ -830,7 +831,7 @@ class WinningTicketCLI(cmd.Cmd):
         if input("Call this match off with no winner? [y/N] ").strip().lower() != "y":
             print("Cancelled.")
             return
-        lines, dropped = skip_and_describe(self.conn, tournament, match.id, slots[match.id], self.user_id)
+        lines, dropped = skip_and_describe(self.conn, tournament, match.id, slots[match.id], self.user_id, user_label)
         print("\n".join(lines) + dropped_results_note(dropped))
 
     def do_admin_clearpredictions(self, arg: str) -> None:

@@ -92,10 +92,13 @@ def advance_text(match: Match, winner: int, matches_by_id: dict[int, Match], fee
     return f"{name} advances to Round {next_round}{by_walkover} to face {team_label(teams_by_id, opponent)}."
 
 
-def result_line(match: Match, winner: int, loser: int, teams_by_id: dict, advance: str) -> str:
-    """The public announcement of a played game, with `advance` saying where the winner goes."""
+def result_line(match: Match, winner: int, loser: int, teams_by_id: dict, advance: str,
+                organizer: str | None = None) -> str:
+    """The public announcement of a played game, with `advance` saying where the winner goes.
+    `organizer` names the organizer who recorded it, when it wasn't the players."""
+    by = f" (recorded by {organizer})" if organizer is not None else ""
     return (f"📣 Round {match.played_round}: **{team_label(teams_by_id, winner)}** defeats "
-            f"**{team_label(teams_by_id, loser)}**. {advance}")
+            f"**{team_label(teams_by_id, loser)}**{by}. {advance}")
 
 
 def report_warning(match: Match, reporter: int, winner: int, silent: str, deadline: datetime,
@@ -146,9 +149,11 @@ def walkover_line(match: Match, winner: int, teams_by_id: dict, advance: str) ->
     return f"Round {match.played_round}: **{team_label(teams_by_id, winner)}** wins by walkover. {advance}"
 
 
-def called_off_line(match: Match, teams: tuple[int, int], teams_by_id: dict) -> str:
+def called_off_line(match: Match, teams: tuple[int, int], teams_by_id: dict, organizer: str | None = None) -> str:
+    """`organizer` names the organizer who called it off, when it wasn't the players or the bracket."""
     names = " vs ".join(f"**{team_label(teams_by_id, team)}**" for team in teams)
-    return f"📣 Round {match.played_round}: {names} was called off with no winner."
+    by = f" by {organizer}" if organizer is not None else ""
+    return f"📣 Round {match.played_round}: {names} was called off{by} with no winner."
 
 
 def withdrawal_line(entrant_name: str, reason: str, tournament_name: str, organizer: str) -> str:
@@ -159,6 +164,10 @@ def withdrawal_line(entrant_name: str, reason: str, tournament_name: str, organi
     if reason == "disqualified":
         return f"🚫 {organizer} disqualified **{entrant_name}** from **{tournament_name}**."
     return f"🚪 {organizer} withdrew **{entrant_name}** from **{tournament_name}**."
+
+
+def reinstated_line(entrant_name: str, tournament_name: str, organizer: str) -> str:
+    return f"↩️ {organizer} brought **{entrant_name}** back into **{tournament_name}**."
 
 
 WITHDRAWAL_NAMES = {"dropped": "dropped out", "withdrawn": "withdrawn by an organizer",

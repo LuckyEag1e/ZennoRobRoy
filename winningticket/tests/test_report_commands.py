@@ -148,7 +148,7 @@ def test_a_dispute_is_posted_once_and_settled_in_place(world):
         await sim.click(organizer, menu, "Blaze")
     before = len(sim.channel.messages)
     asyncio.run(settle())
-    assert dispute.content.startswith("📣 Round 1: **Blaze** defeats **Ace**.")
+    assert dispute.content.startswith(f"📣 Round 1: **Blaze** defeats **Ace** (recorded by <@{organizer.id}>).")
     assert _public(sim, before) == []
     assert not sim.issues
 

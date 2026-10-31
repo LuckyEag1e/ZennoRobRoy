@@ -24,7 +24,7 @@ from common import (
     tournament_name_autocomplete,
 )
 from embeds import EMBED_DESCRIPTION_LIMIT, mention
-from labels import ban_lines, dropped_results_note, feedback_page, join_within, team_label
+from labels import ban_lines, dropped_results_note, feedback_page, join_within, reinstated_line, team_label
 
 STATUS_CHOICES = [app_commands.Choice(name=status, value=status) for status in db.FORCEABLE_STATUSES]
 # Dropping out is the player's own call, through /match dropout.
@@ -361,7 +361,6 @@ class AdminCog(commands.Cog):
             lines, dropped = withdraw_and_describe(conn, tournament_row, team, reason, interaction.user.id, mention)
         finally:
             conn.close()
-        # The organizer is named so it's clear who decided it, without notifying them of their own action.
         await announce(interaction, "\n".join(lines),
                        f"Done. Undo it with `/admin reinstate`.{dropped_results_note(dropped)}", ping=False)
 
@@ -381,8 +380,9 @@ class AdminCog(commands.Cog):
             dropped = db.reinstate_entrant(conn, tournament_row["id"], team["id"])
         finally:
             conn.close()
-        await announce(interaction, f"↩️ **{entrant}** is back in **{tournament}**.",
-                       f"Reinstated **{entrant}**. The walkovers they gave are undone.{dropped_results_note(dropped)}")
+        await announce(interaction, reinstated_line(team["name"], tournament_row["name"], mention(interaction.user.id)),
+                       f"Reinstated **{entrant}**. The walkovers they gave are undone.{dropped_results_note(dropped)}",
+                       ping=False)
 
     @group.command(name="skipmatch", description="Call a match off with no winner")
     @app_commands.describe(tournament="Tournament name")
@@ -417,7 +417,7 @@ class AdminCog(commands.Cog):
                     if refusal is None:
                         tournament_row = db.get_tournament(conn, session.tournament_id)
                         lines, dropped = skip_and_describe(conn, tournament_row, match.id, teams,
-                                                           confirm_interaction.user.id)
+                                                           confirm_interaction.user.id, mention)
                 finally:
                     conn.close()
                 if refusal is not None:
@@ -428,7 +428,7 @@ class AdminCog(commands.Cog):
                 )
                 if confirm_interaction.channel is not None:
                     try:
-                        await confirm_interaction.channel.send("\n".join(lines))
+                        await confirm_interaction.channel.send("\n".join(lines), allowed_mentions=discord.AllowedMentions.none())
                     except discord.HTTPException:
                         await confirm_interaction.followup.send(
                             "The announcement couldn't be posted in this channel.", ephemeral=True

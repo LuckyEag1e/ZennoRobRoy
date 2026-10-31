@@ -115,6 +115,7 @@ async def _record_and_announce(interaction: discord.Interaction, session: Tourna
         return
     advance = advance_text(match, winner_id, session.matches_by_id, session.feeders_by_target, outcomes,
                            session.teams_by_id, session.tournament_name)
+    text = result_line(match, winner_id, loser_id, session.teams_by_id, advance, mention(interaction.user.id))
 
     # The announcement tells the organizer everything, so their menu just goes away,
     # unless the announcement can't be posted.
@@ -125,12 +126,12 @@ async def _record_and_announce(interaction: discord.Interaction, session: Tourna
             # Players were already told about their votes here, so that message shows the result.
             conn = db.get_connection()
             try:
-                await refresh_report_post(interaction.client, conn, report_post)
+                db.delete_report_post(conn, match.id)
+                announced = await edit_report_post(interaction.client, conn, report_post, text)
             finally:
                 conn.close()
-            announced = True
-        elif interaction.channel is not None:
-            await interaction.channel.send(result_line(match, winner_id, loser_id, session.teams_by_id, advance))
+        if not announced and interaction.channel is not None:
+            await interaction.channel.send(text, allowed_mentions=discord.AllowedMentions.none())
             announced = True
     except discord.HTTPException:
         pass

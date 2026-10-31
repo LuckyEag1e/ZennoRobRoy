@@ -88,7 +88,7 @@ def test_an_organizer_disqualifies_and_then_reinstates(world):
     while_out, posts = asyncio.run(withdraw_and_back())
     assert while_out.winners == {_match_ids(tournament_id)[1]: teams["Cyan"]}
     assert posts[0].startswith(f"🚫 <@{organizer.id}> disqualified **Dune** from **Cup**.")
-    assert posts[1] == "↩️ **Dune** is back in **Cup**."
+    assert posts[1] == f"↩️ <@{organizer.id}> brought **Dune** back into **Cup**."
     assert _outcomes(tournament_id).winners == {}
     assert not sim.issues
 
@@ -114,7 +114,7 @@ def test_skipping_a_match_gives_the_next_opponent_a_walkover(world):
         return _public_since(sim, before)
 
     posts = asyncio.run(skip())
-    assert posts == ["📣 Round 1: **Ace** vs **Blaze** was called off with no winner.\n"
+    assert posts == [f"📣 Round 1: **Ace** vs **Blaze** was called off by <@{organizer.id}> with no winner.\n"
                      "Round 2: **Cyan** wins by walkover. 🏆 **Cyan** is the champion of Cup!"]
     outcomes = _outcomes(tournament_id)
     assert outcomes.skipped == {semi_1}
