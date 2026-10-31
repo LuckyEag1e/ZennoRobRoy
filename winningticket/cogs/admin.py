@@ -8,7 +8,14 @@ from discord.ext import commands
 
 import db
 from bracket import Match, bracket_order, matches_with_both_teams, resolve_all_slots
-from bracket_changes import WITHDRAWABLE_STATUSES, skip_and_describe, withdraw_and_describe
+from bracket_changes import (
+    WITHDRAWABLE_STATUSES,
+    clear_result_and_describe,
+    set_result_and_describe,
+    skip_and_describe,
+    withdraw_and_describe,
+)
+from cogs.results import announce_match_change
 from common import (
     BotView,
     MatchPicker,
@@ -43,6 +50,12 @@ class ConfirmView(BotView):
     @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
     async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         await interaction.response.edit_message(content="Cancelled.", view=None)
+
+
+async def _announce_or_say(interaction: discord.Interaction, match_id: int, text: str) -> None:
+    """Announce an organizer's change to a match, or tell them privately if it couldn't be posted."""
+    if not await announce_match_change(interaction.client, interaction.channel, match_id, text):
+        await interaction.followup.send(f"This couldn't be posted in the channel:\n{text}", ephemeral=True)
 
 
 class AdminCog(commands.Cog):
@@ -230,8 +243,9 @@ class AdminCog(commands.Cog):
                         refusal = outdated_pick_message(db.match_now(conn, session.tournament_id, match.id),
                                                         (winner_id, loser_id))
                         if refusal is None:
-                            dropped = db.record_result(conn, session.tournament_id, match.id, winner_id,
-                                                       confirm_interaction.user.id)
+                            text, dropped = set_result_and_describe(
+                                conn, db.get_tournament(conn, session.tournament_id), match, winner_id, loser_id,
+                                confirm_interaction.user.id, mention)
                     finally:
                         conn.close()
                     if refusal is not None:
@@ -241,6 +255,7 @@ class AdminCog(commands.Cog):
                         content=f"✅ Set Round {match.played_round} winner to **{winner_label}**.{dropped_results_note(dropped)}",
                         view=None,
                     )
+                    await _announce_or_say(confirm_interaction, match.id, text)
 
                 now = current_match()
                 refusal = outdated_pick_message(now, (winner_id, loser_id))
@@ -307,7 +322,9 @@ class AdminCog(commands.Cog):
                     elif refusal is None and (now.winner, now.skipped) != shown:
                         refusal = "That result has changed since the menu was opened. Run the command again."
                     if refusal is None:
-                        dropped = db.clear_result(conn, session.tournament_id, match.id)
+                        text, dropped = clear_result_and_describe(
+                            conn, db.get_tournament(conn, session.tournament_id), match, slots[match.id],
+                            confirm_interaction.user.id, mention)
                 finally:
                     conn.close()
                 if refusal is not None:
@@ -316,6 +333,7 @@ class AdminCog(commands.Cog):
                 await confirm_interaction.response.edit_message(
                     content=f"✅ Result cleared.{dropped_results_note(dropped)}", view=None
                 )
+                await _announce_or_say(confirm_interaction, match.id, text)
 
             await pick_interaction.response.edit_message(
                 content="Clear this match's recorded result? Later results that depended on it will be cleared too.",
@@ -426,13 +444,7 @@ class AdminCog(commands.Cog):
                 await confirm_interaction.response.edit_message(
                     content=f"✅ Called off.{dropped_results_note(dropped)}", view=None
                 )
-                if confirm_interaction.channel is not None:
-                    try:
-                        await confirm_interaction.channel.send("\n".join(lines), allowed_mentions=discord.AllowedMentions.none())
-                    except discord.HTTPException:
-                        await confirm_interaction.followup.send(
-                            "The announcement couldn't be posted in this channel.", ephemeral=True
-                        )
+                await _announce_or_say(confirm_interaction, match.id, "\n".join(lines))
 
             await pick_interaction.response.edit_message(
                 content=f"Call off {names} with no winner? Picks on it won't score, and "

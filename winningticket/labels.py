@@ -149,6 +149,24 @@ def walkover_line(match: Match, winner: int, teams_by_id: dict, advance: str) ->
     return f"Round {match.played_round}: **{team_label(teams_by_id, winner)}** wins by walkover. {advance}"
 
 
+def result_changed_line(match: Match, winner: int, loser: int, teams_by_id: dict, advance: str,
+                        organizer: str) -> str:
+    """The public line for an organizer replacing a match's result."""
+    return (f"✏️ {organizer} changed the Round {match.played_round} result: **{team_label(teams_by_id, winner)}** "
+            f"defeats **{team_label(teams_by_id, loser)}**. {advance}")
+
+
+def result_cleared_line(match: Match, teams: tuple[int, int], teams_by_id: dict, organizer: str,
+                        was_skipped: bool) -> str:
+    """The public line for an organizer clearing a match's result, or taking back calling it off."""
+    names = " vs ".join(f"**{team_label(teams_by_id, team)}**" for team in teams)
+    undone = "took back calling off" if was_skipped else "cleared the result of"
+    return f"✏️ {organizer} {undone} Round {match.played_round}: {names}, so it's waiting to be played."
+
+
+LATER_RESULTS_CLEARED = "Results of later matches that depended on it were cleared."
+
+
 def called_off_line(match: Match, teams: tuple[int, int], teams_by_id: dict, organizer: str | None = None) -> str:
     """`organizer` names the organizer who called it off, when it wasn't the players or the bracket."""
     names = " vs ".join(f"**{team_label(teams_by_id, team)}**" for team in teams)

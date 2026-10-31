@@ -33,14 +33,20 @@ from bracket import (
     resolve_slot,
     rounds,
 )
-from bracket_changes import WITHDRAWABLE_STATUSES, new_walkovers, skip_and_describe, withdraw_and_describe
+from bracket_changes import (
+    WITHDRAWABLE_STATUSES,
+    clear_result_and_describe,
+    new_walkovers,
+    set_result_and_describe,
+    skip_and_describe,
+    withdraw_and_describe,
+)
 from labels import (
     CONSENT_NOTICE,
     CURRENT_FEATURES,
     OPT_OUT_CONFIRMATION,
     OPTED_OUT_NOTE,
     PLANNED_FEATURES,
-    advance_text,
     ban_lines,
     bracket_notes,
     crowd_verdict,
@@ -776,8 +782,9 @@ class WinningTicketCLI(cmd.Cmd):
         if match is None:
             return
         if input("Clear this result? [y/N] ").strip().lower() == "y":
-            dropped = db.clear_result(self.conn, tournament["id"], match.id)
-            print("Cleared." + dropped_results_note(dropped))
+            line, dropped = clear_result_and_describe(self.conn, tournament, match, slots[match.id], self.user_id,
+                                                      user_label)
+            print(line + dropped_results_note(dropped))
         else:
             print("Cancelled.")
 
@@ -1066,12 +1073,9 @@ class WinningTicketCLI(cmd.Cmd):
             if input("This match already has a different result. Overwrite? [y/N] ").strip().lower() != "y":
                 print("Cancelled.")
                 return
-        dropped = db.record_result(self.conn, tournament["id"], match.id, winner_id, self.user_id)
-
-        advance = advance_text(match, winner_id, matches_by_id, feeders, db.get_outcomes(self.conn, tournament["id"]),
-                               teams_by_id, tournament["name"])
-        print(f"Recorded: {team_label(teams_by_id, winner_id)} defeats {team_label(teams_by_id, loser_id)}. "
-              f"{advance}{dropped_results_note(dropped)}")
+        line, dropped = set_result_and_describe(self.conn, tournament, match, winner_id, loser_id, self.user_id,
+                                                user_label)
+        print(line + dropped_results_note(dropped))
 
     # -- exit ---------------------------------------------------------------
 

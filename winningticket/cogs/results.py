@@ -12,7 +12,7 @@ from discord.ext import commands, tasks
 import db
 import reports
 from bracket import Match, matches_with_both_teams, pick_distribution, resolvable_matches, resolve_all_slots
-from bracket_changes import WITHDRAWABLE_STATUSES, new_walkovers, withdraw_and_describe
+from bracket_changes import WITHDRAWABLE_STATUSES, new_walkovers, set_result_and_describe, withdraw_and_describe
 from common import (
     MatchPicker,
     TournamentSession,
@@ -25,7 +25,7 @@ from common import (
     tournament_name_autocomplete,
 )
 from embeds import mention, render_match_stats_embed
-from labels import advance_text, result_line, team_label
+from labels import team_label
 
 
 log = logging.getLogger("winningticket")
@@ -105,42 +105,46 @@ async def _record_and_announce(interaction: discord.Interaction, session: Tourna
         if refusal is None and now.skipped:
             refusal = "This match was called off. Use `/admin setresult` to record a winner anyway."
         if refusal is None:
-            db.record_result(conn, session.tournament_id, match.id, winner_id, interaction.user.id)
-            outcomes = db.get_outcomes(conn, session.tournament_id)
-            report_post = db.get_report_post(conn, match.id)
+            text, _ = set_result_and_describe(conn, db.get_tournament(conn, session.tournament_id), match,
+                                              winner_id, loser_id, interaction.user.id, mention)
     finally:
         conn.close()
     if refusal is not None:
         await interaction.response.edit_message(content=refusal, view=None)
         return
-    advance = advance_text(match, winner_id, session.matches_by_id, session.feeders_by_target, outcomes,
-                           session.teams_by_id, session.tournament_name)
-    text = result_line(match, winner_id, loser_id, session.teams_by_id, advance, mention(interaction.user.id))
 
     # The announcement tells the organizer everything, so their menu just goes away,
     # unless the announcement can't be posted.
     await interaction.response.defer()
-    announced = False
-    try:
-        if report_post is not None and report_post["message_id"] is not None:
-            # Players were already told about their votes here, so that message shows the result.
-            conn = db.get_connection()
-            try:
-                db.delete_report_post(conn, match.id)
-                announced = await edit_report_post(interaction.client, conn, report_post, text)
-            finally:
-                conn.close()
-        if not announced and interaction.channel is not None:
-            await interaction.channel.send(text, allowed_mentions=discord.AllowedMentions.none())
-            announced = True
-    except discord.HTTPException:
-        pass
-    if announced:
+    if await announce_match_change(interaction.client, interaction.channel, match.id, text):
         await interaction.delete_original_response()
     else:
         await interaction.edit_original_response(
-            content=f"✅ Result recorded, but it couldn't be announced here. {advance}", view=None
+            content=f"✅ Result recorded, but it couldn't be announced here:\n{text}", view=None
         )
+
+
+async def announce_match_change(client: discord.Client, channel: discord.abc.Messageable | None, match_id: int,
+                                text: str) -> bool:
+    """Post an organizer's change to a match. When players' votes put up a report post,
+    that post becomes the announcement. The organizer it names isn't notified. False if
+    it couldn't be posted."""
+    conn = db.get_connection()
+    try:
+        post = db.get_report_post(conn, match_id)
+        if post is not None and post["message_id"] is not None:
+            db.delete_report_post(conn, match_id)
+            if await edit_report_post(client, conn, post, text):
+                return True
+    finally:
+        conn.close()
+    if channel is None:
+        return False
+    try:
+        await channel.send(text, allowed_mentions=discord.AllowedMentions.none())
+    except discord.HTTPException:
+        return False
+    return True
 
 
 class ReportPicker(WinnerPicker):

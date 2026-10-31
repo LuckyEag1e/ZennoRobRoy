@@ -1,4 +1,4 @@
-"""/match dropout, /admin withdraw, /admin reinstate and /admin skipmatch, run through the real cogs."""
+"""/match dropout, /admin withdraw, reinstate, skipmatch, setresult and clearresult, run through the real cogs."""
 
 import asyncio
 import os
@@ -128,3 +128,36 @@ def _match_ids(tournament_id):
         return [m.id for m in sorted(db.get_matches(conn, tournament_id).values(), key=bracket_order)]
     finally:
         conn.close()
+
+
+def test_setting_and_clearing_results_say_which_organizer_did_it(world):
+    sim, organizer, ace, tournament_id, teams = world
+    semi_1, _, _ = _match_ids(tournament_id)
+
+    async def set_result(winner, overwrite):
+        menu = (await sim.run(organizer, "admin setresult", tournament="Cup")).sent
+        await sim.choose(organizer, menu, str(semi_1))
+        await sim.click(organizer, menu, winner)
+        if overwrite:
+            await sim.click(organizer, menu, "Confirm")
+
+    async def clear_result():
+        menu = (await sim.run(organizer, "admin clearresult", tournament="Cup")).sent
+        await sim.choose(organizer, menu, str(semi_1))
+        await sim.click(organizer, menu, "Confirm")
+
+    async def changes():
+        before = len(sim.channel.messages)
+        await set_result("Ace", overwrite=False)
+        await set_result("Blaze", overwrite=True)
+        await clear_result()
+        return _public_since(sim, before)
+
+    by = f"<@{organizer.id}>"
+    assert asyncio.run(changes()) == [
+        f"📣 Round 1: **Ace** defeats **Blaze** (recorded by {by}). **Ace** advances to Round 2 to face TBD.",
+        f"✏️ {by} changed the Round 1 result: **Blaze** defeats **Ace**. **Blaze** advances to Round 2 to face TBD.",
+        f"✏️ {by} cleared the result of Round 1: **Ace** vs **Blaze**, so it's waiting to be played.",
+    ]
+    assert _outcomes(tournament_id).decided == set()
+    assert not sim.issues
