@@ -116,7 +116,8 @@ class FakeChannel:
         return message
 
     async def send(self, content: Optional[str] = None, *, embed: Optional[discord.Embed] = None,
-                   view: Optional[discord.ui.View] = None) -> FakeMessage:
+                   view: Optional[discord.ui.View] = None,
+                   allowed_mentions: Optional[discord.AllowedMentions] = None) -> FakeMessage:
         await self.network()
         return self.post(content, [embed] if embed else [], view, None)
 

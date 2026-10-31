@@ -124,7 +124,7 @@ def test_announcements_say_who_withdrew_and_who_advances(tournament):
     conn, tid, semi_1, semi_2, _, team = tournament
     db.record_result(conn, tid, semi_2, team["C"], 1)
     tournament_row = db.get_tournament(conn, tid)
-    lines, dropped = withdraw_and_describe(conn, tournament_row, db.get_teams(conn, tid)[team["B"]], "dropped", 2)
+    lines, dropped = withdraw_and_describe(conn, tournament_row, db.get_teams(conn, tid)[team["B"]], "dropped", 2, str)
     assert dropped == []
     assert lines == [
         "🚪 **B** dropped out of **Test**.",

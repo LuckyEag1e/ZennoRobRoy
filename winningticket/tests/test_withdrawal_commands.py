@@ -87,7 +87,7 @@ def test_an_organizer_disqualifies_and_then_reinstates(world):
 
     while_out, posts = asyncio.run(withdraw_and_back())
     assert while_out.winners == {_match_ids(tournament_id)[1]: teams["Cyan"]}
-    assert posts[0].startswith("🚫 An organizer disqualified **Dune** from **Cup**.")
+    assert posts[0].startswith(f"🚫 <@{organizer.id}> disqualified **Dune** from **Cup**.")
     assert posts[1] == "↩️ **Dune** is back in **Cup**."
     assert _outcomes(tournament_id).winners == {}
     assert not sim.issues

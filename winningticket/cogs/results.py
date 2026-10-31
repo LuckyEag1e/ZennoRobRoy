@@ -379,7 +379,7 @@ class ResultsCog(commands.Cog):
                 refusal = f"**{tournament}** has finished, so there's nothing left to drop out of."
             else:
                 refusal = None
-                lines, _ = withdraw_and_describe(conn, tournament_row, team, "dropped", interaction.user.id)
+                lines, _ = withdraw_and_describe(conn, tournament_row, team, "dropped", interaction.user.id, mention)
         finally:
             conn.close()
         if refusal is not None:

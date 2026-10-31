@@ -601,7 +601,7 @@ class WinningTicketCLI(cmd.Cmd):
         elif input(f"Retype '{tournament['name']}' to confirm: ").strip() != tournament["name"]:
             print("Confirmation didn't match. You're still in.")
         else:
-            lines, _ = withdraw_and_describe(self.conn, tournament, team, "dropped", self.user_id)
+            lines, _ = withdraw_and_describe(self.conn, tournament, team, "dropped", self.user_id, user_label)
             print("\n".join(lines))
 
     def do_matchstats(self, arg: str) -> None:
@@ -793,7 +793,7 @@ class WinningTicketCLI(cmd.Cmd):
         if team["withdrawn"]:
             print(f"{team['name']} has already left.")
             return
-        lines, dropped = withdraw_and_describe(self.conn, tournament, team, parts[2], self.user_id)
+        lines, dropped = withdraw_and_describe(self.conn, tournament, team, parts[2], self.user_id, user_label)
         print("\n".join(lines) + dropped_results_note(dropped))
 
     def do_admin_reinstate(self, arg: str) -> None:

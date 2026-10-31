@@ -151,13 +151,14 @@ def called_off_line(match: Match, teams: tuple[int, int], teams_by_id: dict) -> 
     return f"📣 Round {match.played_round}: {names} was called off with no winner."
 
 
-def withdrawal_line(entrant_name: str, reason: str, tournament_name: str) -> str:
-    """The public line for an entrant leaving a tournament, saying whether they or an organizer decided it."""
+def withdrawal_line(entrant_name: str, reason: str, tournament_name: str, organizer: str) -> str:
+    """The public line for an entrant leaving a tournament, saying whether they decided it
+    or which organizer did (`organizer` names them, by mention in Discord)."""
     if reason == "dropped":
         return f"🚪 **{entrant_name}** dropped out of **{tournament_name}**."
     if reason == "disqualified":
-        return f"🚫 An organizer disqualified **{entrant_name}** from **{tournament_name}**."
-    return f"🚪 An organizer withdrew **{entrant_name}** from **{tournament_name}**."
+        return f"🚫 {organizer} disqualified **{entrant_name}** from **{tournament_name}**."
+    return f"🚪 {organizer} withdrew **{entrant_name}** from **{tournament_name}**."
 
 
 WITHDRAWAL_NAMES = {"dropped": "dropped out", "withdrawn": "withdrawn by an organizer",

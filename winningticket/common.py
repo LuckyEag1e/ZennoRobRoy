@@ -208,13 +208,15 @@ def load_bracket_embed(conn: sqlite3.Connection, tournament: sqlite3.Row) -> dis
     )
 
 
-async def announce(interaction: discord.Interaction, public: str, private: str) -> None:
+async def announce(interaction: discord.Interaction, public: str, private: str, ping: bool = True) -> None:
     """Reply `private` to whoever ran the command, and post `public` in the channel. If the
-    post fails, they're told what it would have said."""
+    post fails, they're told what it would have said. Without `ping`, users mentioned in
+    `public` show by name but aren't notified."""
     await interaction.response.send_message(private, ephemeral=True)
     if interaction.channel is not None:
         try:
-            await interaction.channel.send(public)
+            await interaction.channel.send(
+                public, allowed_mentions=None if ping else discord.AllowedMentions.none())
             return
         except discord.HTTPException:
             pass

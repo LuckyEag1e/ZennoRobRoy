@@ -4,6 +4,7 @@ entrant and calling a match off, each with the public lines that announce it."""
 from __future__ import annotations
 
 import sqlite3
+from typing import Callable
 
 import db
 from bracket import Outcomes
@@ -14,12 +15,14 @@ WITHDRAWABLE_STATUSES = ("setup", "predictions_open", "in_progress")
 
 
 def withdraw_and_describe(conn: sqlite3.Connection, tournament: sqlite3.Row, team: sqlite3.Row, reason: str,
-                          withdrawn_by: int) -> tuple[list[str], list[int]]:
-    """Withdraw an entrant. Returns the public lines announcing it, with the walkovers it
-    gave, and the ids of results dropped."""
+                          withdrawn_by: int, user_label: Callable[[int], str]) -> tuple[list[str], list[int]]:
+    """Withdraw an entrant on behalf of the user `withdrawn_by`, named in the announcement
+    with `user_label`. Returns the public lines announcing it, with the walkovers it gave,
+    and the ids of results dropped."""
     before = db.get_outcomes(conn, tournament["id"])
     dropped = db.withdraw_entrant(conn, tournament["id"], team["id"], reason, withdrawn_by)
-    return [withdrawal_line(team["name"], reason, tournament["name"])] + new_walkovers(conn, tournament, before), dropped
+    line = withdrawal_line(team["name"], reason, tournament["name"], user_label(withdrawn_by))
+    return [line] + new_walkovers(conn, tournament, before), dropped
 
 
 def skip_and_describe(conn: sqlite3.Connection, tournament: sqlite3.Row, match_id: int, teams: tuple[int, int],

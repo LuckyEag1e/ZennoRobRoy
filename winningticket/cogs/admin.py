@@ -358,11 +358,12 @@ class AdminCog(commands.Cog):
             if team["withdrawn"]:
                 await interaction.response.send_message(f"**{entrant}** has already left **{tournament}**.", ephemeral=True)
                 return
-            lines, dropped = withdraw_and_describe(conn, tournament_row, team, reason, interaction.user.id)
+            lines, dropped = withdraw_and_describe(conn, tournament_row, team, reason, interaction.user.id, mention)
         finally:
             conn.close()
+        # The organizer is named so it's clear who decided it, without notifying them of their own action.
         await announce(interaction, "\n".join(lines),
-                       f"Done. Undo it with `/admin reinstate`.{dropped_results_note(dropped)}")
+                       f"Done. Undo it with `/admin reinstate`.{dropped_results_note(dropped)}", ping=False)
 
     @group.command(name="reinstate", description="Undo a dropout, withdrawal or disqualification")
     @app_commands.describe(tournament="Tournament name", entrant="Entrant to bring back")
