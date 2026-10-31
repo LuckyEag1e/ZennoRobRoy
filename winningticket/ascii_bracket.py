@@ -24,7 +24,7 @@ from bracket import (
     is_bye,
     rounds,
 )
-from labels import team_label, team_name
+from labels import seeded_team_label, team_label
 
 # (match, team_a_id, team_b_id) -> {team_id: '+' or '-'} for whichever teams
 # in this match should be marked; teams not present render unmarked.
@@ -35,8 +35,7 @@ LineMarker = Callable[[Match, Optional[int], Optional[int]], dict]
 # round until Discord wraps the lines and breaks the diagram.
 NAME_SLOT_WIDTH = 10
 # A winner named on a junction adds their name's width to every later round, so those
-# names are cut much shorter than the entrants listed down the left, and leave out the
-# seed, which the entrant's own line already shows.
+# names are cut much shorter than the entrants listed down the left.
 JUNCTION_NAME_WIDTH = 5
 
 # Writing each winner where their line joins reads best, but it adds a name's width per
@@ -121,7 +120,7 @@ Rendered = tuple[list[_Row], int, int]
 def _render_team(team_id: Optional[int], match: Match, teams_by_id: dict, marks: dict) -> Rendered:
     """One entrant, marked and coloured by `match`, the first game they play."""
     mark = marks.get(team_id, " ")
-    plain = f"{mark}{_fit(team_label(teams_by_id, team_id))}"
+    plain = f"{mark}{_fit(seeded_team_label(teams_by_id, team_id))}"
     return [_Row(_colorize(plain, match.played_round, mark), len(plain))], 0, len(plain)
 
 
@@ -155,7 +154,7 @@ def _render_match(
         mark = marks.get(winner, " ")
         # Truncated like team names but not padded: the connector to the next game, or the
         # end of the line, follows straight on.
-        name = _fit(team_name(teams_by_id, winner), JUNCTION_NAME_WIDTH) if inline else _fit(team_label(teams_by_id, winner))
+        name = _fit(team_label(teams_by_id, winner), JUNCTION_NAME_WIDTH if inline else NAME_SLOT_WIDTH)
         plain = f"{mark}{name.rstrip()}"
         label, label_width = _colorize(plain, color_round, mark), len(plain)
 

@@ -23,18 +23,19 @@ from ratings import Ratings
 MEDALS = {1: "🥇", 2: "🥈", 3: "🥉"}
 
 
-def team_name(teams_by_id: dict, team_id: Optional[int]) -> str:
+def team_label(teams_by_id: dict, team_id: Optional[int]) -> str:
     if team_id is None:
         return "TBD"
     team = teams_by_id.get(team_id)
     return team["name"] if team is not None else "Unknown"
 
 
-def team_label(teams_by_id: dict, team_id: Optional[int]) -> str:
-    """The team's name, prefixed with its seed when it has one."""
+def seeded_team_label(teams_by_id: dict, team_id: Optional[int]) -> str:
+    """The team's name, prefixed with its seed when it has one. Only where the seeding is
+    what's being shown, such as the bracket's entrant list; elsewhere it's clutter."""
     team = teams_by_id.get(team_id) if team_id is not None else None
     if team is None or team["seed"] is None:
-        return team_name(teams_by_id, team_id)
+        return team_label(teams_by_id, team_id)
     return f"({team['seed']}) {team['name']}"
 
 
@@ -218,17 +219,16 @@ def pick_review_lines(matches_by_id: dict[int, Match], picks: dict[int, int], te
 
 
 def podium_lines(result: Podium, teams_by_id: dict) -> list[str]:
-    """Names only: once the tournament is over, seeds don't say anything about the result."""
     lines = [f"{MEDALS[1]} {_placed_name(teams_by_id, result.champion)}",
              f"{MEDALS[2]} {_placed_name(teams_by_id, result.runner_up)}"]
     if result.third_places:
-        lines.append(f"{MEDALS[3]} " + " & ".join(team_name(teams_by_id, t) for t in result.third_places))
+        lines.append(f"{MEDALS[3]} " + " & ".join(team_label(teams_by_id, t) for t in result.third_places))
     return lines
 
 
 def _placed_name(teams_by_id: dict, team_id: Optional[int]) -> str:
     """A podium place, which stays empty when its match was skipped or won by walkover."""
-    return team_name(teams_by_id, team_id) if team_id is not None else "Not decided"
+    return team_label(teams_by_id, team_id) if team_id is not None else "Not decided"
 
 
 def pickem_podium_lines(scores: list[UserScore], player_label: Callable[[int], str]) -> list[str]:
