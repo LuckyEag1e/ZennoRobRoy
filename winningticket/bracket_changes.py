@@ -8,11 +8,12 @@ import sqlite3
 from typing import Callable
 
 import db
-from bracket import Match, Outcomes
+from bracket import Match, Outcomes, bracket_order, resolve_all_slots
 from labels import (
-    LATER_RESULTS_CLEARED,
     advance_text,
     called_off_line,
+    later_results_first,
+    matchup_label,
     result_changed_line,
     result_cleared_line,
     result_line,
@@ -65,7 +66,7 @@ def set_result_and_describe(conn: sqlite3.Connection, tournament: sqlite3.Row, m
                            teams_by_id, tournament["name"])
     describe = result_changed_line if replacing else result_line
     line = describe(match, winner, loser, teams_by_id, advance, user_label(recorded_by))
-    return line + (f" {LATER_RESULTS_CLEARED}" if dropped else ""), dropped
+    return line, dropped
 
 
 def clear_result_and_describe(conn: sqlite3.Connection, tournament: sqlite3.Row, match: Match, teams: tuple[int, int],
@@ -75,4 +76,27 @@ def clear_result_and_describe(conn: sqlite3.Connection, tournament: sqlite3.Row,
     was_skipped = match.id in db.get_outcomes(conn, tournament["id"]).skipped
     dropped = db.clear_result(conn, tournament["id"], match.id)
     line = result_cleared_line(match, teams, db.get_teams(conn, tournament["id"]), user_label(cleared_by), was_skipped)
-    return line + (f" {LATER_RESULTS_CLEARED}" if dropped else ""), dropped
+    return line, dropped
+
+
+def later_results_problem(conn: sqlite3.Connection, tournament: sqlite3.Row, match_ids) -> str | None:
+    """Why the results of `match_ids` can't change yet, or None if they can. A later match
+    that depends on one of them and has a result, or was called off, has to be cleared
+    first, so no result is left standing on a matchup that wasn't played."""
+    blocking = {later for match_id in match_ids for later in db.stored_later_results(conn, tournament["id"], match_id)}
+    if not blocking:
+        return None
+    matches_by_id, feeders, teams_by_id = db.load_bracket(conn, tournament["id"])
+    slots = resolve_all_slots(matches_by_id, db.get_outcomes(conn, tournament["id"]).winners.get, feeders)
+    latest_first = sorted((matches_by_id[match_id] for match_id in blocking), key=bracket_order, reverse=True)
+    return later_results_first([matchup_label(match, slots, teams_by_id) for match in latest_first])
+
+
+def reinstate_problem(conn: sqlite3.Connection, tournament: sqlite3.Row, team_id: int) -> str | None:
+    """Why `team_id` can't be reinstated yet, or None if it can: the matches it gave away
+    by walkover go back to being unplayed, so the same rule applies to them."""
+    matches_by_id, feeders, _ = db.load_bracket(conn, tournament["id"])
+    outcomes = db.get_outcomes(conn, tournament["id"])
+    slots = resolve_all_slots(matches_by_id, outcomes.winners.get, feeders)
+    given_away = [match_id for match_id in outcomes.walkovers | outcomes.empty if team_id in slots[match_id]]
+    return later_results_problem(conn, tournament, given_away)

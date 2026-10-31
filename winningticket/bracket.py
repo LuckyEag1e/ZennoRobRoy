@@ -317,6 +317,15 @@ def settle(
     return outcomes
 
 
+def later_matches(match: Match, matches_by_id: dict[int, Match]) -> list[Match]:
+    """The matches `match`'s winner would go on to, in order, up to the final."""
+    later = []
+    while match.feeds_into_match_id is not None:
+        match = matches_by_id[match.feeds_into_match_id]
+        later.append(match)
+    return later
+
+
 def next_opponent(
     match: Match,
     feeders_by_target: dict[int, dict[str, Match]],

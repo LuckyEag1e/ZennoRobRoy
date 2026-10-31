@@ -105,8 +105,8 @@ class HelpCog(commands.Cog):
     async def admin(self, interaction: discord.Interaction) -> None:
         embed = _command_list_embed("Admin / troubleshooting commands", [
             ("/admin setstatus tournament:<name> status:<status>", "Force a tournament's status directly, bypassing the normal open/lock flow."),
-            ("/admin setresult tournament:<name>", "Force or overwrite any known matchup's result (e.g. for testing)."),
-            ("/admin clearresult tournament:<name>", "Delete a recorded match result, or undo a match being called off."),
+            ("/admin setresult tournament:<name>", "Force or overwrite any known matchup's result. A result later ones depend on has to wait until those are cleared, latest first."),
+            ("/admin clearresult tournament:<name>", "Delete a recorded match result, or undo a match being called off. Clear later results that depend on it first."),
             ("/admin withdraw tournament:<name> entrant:<name> reason:<withdrawn|disqualified>", "Take an entrant out. Their remaining matches go to their opponents by walkover, and the post says an organizer did it. `/admin reinstate` brings them back."),
             ("/admin skipmatch tournament:<name>", "Call a match off with no winner, such as when neither side turns up. Whoever would have played the winner next advances by walkover."),
             ("/admin editteam tournament:<name> team:<name>", "Fix an entrant's name or seed after import."),

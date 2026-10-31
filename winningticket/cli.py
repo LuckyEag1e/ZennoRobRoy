@@ -21,6 +21,7 @@ import tournament_builder
 from ascii_bracket import prediction_marker, real_result_marker, render_tree
 from bracket import (
     BracketError,
+    Match,
     bracket_order,
     compute_leaderboard,
     is_bye,
@@ -36,7 +37,9 @@ from bracket import (
 from bracket_changes import (
     WITHDRAWABLE_STATUSES,
     clear_result_and_describe,
+    later_results_problem,
     new_walkovers,
+    reinstate_problem,
     set_result_and_describe,
     skip_and_describe,
     withdraw_and_describe,
@@ -779,7 +782,7 @@ class WinningTicketCLI(cmd.Cmd):
             print("No recorded results to clear.")
             return
         match = self._choose_match(decided, slots, teams_by_id)
-        if match is None:
+        if match is None or self._said_later_results_problem(tournament, match):
             return
         if input("Clear this result? [y/N] ").strip().lower() == "y":
             line, dropped = clear_result_and_describe(self.conn, tournament, match, slots[match.id], self.user_id,
@@ -817,6 +820,10 @@ class WinningTicketCLI(cmd.Cmd):
         if not team["withdrawn"]:
             print(f"{team['name']} is still playing.")
             return
+        refusal = reinstate_problem(self.conn, tournament, team["id"])
+        if refusal is not None:
+            print(refusal)
+            return
         dropped = db.reinstate_entrant(self.conn, tournament["id"], team["id"])
         print(reinstated_line(team["name"], tournament["name"], user_label(self.user_id)) + dropped_results_note(dropped))
 
@@ -833,7 +840,7 @@ class WinningTicketCLI(cmd.Cmd):
             print("No matches have both teams known yet.")
             return
         match = self._choose_match(skippable, slots, teams_by_id, outcomes.decided)
-        if match is None:
+        if match is None or self._said_later_results_problem(tournament, match):
             return
         if input("Call this match off with no winner? [y/N] ").strip().lower() != "y":
             print("Cancelled.")
@@ -1035,6 +1042,13 @@ class WinningTicketCLI(cmd.Cmd):
             print("Invalid choice.")
             return None
 
+    def _said_later_results_problem(self, tournament, match: Match) -> bool:
+        """Whether later results stop `match`'s result from changing, after saying so."""
+        refusal = later_results_problem(self.conn, tournament, [match.id])
+        if refusal is not None:
+            print(refusal)
+        return refusal is not None
+
     def _pick_and_record_result(self, tournament, allow_overwrite: bool):
         matches_by_id, feeders, teams_by_id = db.load_bracket(self.conn, tournament["id"])
         outcomes = db.get_outcomes(self.conn, tournament["id"])
@@ -1070,6 +1084,8 @@ class WinningTicketCLI(cmd.Cmd):
             print(f"{team_label(teams_by_id, winner_id)} already won this match, so there's nothing to change.")
             return
         if match.id in outcomes.decided:
+            if self._said_later_results_problem(tournament, match):
+                return
             if input("This match already has a different result. Overwrite? [y/N] ").strip().lower() != "y":
                 print("Cancelled.")
                 return

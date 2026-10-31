@@ -17,6 +17,7 @@ from bracket import (
     build_feeder_index,
     compute_leaderboard,
     final_match,
+    later_matches,
     played_games,
     podium,
     resolve_all_slots,
@@ -828,6 +829,15 @@ def withdraw_entrant(conn: sqlite3.Connection, tournament_id: int, team_id: int,
             (reason, withdrawn_by, team_id),
         )
         return _settle_results(conn, tournament_id)
+
+
+def stored_later_results(conn: sqlite3.Connection, tournament_id: int, match_id: int) -> list[int]:
+    """The later matches on `match_id`'s path that have a recorded result or were called
+    off, nearest first. Changing `match_id` would change who played them."""
+    matches_by_id, _ = _load_matches(conn, tournament_id)
+    stored = {row[0] for row in conn.execute(
+        """SELECT match_id FROM match_results UNION SELECT match_id FROM skipped_matches""")}
+    return [m.id for m in later_matches(matches_by_id[match_id], matches_by_id) if m.id in stored]
 
 
 def reinstate_entrant(conn: sqlite3.Connection, tournament_id: int, team_id: int) -> list[int]:

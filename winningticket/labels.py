@@ -164,7 +164,10 @@ def result_cleared_line(match: Match, teams: tuple[int, int], teams_by_id: dict,
     return f"✏️ {organizer} {undone} Round {match.played_round}: {names}, so it's waiting to be played."
 
 
-LATER_RESULTS_CLEARED = "Results of later matches that depended on it were cleared."
+def later_results_first(matchups: list[str]) -> str:
+    """Refusing to change a result that later results depend on. `matchups` lists those, latest first."""
+    return ("Later results depend on this one, so clear them first with `/admin clearresult`, "
+            f"latest first: {', '.join(matchups)}.")
 
 
 def called_off_line(match: Match, teams: tuple[int, int], teams_by_id: dict, organizer: str | None = None) -> str:

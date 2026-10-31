@@ -692,14 +692,29 @@ class TournamentRun:
         if await self.sim.choose(org, reply.sent, str(match_id)) is not None:
             await self.sim.click(org, reply.sent, "Confirm")
 
-    async def _fix_result(self, organizer: Organizer, match_id: int, winner: int, teams_by_id) -> None:
+    async def _fix_result(self, organizer: Organizer, match_id: int, winner: int, teams_by_id,
+                          retry: bool = True) -> None:
+        """Set the right winner. When the bot says later results depend on this one, they
+        clear those, latest first as it asks, and try again."""
         org = organizer.user
         reply = await self.sim.run(org, "admin setresult", tournament=self.name)
         message = reply.sent
         if await self.sim.choose(org, message, str(match_id)) is None:
             return  # the match isn't on offer any more, after someone else's change
         await self.sim.click(org, message, team_label(teams_by_id, winner)[:80])
+        if (message.content or "").startswith("Later results depend") and retry:
+            for later in reversed(self._stored_later_results(match_id)):
+                await self._clear_result(organizer, later)
+            await self._fix_result(organizer, match_id, winner, teams_by_id, retry=False)
+            return
         await self.sim.click(org, message, "Confirm")
+
+    def _stored_later_results(self, match_id: int) -> list[int]:
+        conn = db.get_connection()
+        try:
+            return db.stored_later_results(conn, self.tournament_id, match_id)
+        finally:
+            conn.close()
 
     def _real_winner(self, match_id: int, matches_by_id, feeders) -> Optional[int]:
         """Who really wins this match, decided by skill the first time anyone asks. An

@@ -10,6 +10,7 @@ import pytest
 
 import db
 from bracket import bracket_order
+from bracket_changes import reinstate_problem
 from sim.discord_fakes import FakeAttachment
 from sim.harness import GUILD_ID, Simulation
 
@@ -161,3 +162,54 @@ def test_setting_and_clearing_results_say_which_organizer_did_it(world):
     ]
     assert _outcomes(tournament_id).decided == set()
     assert not sim.issues
+
+
+def test_a_result_later_results_depend_on_is_cleared_last_first(world):
+    sim, organizer, ace, tournament_id, teams = world
+    semi_1, semi_2, final = _match_ids(tournament_id)
+    conn = db.get_connection()
+    db.record_result(conn, tournament_id, semi_1, teams["Ace"], organizer.id)
+    db.record_result(conn, tournament_id, semi_2, teams["Cyan"], organizer.id)
+    db.record_result(conn, tournament_id, final, teams["Cyan"], organizer.id)
+    conn.close()
+
+    async def try_clear(match_id):
+        menu = (await sim.run(organizer, "admin clearresult", tournament="Cup")).sent
+        await sim.choose(organizer, menu, str(match_id))
+        reply = menu.content
+        await sim.click(organizer, menu, "Confirm")
+        return reply
+
+    async def try_skip(match_id):
+        menu = (await sim.run(organizer, "admin skipmatch", tournament="Cup")).sent
+        await sim.choose(organizer, menu, str(match_id))
+        return menu.content
+
+    refusal = "Later results depend on this one, so clear them first with `/admin clearresult`, latest first: R2: Ace vs Cyan."
+    assert asyncio.run(try_clear(semi_1)) == refusal
+    assert asyncio.run(try_skip(semi_1)) == refusal
+    assert _outcomes(tournament_id).winners[final] == teams["Cyan"]
+
+    asyncio.run(try_clear(final))
+    asyncio.run(try_clear(semi_1))
+    assert _outcomes(tournament_id).winners == {semi_2: teams["Cyan"]}
+    assert not sim.issues
+
+
+
+def test_reinstating_waits_for_later_results_to_be_cleared(world):
+    """In this small bracket the only later match is the final, whose result finishes the
+    tournament, so the check is called directly rather than through /admin reinstate."""
+    sim, organizer, ace, tournament_id, teams = world
+    semi_1, semi_2, final = _match_ids(tournament_id)
+    asyncio.run(sim.run(organizer, "admin withdraw", tournament="Cup", entrant="Blaze", reason="withdrawn"))
+    conn = db.get_connection()
+    try:
+        tournament = db.get_tournament(conn, tournament_id)
+        assert reinstate_problem(conn, tournament, teams["Blaze"]) is None
+        db.record_result(conn, tournament_id, semi_2, teams["Cyan"], organizer.id)
+        db.record_result(conn, tournament_id, final, teams["Ace"], organizer.id)
+        assert reinstate_problem(conn, tournament, teams["Blaze"]).startswith("Later results depend on this one")
+        assert reinstate_problem(conn, tournament, teams["Cyan"]) is None
+    finally:
+        conn.close()
