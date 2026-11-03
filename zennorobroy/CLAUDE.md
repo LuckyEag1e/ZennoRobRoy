@@ -12,7 +12,8 @@ undocumented) Chrono Genesis API and reporting club/member performance into a Di
   expected.
 - Deployment-specific details (host, guild/channel IDs, club names and circle IDs) live in the
   gitignored `CLAUDE.local.md`, never in this file.
-- No git repo initialized in this directory yet.
+- Part of a git repo with a second bot (`winningticket/`) in the parent folder. See the root
+  `CLAUDE.md` for the layout.
 - **Confirmed production target**: one of the guilds in `GUILD_ID` is the real club server, not
   another dev/test guild — the user has been given permission to roll the bot out there for real. `GUILD_ID` already includes it (see "Key implementation decisions" for
   the full list), so slash commands are live there.
@@ -285,7 +286,7 @@ reference/                   gitignored-by-convention (not actually in .gitignor
 
 A review ahead of the production rollout found two issues. One was fixed and kept; the other was
 fixed and then explicitly reverted by the user in favor of an honor-system + admin-oversight
-approach. One item remains open.
+approach. The one item left open, `.env` permissions, was fixed on 2026-11-03.
 
 - **Fixed and kept — path traversal via `circle_id`**: `archive.js` built filesystem paths with
   `path.join(DATA_DIR, ..., circleId)`. `path.join` does **not** strip `../`, so an unvalidated
@@ -308,9 +309,10 @@ approach. One item remains open.
   correctly). This is deliberate after-the-fact oversight instead of at-claim-time blocking — do
   **not** silently re-add the uniqueness check if asked to revisit this; the user considered it and
   chose the honor-system/oversight approach on purpose.
-- **Open — `.env` is world-readable**: mode `664` on a non-containerized host means any other local
-  account on this box could read `DISCORD_TOKEN` and `CHRONO_API_KEY`. Not fixed yet — recommend
-  `chmod 600 .env` (low risk if this is genuinely single-user, but cheap to harden regardless).
+- **Fixed on the deployment (2026-11-03) — `.env` was world-readable**: mode `664` on a
+  non-containerized host meant any other local account could read `DISCORD_TOKEN` and
+  `CHRONO_API_KEY`. It's now `chmod 600`. Git doesn't carry file modes for an ignored file, so
+  any new deployment needs the same `chmod 600 .env` after creating it.
 - Also noted but not fixed (low severity, no longer user-reachable after the `circle_id` option
   removal above): `chronoApi.js` interpolates `circle_id` into the request URL without
   `encodeURIComponent`. Harmless now that the value is always `process.env.CIRCLE_ID`, but worth
