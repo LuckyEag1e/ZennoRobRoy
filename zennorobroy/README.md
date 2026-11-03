@@ -30,12 +30,12 @@ under the goal.
 | --- | --- | --- |
 | `/quota [amount] [club]` | Anyone to view, admins to set | The required daily fan gain per member. `0` turns it off. |
 | `/set_goal [amount] [club]` | Anyone to view, admins to set | A stretch goal, shown separately from the quota. `0` turns it off. |
-| `/approve_inactivity <user> <end_date>` | Admins | Excuses a linked member from the quota until `end_date` (`YYYY-MM-DD`). A date today or earlier removes the approval. |
+| `/approve_inactivity <user> <end_date>` | Admins | Excuses a linked member from the quota through `end_date` (`YYYY-MM-DD`), including that whole day. A date before today removes the approval. |
 
 "Admins" means the server owner and anyone they've given access with `/authorise`. Approved
 inactivity only changes the quota check: the member's shown averages and leaderboard position
-stay the same. The bot gives them an **Approved Inactivity** role. At 00:05 UTC on the end date,
-it removes the approval and the role.
+stay the same. The bot gives them an **Approved Inactivity** role. At 00:05 UTC the day after the
+end date, it removes the approval and the role.
 
 ### Linking Discord accounts to trainers
 
