@@ -7,7 +7,7 @@ const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 module.exports = {
   data: new SlashCommandBuilder()
     .setName('approve_inactivity')
-    .setDescription('Excuse a member from quota until a given date (past/today date revokes an existing approval)')
+    .setDescription('Excuse a member from quota through a given date (a past date revokes an existing approval)')
     .addUserOption((opt) => opt.setName('user').setDescription('Member to excuse').setRequired(true))
     .addStringOption((opt) =>
       opt.setName('end_date').setDescription('Excused through this date, YYYY-MM-DD').setRequired(true),
@@ -42,7 +42,7 @@ module.exports = {
 
     const today = new Date().toISOString().slice(0, 10);
 
-    if (endDate <= today) {
+    if (endDate < today) {
       clearInactivityApproval(interaction.guildId, friendViewerId);
       await removeApprovedInactivityRole(interaction.guild, target.id);
       await interaction.reply(`${target}'s approved-inactivity status has been revoked.`);

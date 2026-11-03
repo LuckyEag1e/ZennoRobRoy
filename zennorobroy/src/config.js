@@ -134,7 +134,8 @@ function setInactivityApproval(guildId, friendViewerId, discordUserId, endDate) 
 
   const today = new Date(new Date().toISOString().slice(0, 10));
   const end = new Date(endDate);
-  const creditDays = Math.max(1, Math.round((end - today) / 86400000));
+  // Today and the end date both count, so an approval ending today is worth 1 day.
+  const creditDays = Math.max(1, Math.round((end - today) / 86400000) + 1);
 
   const record = { discordUserId, endDate, creditDays };
   config.inactivityApprovals[guildId][String(friendViewerId)] = record;
@@ -151,13 +152,14 @@ function clearInactivityApproval(guildId, friendViewerId) {
 }
 
 // Number of excused days to apply to a member's quota calculation. Returns 0
-// once the approval's endDate has passed, even if the daily sweep hasn't
-// gotten around to clearing it and removing the role yet.
+// once the approval's endDate has passed (the end date itself is still excused),
+// even if the daily sweep hasn't gotten around to clearing it and removing the
+// role yet.
 function getInactivityCredit(guildId, friendViewerId) {
   const approval = getInactivityApproval(guildId, friendViewerId);
   if (!approval) return 0;
   const today = new Date().toISOString().slice(0, 10);
-  if (approval.endDate <= today) return 0;
+  if (approval.endDate < today) return 0;
   return approval.creditDays;
 }
 

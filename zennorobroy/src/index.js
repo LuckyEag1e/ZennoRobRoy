@@ -163,7 +163,7 @@ async function checkInactivityExpiries() {
 
   for (const guildId of getGuildIdsWithInactivityApprovals()) {
     const approvals = getAllInactivityApprovals(guildId);
-    const expired = Object.entries(approvals).filter(([, record]) => record.endDate <= today);
+    const expired = Object.entries(approvals).filter(([, record]) => record.endDate < today);
     if (expired.length === 0) continue;
 
     try {
