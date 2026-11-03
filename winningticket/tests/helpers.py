@@ -20,3 +20,13 @@ def matches_from_pairs(team_pairs: list[tuple]) -> dict[int, Match]:
         for i, s in enumerate(specs)
     }
     return numbered(matches_by_id)
+
+
+async def sign_up(sim, user, tournament: str, agree: bool = True):
+    """/register through the simulator, answering the consent notice if it's shown.
+    Returns the reply, which the button click edits in place."""
+    reply = (await sim.run(user, "register", tournament=tournament)).sent
+    labels = [item.label for item in reply.view.children] if reply.view is not None else []
+    if "Agree" in labels:
+        await sim.click(user, reply, "Agree" if agree else "Opt Out")
+    return reply

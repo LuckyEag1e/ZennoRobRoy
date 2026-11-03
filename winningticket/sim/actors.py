@@ -45,7 +45,7 @@ SPAMMER = Competence("spammer", typo=0.0, off_script=0.0, double_click=0.0, aban
 class OrganizerStyle:
     name: str
     wrong_order: float    # runs a stage's command too early or twice
-    wrong_result: float   # records the wrong winner, then fixes it with /admin setresult
+    wrong_result: float   # records the wrong winner, then fixes it with /admin setresult, at once or at the next review
     uses_deadline: bool   # closes sign-ups with a deadline instead of by hand
 
 
@@ -54,10 +54,11 @@ SLOPPY = OrganizerStyle("sloppy", wrong_order=0.4, wrong_result=0.15, uses_deadl
 
 
 class Player:
-    def __init__(self, user: FakeUser, competence: Competence, skill: float) -> None:
+    def __init__(self, user: FakeUser, competence: Competence, skill: float, agrees: bool = True) -> None:
         self.user = user
         self.competence = competence
         self.skill = skill  # true strength, which decides real match results
+        self.agrees = agrees  # whether they agree to link their data when first asked
         self.unfinished_bracket = None  # the /predict step they walked away from, if any
 
     def __repr__(self) -> str:
@@ -88,23 +89,24 @@ class Player:
 
     async def _registration_turn(self, run: TournamentRun) -> None:
         if not run.is_registered(self):
-            await run.sim.run(self.user, "register", tournament=await run.tournament_name(self, "register"))
+            await run.register(self, await run.tournament_name(self, "register"))
         elif run.rng.random() < self.competence.off_script:
             # Changes their mind, then signs up again.
             await run.sim.run(self.user, "unregister", tournament=await run.tournament_name(self, "unregister"))
-            await run.sim.run(self.user, "register", tournament=await run.tournament_name(self, "register"))
+            await run.register(self, await run.tournament_name(self, "register"))
 
     async def _look_around(self, run: TournamentRun) -> None:
         """Checks something that makes sense at this stage of the tournament."""
         status = run.status()
         if status == "registration":
-            options = ["entrants", "features", "help"]
+            options = ["entrants", "features", "help", "rating"]
         elif status == "predictions_open":
-            options = ["entrants", "bracket", "stats", "features"] + (["mypicks"] if run.has_predicted(self) else [])
+            options = ["entrants", "bracket", "stats", "features", "rating"] + (["mypicks"] if run.has_predicted(self) else [])
         elif status in ("in_progress", "completed"):
             options = ["bracket", "leaderboard", "stats"] + (["mypicks"] if run.has_predicted(self) else [])
         else:
-            options = ["leaderboard"]  # after it's over, people still look for the standings
+            # After it's over, people look for the standings, their rating, and how it went.
+            options = ["leaderboard", "rating", "history"]
         choice = run.rng.choice(options)
         if choice in ("bracket", "leaderboard"):
             await run.look_up(self, choice)
@@ -115,8 +117,16 @@ class Player:
         elif choice == "entrants":
             await run.sim.run(self.user, "registration entrants",
                               name=await run.tournament_name(self, "registration entrants", "name"))
+        elif choice == "history":
+            await run.look_back(self)
         elif choice == "features":
             await run.sim.run(self.user, "features")
+        elif choice == "rating":
+            # Their own, or trying to size up someone else, which only organizers may do.
+            other = run.rng.choice([None, run.rng.choice(run.players).user])
+            reply = await run.sim.run(self.user, "rating", user=other)
+            if other not in (None, self.user) and reply.sent is not None and reply.sent.embed is not None:
+                run.sim._problem(f"{self.user.display_name} could see another member's rating")
         else:
             await run.sim.run(self.user, "help players")
 

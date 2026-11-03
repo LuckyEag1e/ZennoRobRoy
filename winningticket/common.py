@@ -6,7 +6,7 @@ import logging
 import sqlite3
 import time
 from dataclasses import dataclass
-from typing import Awaitable, Callable
+from typing import Awaitable, Callable, Iterable
 
 import discord
 from discord import app_commands
@@ -14,7 +14,7 @@ from discord import app_commands
 import db
 from bracket import Match, resolve_all_slots
 from embeds import render_bracket_embed
-from labels import matchup_label, team_label
+from labels import matchup_label, name_taken_message, team_label
 
 log = logging.getLogger("winningticket")
 
@@ -49,8 +49,8 @@ async def resolve_tournament(
     command passes needs_bracket=False because it works without one."""
     tournament = db.get_tournament_by_name(conn, interaction.guild_id, name)
     if tournament is None:
-        if db.has_concluded_tournament(conn, interaction.guild_id, name):
-            message = f"**{name}** has concluded. Its final results were posted when it ended."
+        if db.get_concluded_tournament_by_name(conn, interaction.guild_id, name) is not None:
+            message = f"**{name}** has concluded. `/history` shows its bracket, seeding and leaderboard."
         else:
             message = f"No tournament named '{name}' found in this server."
         await interaction.response.send_message(message, ephemeral=True)
@@ -67,6 +67,14 @@ async def resolve_tournament(
     return tournament
 
 
+def _matching_choices(names: Iterable[str], current: str) -> list[app_commands.Choice[str]]:
+    return [
+        app_commands.Choice(name=n, value=n)
+        for n in names
+        if current.lower() in n.lower()
+    ][:MAX_SELECT_OPTIONS]
+
+
 def _tournament_choices(interaction: discord.Interaction, current: str,
                         status: str | None = None) -> list[app_commands.Choice[str]]:
     conn = db.get_connection()
@@ -74,11 +82,7 @@ def _tournament_choices(interaction: discord.Interaction, current: str,
         names = db.get_tournament_names(conn, interaction.guild_id, status)
     finally:
         conn.close()
-    return [
-        app_commands.Choice(name=n, value=n)
-        for n in names
-        if current.lower() in n.lower()
-    ][:MAX_SELECT_OPTIONS]
+    return _matching_choices(names, current)
 
 
 async def tournament_name_autocomplete(
@@ -94,24 +98,76 @@ async def registration_name_autocomplete(
     return _tournament_choices(interaction, current, "registration")
 
 
-async def team_name_autocomplete(interaction: discord.Interaction, current: str) -> list[app_commands.Choice[str]]:
-    """Teams in the tournament picked in the same command's `tournament` option."""
+def _entrant_choices(interaction: discord.Interaction, current: str,
+                     find_tournament: Callable[[sqlite3.Connection, int, str], sqlite3.Row | None],
+                     ) -> list[app_commands.Choice[str]]:
+    """Entrants in the tournament picked in the same command's `tournament` option, which
+    `find_tournament` looks up by name."""
     tournament_name = getattr(interaction.namespace, "tournament", None)
     if not tournament_name:
         return []
     conn = db.get_connection()
     try:
-        tournament_row = db.get_tournament_by_name(conn, interaction.guild_id, tournament_name)
-        if tournament_row is None:
-            return []
-        teams_by_id = db.get_teams(conn, tournament_row["id"])
+        tournament_row = find_tournament(conn, interaction.guild_id, tournament_name)
+        teams_by_id = db.get_teams(conn, tournament_row["id"]) if tournament_row is not None else {}
     finally:
         conn.close()
-    return [
-        app_commands.Choice(name=team["name"], value=team["name"])
-        for team in teams_by_id.values()
-        if current.lower() in team["name"].lower()
-    ][:MAX_SELECT_OPTIONS]
+    return _matching_choices((team["name"] for team in teams_by_id.values()), current)
+
+
+async def team_name_autocomplete(interaction: discord.Interaction, current: str) -> list[app_commands.Choice[str]]:
+    return _entrant_choices(interaction, current, db.get_tournament_by_name)
+
+
+async def concluded_tournament_autocomplete(
+    interaction: discord.Interaction, current: str
+) -> list[app_commands.Choice[str]]:
+    """Concluded tournaments, newest first, which every other command's autocomplete leaves out."""
+    conn = db.get_connection()
+    try:
+        tournaments = db.get_concluded_tournaments(conn, interaction.guild_id)
+    finally:
+        conn.close()
+    return _matching_choices((t["name"] for t in tournaments), current)
+
+
+async def any_tournament_autocomplete(
+    interaction: discord.Interaction, current: str
+) -> list[app_commands.Choice[str]]:
+    """Every tournament, concluded ones last."""
+    conn = db.get_connection()
+    try:
+        names = db.get_tournament_names(conn, interaction.guild_id)
+        names += [t["name"] for t in db.get_concluded_tournaments(conn, interaction.guild_id)]
+    finally:
+        conn.close()
+    return _matching_choices(names, current)
+
+
+async def any_entrant_autocomplete(interaction: discord.Interaction, current: str) -> list[app_commands.Choice[str]]:
+    return _entrant_choices(interaction, current, db.get_tournament_by_name_any_status)
+
+
+async def resolve_concluded_tournament(interaction: discord.Interaction, conn: sqlite3.Connection,
+                                       name: str) -> sqlite3.Row | None:
+    """A concluded tournament by name, or None after saying why not."""
+    tournament = db.get_concluded_tournament_by_name(conn, interaction.guild_id, name)
+    if tournament is None:
+        if db.get_tournament_by_name(conn, interaction.guild_id, name) is not None:
+            message = f"**{name}** hasn't concluded yet. `/tournament bracket` and `/tournament leaderboard` show it."
+        else:
+            message = f"No concluded tournament named '{name}' in this server."
+        await interaction.response.send_message(message, ephemeral=True)
+    return tournament
+
+
+async def refuse_taken_name(interaction: discord.Interaction, conn: sqlite3.Connection, name: str) -> bool:
+    """True, after saying why, if a tournament in this server already has `name`."""
+    existing = db.get_tournament_by_name_any_status(conn, interaction.guild_id, name)
+    if existing is None:
+        return False
+    await interaction.response.send_message(name_taken_message(existing), ephemeral=True)
+    return True
 
 
 def signups_message(tournament: sqlite3.Row, entrants: int) -> str:

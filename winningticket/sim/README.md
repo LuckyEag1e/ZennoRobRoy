@@ -27,8 +27,8 @@ so it works in scripts. `pytest` also runs seed 0 of every scenario except `larg
 `tests/test_simulation.py`.
 
 Runs are deterministic: the same scenario and seed always play out the same way, so a problem
-found on a seed can be replayed exactly. Each run takes a fraction of a second; `large` takes
-a few seconds.
+found on a seed can be replayed exactly. Each run takes a second or two and `large` takes a few,
+but runs play side by side on every CPU core, so `python -m sim` finishes in seconds.
 
 ## How a run works
 
@@ -67,7 +67,11 @@ a few seconds.
    unbanning someone who keeps poking at admin commands.
 6. **Real results come from hidden skill.** Every entrant has a skill rating, and each match's
    winner is drawn from the two ratings, Elo-style. It doesn't depend on anyone's predictions.
-   The simulator remembers the real outcome of every matchup it played.
+   Each match is decided once, between the entrants who really won their way there, even
+   while a wrong result makes the bot's bracket show someone else. Organizers record the game
+   that was really played: a careful one leaves a match alone while the bracket shows the
+   wrong people, and a sloppy one sometimes records it anyway and corrects it later. Before
+   concluding, the organizer looks over every result once more.
 7. **At the end**, the bot's stored results, champion, saved brackets and leaderboard points
    are compared with what was actually played.
 
@@ -128,14 +132,17 @@ own lines, so they never mix.
   channel (the `spam` scenario).
 - **Bans on open views:** a member banned while their feedback form or stats menu is open must
   not be able to use it.
+- **Seeding:** when sign-ups close with seeding by rating, every entrant gets a seed and the
+  entrants are seeded best first, with unrated players counted at the starting rating.
 
 **At quiet moments:** after a refresh of the live posts, every live bracket and leaderboard post
 must match a fresh render.
 
 **At the end:**
 
-- the tournament reached `concluded`
-- every stored result is the real winner of the matchup played
+- the tournament reached `concluded` (each one, in a scenario that plays several), and from
+  then on only `/history` offers it, privately
+- every stored result is the real winner, and every match shows the two entrants who really played it
 - the stored champion won the final
 - every saved bracket is complete and consistent with its own earlier picks
 - every predictor's points match an independent recount.
@@ -150,10 +157,11 @@ must match a fresh render.
 | `large` | 40 players, 3 guests | A 64-line bracket, long menus that page, a long leaderboard. |
 | `spam` | 6 casual, 1 spammer | One member firing public-posting commands as fast as they can. |
 | `csv` | 8 players predicting an uploaded bracket | `/tournament create` from a CSV, with two organizers recording results. |
+| `season` | 4 diligent, 3 casual, 1 chaotic, 2 guests | Two tournaments in a row. The organizer may try to reuse the first one's name, which must be refused. In between, a guest joins Discord, and `/admin linkplayer` must refuse to link their old entry until they agree to it by signing up for the second tournament, which is then seeded by real ratings. A player who agreed also opts out with `/optout`, which must unlink all their entries. |
 
 ## Actors
 
-**Players** have a competence profile. Each number is the chance of doing that thing on a turn:
+**Players** agree to link their data at their first sign-up 80% of the time, and opt out otherwise (`AGREES_TO_LINK`). Someone who agreed must never be asked again. They also have a competence profile. Each number is the chance of doing that thing on a turn:
 
 | | diligent | casual | chaotic | spammer |
 |---|---|---|---|---|
@@ -211,7 +219,6 @@ list.
        -> [private] Round 1 — Match 2 of 4 / …
        (Haze walks away from their bracket)
  112 Organizer: clicks [Ace]
-       -> [private] ✅ Result recorded. **Ace** advances to Round 2 to face TBD.
        -> [public] 📣 Round 1: **Ace** defeats **Blaze**. …
        !! match 15 was recorded again without /admin setresult's confirmation
 ```

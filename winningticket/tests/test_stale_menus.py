@@ -6,6 +6,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import discord
 import pytest
 
 import db
@@ -194,4 +195,38 @@ def test_setting_the_winner_a_match_already_has_changes_nothing(world):
     reply = asyncio.run(play())
     assert "already won this match" in reply.message.content
     assert reply.message.view is None  # no "Overwrite?" confirmation
+    assert list(_results(sim).values()) == ["Ace"]
+
+
+def test_a_recorded_result_is_only_announced_publicly(world):
+    sim, first, _ = world
+
+    async def play():
+        menu = (await sim.run(first, "match result", tournament="Cup")).sent
+        await sim.choose(first, menu, _first_option(menu))
+        await sim.click(first, menu, "Ace")
+        return menu
+
+    menu = asyncio.run(play())
+    assert menu.deleted
+    assert "Ace** defeats **Blaze" in sim.public_posts_since(0)[-1].content
+    assert not sim.issues
+
+
+def test_a_result_that_cant_be_announced_is_reported_privately(world, monkeypatch):
+    sim, first, _ = world
+
+    async def refuse_to_post(*args, **kwargs):
+        raise discord.Forbidden(type("Response", (), {"status": 403, "reason": "Forbidden"})(), "Missing Access")
+
+    async def play():
+        menu = (await sim.run(first, "match result", tournament="Cup")).sent
+        await sim.choose(first, menu, _first_option(menu))
+        monkeypatch.setattr(sim.channel, "send", refuse_to_post)
+        await sim.click(first, menu, "Ace")
+        return menu
+
+    menu = asyncio.run(play())
+    assert not menu.deleted
+    assert "couldn't be announced" in menu.content and "Ace** advances" in menu.content
     assert list(_results(sim).values()) == ["Ace"]

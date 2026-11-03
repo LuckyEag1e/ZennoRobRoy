@@ -15,18 +15,21 @@ from bracket import (
     assign_played_rounds,
     build_feeder_index,
     compute_leaderboard,
+    decided_matches,
     final_match,
     podium,
     resolve_slot,
     stale_results,
 )
+from ratings import PlayedMatch
 
 DB_PATH = Path(__file__).parent / "data" / "tourney.db"
 
 # Tournament statuses, in lifecycle order. A tournament made from a CSV starts at setup;
 # one that takes sign-ups starts at registration and has no matches until it closes.
-# A concluded tournament keeps all its data for later use (such as seeding) but can no
-# longer be looked up by name, so the name is free for a new tournament.
+# A concluded tournament keeps all its data for later use (such as seeding). Only the
+# history commands and a few admin commands look it up, and its name is never reused, so
+# past tournaments can always be told apart.
 STATUSES = ("registration", "setup", "predictions_open", "in_progress", "completed", "concluded")
 # Concluding can't be undone from Discord, so admins can't force it; /tournament
 # conclude only allows it once a tournament is completed. Registration can't be forced
@@ -34,6 +37,13 @@ STATUSES = ("registration", "setup", "predictions_open", "in_progress", "complet
 # way than closing registration would leave a tournament with no bracket.
 FORCEABLE_STATUSES = tuple(status for status in STATUSES if status not in ("registration", "concluded"))
 _STATUS_SQL_LIST = ", ".join(f"'{status}'" for status in STATUSES)
+# How closing registration places the entrants: seeded by Elo from past tournaments, with
+# the top seeds facing the lowest (standard) or the middle of the field (slide), or drawn
+# at random. seeding.seeded_pairs shows the difference.
+SEEDING_MODES = ("standard", "slide", "random")
+_SEEDING_SQL_LIST = ", ".join(f"'{mode}'" for mode in SEEDING_MODES)
+FORMATS = ("single_elim",)
+_FORMAT_SQL_LIST = ", ".join(f"'{format}'" for format in FORMATS)
 
 
 def to_db_time(moment: datetime) -> str:
@@ -64,21 +74,22 @@ CREATE TABLE IF NOT EXISTS {table_name} (
     channel_id  INTEGER,
     registration_closes_at TEXT,
     -- The sign-ups announcement, edited once sign-ups close so its countdown stops.
-    announcement_message_id INTEGER
+    announcement_message_id INTEGER,
+    seeding_mode TEXT NOT NULL CHECK (seeding_mode IN ({_SEEDING_SQL_LIST})) DEFAULT 'random',
+    format      TEXT NOT NULL CHECK (format IN ({_FORMAT_SQL_LIST})) DEFAULT 'single_elim'
 );
 """
 
 
-# Names only have to be unique among tournaments that haven't been concluded.
-_ACTIVE_NAME_INDEX_SQL = """
-CREATE UNIQUE INDEX IF NOT EXISTS idx_tournaments_active_name
-    ON tournaments(guild_id, name) WHERE status != 'concluded';
+# Created by init_db rather than SCHEMA, because older databases may hold duplicate names
+# that have to be renamed first.
+_NAME_INDEX_SQL = """
+CREATE UNIQUE INDEX IF NOT EXISTS idx_tournaments_name ON tournaments(guild_id, name);
 """
 
 SCHEMA = f"""
 PRAGMA foreign_keys = ON;
 {_tournaments_table_sql("tournaments")}
-{_ACTIVE_NAME_INDEX_SQL}
 
 CREATE TABLE IF NOT EXISTS teams (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -143,6 +154,15 @@ CREATE TABLE IF NOT EXISTS live_posts (
     PRIMARY KEY (tournament_id, kind)
 );
 
+-- Members who agreed to have their entries, results and rating tied to their Discord
+-- account. Only agreement is kept: someone who opts out is asked again at their next
+-- sign-up, and entered by name only meanwhile.
+CREATE TABLE IF NOT EXISTS consents (
+    guild_id    INTEGER NOT NULL,
+    user_id     INTEGER NOT NULL,
+    agreed_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    PRIMARY KEY (guild_id, user_id)
+);
 -- Users an admin has blocked from using the bot in a server.
 CREATE TABLE IF NOT EXISTS bans (
     guild_id    INTEGER NOT NULL,
@@ -174,13 +194,14 @@ def get_connection(path: Path | None = None) -> sqlite3.Connection:
 
 
 # Bump when an older database needs migrating, and add the migration to init_db().
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 7
 
 
 def init_db(conn: sqlite3.Connection) -> None:
     is_new = conn.execute("SELECT 1 FROM sqlite_master WHERE name = 'tournaments'").fetchone() is None
     conn.executescript(SCHEMA)
     if is_new:
+        conn.execute(_NAME_INDEX_SQL)
         conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
     else:
         _rebuild_tournaments_table(conn)
@@ -195,11 +216,10 @@ def _add_column_if_missing(conn: sqlite3.Connection, table: str, column: str, de
 
 
 def _rebuild_tournaments_table(conn: sqlite3.Connection) -> None:
-    """Older databases have a tournaments table whose CHECK rejects newer statuses, and
-    before version 1 a UNIQUE (guild_id, name) that blocks reusing a concluded name.
-    SQLite can't alter either in place, so the table is rebuilt, following SQLite's
-    documented steps for changing a table that other tables reference. Columns the old
-    table already has are copied across; newer ones start empty."""
+    """Older databases have a tournaments table whose CHECKs reject newer values. SQLite
+    can't alter them in place, so the table is rebuilt, following SQLite's documented
+    steps for changing a table that other tables reference. Columns the old table already
+    has are copied across; newer ones start empty."""
     if conn.execute("PRAGMA user_version").fetchone()[0] >= SCHEMA_VERSION:
         return
     conn.commit()
@@ -208,17 +228,21 @@ def _rebuild_tournaments_table(conn: sqlite3.Connection) -> None:
         conn.execute("BEGIN")
         conn.execute(_tournaments_table_sql("tournaments_new"))
         old_columns = {row["name"] for row in conn.execute("PRAGMA table_info(tournaments)")}
-        columns = ", ".join(
+        columns = [
             row["name"] for row in conn.execute("PRAGMA table_info(tournaments_new)") if row["name"] in old_columns
-        )
-        conn.execute(f"INSERT INTO tournaments_new ({columns}) SELECT {columns} FROM tournaments")
+        ]
+        # Older databases call standard seeding 'auto'.
+        values = ["CASE seeding_mode WHEN 'auto' THEN 'standard' ELSE seeding_mode END" if column == "seeding_mode"
+                  else column for column in columns]
+        conn.execute(f"INSERT INTO tournaments_new ({', '.join(columns)}) SELECT {', '.join(values)} FROM tournaments")
         # Keep the id counter, so ids of deleted tournaments aren't handed out again.
         conn.execute("DELETE FROM sqlite_sequence WHERE name = 'tournaments_new'")
         conn.execute("""INSERT INTO sqlite_sequence (name, seq)
                         SELECT 'tournaments_new', seq FROM sqlite_sequence WHERE name = 'tournaments'""")
         conn.execute("DROP TABLE tournaments")
         conn.execute("ALTER TABLE tournaments_new RENAME TO tournaments")
-        conn.execute(_ACTIVE_NAME_INDEX_SQL)
+        _rename_duplicate_names(conn)
+        conn.execute(_NAME_INDEX_SQL)
         conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
         conn.execute("COMMIT")
     except BaseException:
@@ -226,6 +250,26 @@ def _rebuild_tournaments_table(conn: sqlite3.Connection) -> None:
         raise
     finally:
         conn.execute("PRAGMA foreign_keys = ON")
+
+
+def _rename_duplicate_names(conn: sqlite3.Connection) -> None:
+    """Versions 1 to 5 let a new tournament reuse a concluded one's name. The newest with
+    each name keeps it, and older ones get their creation date added: 'Cup (2026-03-01)'."""
+    taken = {(row["guild_id"], row["name"]) for row in conn.execute("SELECT guild_id, name FROM tournaments")}
+    older = conn.execute(
+        """SELECT id, guild_id, name, created_at FROM tournaments t WHERE EXISTS (
+               SELECT 1 FROM tournaments newer WHERE newer.guild_id = t.guild_id AND newer.name = t.name
+               AND newer.id > t.id) ORDER BY id"""
+    ).fetchall()
+    for row in older:
+        date = row["created_at"][:10]
+        new_name = f"{row['name']} ({date})"
+        number = 2
+        while (row["guild_id"], new_name) in taken:
+            new_name = f"{row['name']} ({date}, {number})"
+            number += 1
+        taken.add((row["guild_id"], new_name))
+        conn.execute("UPDATE tournaments SET name = ? WHERE id = ?", (new_name, row["id"]))
 
 
 # -- tournaments -------------------------------------------------------------
@@ -240,13 +284,14 @@ def create_tournament(conn: sqlite3.Connection, guild_id: int, name: str, create
 
 
 def open_registration(conn: sqlite3.Connection, guild_id: int, name: str, created_by: int,
-                      channel_id: int | None, closes_at: str | None) -> int:
+                      channel_id: int | None, closes_at: str | None, seeding_mode: str = "standard") -> int:
     """Create a tournament that takes sign-ups. `closes_at` is a UTC time in the same
     format as created_at, or None to close it by hand."""
     cur = conn.execute(
-        """INSERT INTO tournaments (guild_id, name, created_by, status, channel_id, registration_closes_at)
-           VALUES (?, ?, ?, 'registration', ?, ?)""",
-        (guild_id, name, created_by, channel_id, closes_at),
+        """INSERT INTO tournaments (guild_id, name, created_by, status, channel_id, registration_closes_at,
+                                    seeding_mode)
+           VALUES (?, ?, ?, 'registration', ?, ?, ?)""",
+        (guild_id, name, created_by, channel_id, closes_at, seeding_mode),
     )
     conn.commit()
     return cur.lastrowid
@@ -267,14 +312,59 @@ def get_tournament_by_name(conn: sqlite3.Connection, guild_id: int, name: str) -
     ).fetchone()
 
 
-def has_concluded_tournament(conn: sqlite3.Connection, guild_id: int, name: str) -> bool:
+class ConcludedSummary(NamedTuple):
+    """One line of /history list."""
+
+    name: str
+    champion: Optional[str]
+    entrants: int
+    format: str
+    has_teams: bool  # any entrant with more than one Discord user behind it
+    finished_at: Optional[str]  # when its final was recorded
+
+
+def get_concluded_summaries(conn: sqlite3.Connection, guild_id: int) -> list[ConcludedSummary]:
+    """The server's concluded tournaments, newest first, summed up for /history list."""
+    # The final is the one match that feeds into nothing.
+    rows = conn.execute(
+        """SELECT t.name, t.format,
+                   (SELECT w.name FROM matches m JOIN match_results r ON r.match_id = m.id
+                    JOIN teams w ON w.id = r.winner_team_id
+                    WHERE m.tournament_id = t.id AND m.feeds_into_match_id IS NULL) AS champion,
+                   (SELECT r.recorded_at FROM matches m JOIN match_results r ON r.match_id = m.id
+                    WHERE m.tournament_id = t.id AND m.feeds_into_match_id IS NULL) AS finished_at,
+                   (SELECT COUNT(*) FROM teams WHERE tournament_id = t.id) AS entrants,
+                   EXISTS (SELECT 1 FROM team_members WHERE tournament_id = t.id
+                           GROUP BY team_id HAVING COUNT(*) > 1) AS has_teams
+            FROM tournaments t WHERE t.guild_id = ? AND t.status = 'concluded'
+            ORDER BY t.created_at DESC, t.id DESC""",
+        (guild_id,),
+    ).fetchall()
+    return [ConcludedSummary(r["name"], r["champion"], r["entrants"], r["format"], bool(r["has_teams"]), r["finished_at"])
+            for r in rows]
+
+
+def get_tournament_by_name_any_status(conn: sqlite3.Connection, guild_id: int, name: str) -> sqlite3.Row | None:
+    """Names are never reused, so this is the one tournament that has had `name`."""
+    return conn.execute("SELECT * FROM tournaments WHERE guild_id = ? AND name = ?", (guild_id, name)).fetchone()
+
+
+def get_concluded_tournament_by_name(conn: sqlite3.Connection, guild_id: int, name: str) -> sqlite3.Row | None:
     return conn.execute(
-        "SELECT 1 FROM tournaments WHERE guild_id = ? AND name = ? AND status = 'concluded'", (guild_id, name)
-    ).fetchone() is not None
+        "SELECT * FROM tournaments WHERE guild_id = ? AND name = ? AND status = 'concluded'", (guild_id, name)
+    ).fetchone()
 
 
 def get_tournament(conn: sqlite3.Connection, tournament_id: int) -> sqlite3.Row:
     return conn.execute("SELECT * FROM tournaments WHERE id = ?", (tournament_id,)).fetchone()
+
+
+def get_concluded_tournaments(conn: sqlite3.Connection, guild_id: int) -> list[sqlite3.Row]:
+    """The server's concluded tournaments, newest first."""
+    return conn.execute(
+        "SELECT * FROM tournaments WHERE guild_id = ? AND status = 'concluded' ORDER BY created_at DESC, id DESC",
+        (guild_id,),
+    ).fetchall()
 
 
 def get_tournament_names(conn: sqlite3.Connection, guild_id: int, status: str | None = None) -> list[str]:
@@ -307,6 +397,11 @@ def claim_registration_close(conn: sqlite3.Connection, tournament_id: int) -> bo
     return cur.rowcount > 0
 
 
+def set_seeding_mode(conn: sqlite3.Connection, tournament_id: int, seeding_mode: str) -> None:
+    """Without committing, so it lands together with the bracket it describes."""
+    conn.execute("UPDATE tournaments SET seeding_mode = ? WHERE id = ?", (seeding_mode, tournament_id))
+
+
 def clear_registration_deadline(conn: sqlite3.Connection, tournament_id: int) -> None:
     conn.execute("UPDATE tournaments SET registration_closes_at = NULL WHERE id = ?", (tournament_id,))
     conn.commit()
@@ -334,10 +429,19 @@ def get_teams(conn: sqlite3.Connection, tournament_id: int) -> dict[int, sqlite3
 
 
 def register_entrant(conn: sqlite3.Connection, tournament_id: int, name: str,
-                     user_id: int | None) -> tuple[int, str]:
+                     user_id: int | None) -> tuple[int, str] | None:
     """Sign up a one-person team and return its (team id, name). With no `user_id` it's
-    just a name, with no Discord account behind it. A name already taken in this
-    tournament gets a number added, so admin commands that find teams by name still work."""
+    just a name, with no Discord account behind it.
+
+    Nothing is saved, and None is returned, if the name belongs to an entrant with no
+    account behind it, or to anyone when there's no `user_id`: two name-only entrants
+    with one name couldn't be told apart. That entrant may well be this member, entered
+    by name before they agreed, but anyone can set their display name to match, so only
+    an organizer links them to it (/admin linkplayer). A name taken by another member
+    gets a number added, so admin commands that find teams by name still work."""
+    existing = get_team_by_name(conn, tournament_id, name)
+    if existing is not None and (user_id is None or not team_member_ids(conn, existing["id"])):
+        return None
     taken = {team["name"] for team in get_teams(conn, tournament_id).values()}
     unique_name = name
     number = 2
@@ -354,6 +458,18 @@ def register_entrant(conn: sqlite3.Connection, tournament_id: int, name: str,
                 (team_id, tournament_id, user_id),
             )
     return team_id, unique_name
+
+
+def unlink_entrant(conn: sqlite3.Connection, team_id: int) -> int | None:
+    """Unlink the member behind one entrant, leaving the entrant under its name and the
+    member's agreement and other entries as they are. Returns their user id, or None if
+    nobody was linked."""
+    user_ids = team_member_ids(conn, team_id)
+    if not user_ids:
+        return None
+    with conn:
+        conn.execute("DELETE FROM team_members WHERE team_id = ? AND user_id = ?", (team_id, user_ids[0]))
+    return user_ids[0]
 
 
 def unregister_entrant(conn: sqlite3.Connection, tournament_id: int, user_id: int) -> bool:
@@ -387,6 +503,40 @@ def get_entrants(conn: sqlite3.Connection, tournament_id: int) -> list[sqlite3.R
            WHERE t.tournament_id = ? ORDER BY t.id""",
         (tournament_id,),
     ).fetchall()
+
+
+def get_members_by_team(conn: sqlite3.Connection, tournament_id: int) -> dict[int, list[int]]:
+    """Each team's Discord users, an empty list for a team with no account behind it."""
+    members: dict[int, list[int]] = {}
+    for entrant in get_entrants(conn, tournament_id):
+        members.setdefault(entrant["team_id"], [])
+        if entrant["user_id"] is not None:
+            members[entrant["team_id"]].append(entrant["user_id"])
+    return members
+
+
+def team_member_ids(conn: sqlite3.Connection, team_id: int) -> list[int]:
+    return [r["user_id"] for r in conn.execute("SELECT user_id FROM team_members WHERE team_id = ?", (team_id,))]
+
+
+def link_team_member(conn: sqlite3.Connection, tournament_id: int, team_id: int, user_id: int) -> bool:
+    """Record that a Discord user played on a team, such as one imported from a CSV before
+    they could be linked. False if they're already on a team in that tournament."""
+    try:
+        with conn:
+            conn.execute(
+                "INSERT INTO team_members (team_id, tournament_id, user_id) VALUES (?, ?, ?)",
+                (team_id, tournament_id, user_id),
+            )
+    except sqlite3.IntegrityError:
+        return False
+    return True
+
+
+def set_team_seeds(conn: sqlite3.Connection, ordered_team_ids: list[int]) -> None:
+    """Number teams 1, 2, 3... in the order given, without committing."""
+    conn.executemany("UPDATE teams SET seed = ? WHERE id = ?",
+                     [(seed, team_id) for seed, team_id in enumerate(ordered_team_ids, start=1)])
 
 
 def delete_team(conn: sqlite3.Connection, team_id: int) -> None:
@@ -485,6 +635,21 @@ def load_final_results(conn: sqlite3.Connection, tournament_id: int) -> tuple[Po
     results_by_match = get_results(conn, tournament_id)
     scores = compute_leaderboard(matches_by_id, results_by_match, get_all_predictions(conn, tournament_id))
     return podium(matches_by_id, feeders_by_target, results_by_match), teams_by_id, scores
+
+
+def load_match_history(conn: sqlite3.Connection, guild_id: int) -> list[PlayedMatch]:
+    """Every decided game in the server's concluded tournaments, as the Discord users on
+    each side, in the order they were played: oldest tournament first, then round by
+    round. Ratings are worked out from this. The order comes from the bracket rather than
+    when results were recorded, because correcting a result re-records it."""
+    games = []
+    for tournament in reversed(get_concluded_tournaments(conn, guild_id)):
+        matches_by_id, feeders = _load_matches(conn, tournament["id"])
+        members = get_members_by_team(conn, tournament["id"])
+        decided = decided_matches(matches_by_id, feeders, get_results(conn, tournament["id"]))
+        for match, winner, loser in sorted(decided, key=lambda game: game[0].played_round):
+            games.append(PlayedMatch(tuple(members.get(winner, [])), tuple(members.get(loser, []))))
+    return games
 
 
 # -- results ------------------------------------------------------------------
@@ -640,6 +805,31 @@ def get_live_posts(conn: sqlite3.Connection) -> list[sqlite3.Row]:
 def delete_live_post(conn: sqlite3.Connection, tournament_id: int, kind: str) -> None:
     conn.execute("DELETE FROM live_posts WHERE tournament_id = ? AND kind = ?", (tournament_id, kind))
     conn.commit()
+
+
+# -- consent --------------------------------------------------------------------
+
+def has_agreed(conn: sqlite3.Connection, guild_id: int, user_id: int) -> bool:
+    return conn.execute(
+        "SELECT 1 FROM consents WHERE guild_id = ? AND user_id = ?", (guild_id, user_id)
+    ).fetchone() is not None
+
+
+def record_agreement(conn: sqlite3.Connection, guild_id: int, user_id: int) -> None:
+    conn.execute("INSERT OR IGNORE INTO consents (guild_id, user_id) VALUES (?, ?)", (guild_id, user_id))
+    conn.commit()
+
+
+def opt_out(conn: sqlite3.Connection, guild_id: int, user_id: int) -> int:
+    """Forget a member's agreement and unlink every entry of theirs in the server, past
+    and current, leaving each under its name. Returns how many entries were unlinked."""
+    with conn:
+        conn.execute("DELETE FROM consents WHERE guild_id = ? AND user_id = ?", (guild_id, user_id))
+        return conn.execute(
+            """DELETE FROM team_members WHERE user_id = ?
+               AND tournament_id IN (SELECT id FROM tournaments WHERE guild_id = ?)""",
+            (user_id, guild_id),
+        ).rowcount
 
 
 # -- moderation -----------------------------------------------------------------

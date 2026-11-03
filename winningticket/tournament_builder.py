@@ -8,7 +8,8 @@ from typing import Optional
 
 import db
 from bracket import BracketError, generate_tree
-from seeding import seeded_pairs
+from ratings import compute_ratings
+from seeding import rating_order, seeded_pairs
 
 
 # How far ahead a sign-up deadline can be set, in hours.
@@ -38,26 +39,42 @@ def build_matches(conn: sqlite3.Connection, tournament_id: int,
     db.link_feeders(conn, tournament_id, specs, match_ids_by_round_slot)
 
 
-def close_registration(conn: sqlite3.Connection, tournament_id: int, rng: random.Random | None = None) -> int:
-    """Draw the signed-up teams into a bracket in random order and move the tournament on
-    to setup. Returns how many teams were drawn. Raises BracketError if too few signed
-    up, and RegistrationClosedError if it was already closed. On any error nothing is
-    saved, so closing can simply be tried again."""
+def close_registration(conn: sqlite3.Connection, tournament_id: int, rng: random.Random | None = None,
+                       seeding_mode: str | None = None) -> int:
+    """Draw the signed-up teams into a bracket and move the tournament on to setup.
+    `seeding_mode` overrides the one chosen when sign-ups opened: "standard" and "slide"
+    seed entrants by their Elo from past tournaments (see seeding.seeded_pairs), and
+    "random" draws them in random order with no seeds.
+    Returns how many teams were drawn. Raises BracketError if too few signed up, and
+    RegistrationClosedError if it was already closed. On any error nothing is saved, so
+    closing can simply be tried again."""
+    rng = rng or random  # the module itself, so seeding it (as the simulator does) makes draws repeatable
+    tournament = db.get_tournament(conn, tournament_id)
+    if tournament is None:
+        raise RegistrationClosedError(f"Tournament {tournament_id} no longer exists.")
+    seeding_mode = seeding_mode or tournament["seeding_mode"]
+    # Replayed before the close starts writing, so the database isn't locked meanwhile.
+    ratings = None if seeding_mode == "random" else compute_ratings(db.load_match_history(conn, tournament["guild_id"]))
     with conn:
         if not db.claim_registration_close(conn, tournament_id):
             raise RegistrationClosedError(f"Registration for tournament {tournament_id} has already closed.")
-        team_ids = sorted({entrant["team_id"] for entrant in db.get_entrants(conn, tournament_id)})
-        pairs = seeded_pairs((rng or random).sample(team_ids, len(team_ids)))
-        build_matches(conn, tournament_id, pairs)
-    return len(team_ids)
+        members_by_team = db.get_members_by_team(conn, tournament_id)
+        db.set_seeding_mode(conn, tournament_id, seeding_mode)  # the one used, for the history
+        if ratings is None:
+            order = rng.sample(sorted(members_by_team), len(members_by_team))
+        else:
+            order = rating_order(members_by_team, ratings, rng)
+            db.set_team_seeds(conn, order)
+        build_matches(conn, tournament_id, seeded_pairs(order, slide=seeding_mode == "slide"))
+    return len(order)
 
 
-def close_overdue_registration(conn: sqlite3.Connection, tournament_id: int) -> int:
+def close_overdue_registration(conn: sqlite3.Connection, tournament_id: int, seeding_mode: str | None = None) -> int:
     """close_registration for a tournament whose deadline has passed. If too few signed
     up, the deadline is dropped so it isn't retried on every check, and the BracketError
     is raised for the caller to report. Sign-ups then stay open until closed by hand."""
     try:
-        return close_registration(conn, tournament_id)
+        return close_registration(conn, tournament_id, seeding_mode=seeding_mode)
     except BracketError:
         db.clear_registration_deadline(conn, tournament_id)
         raise

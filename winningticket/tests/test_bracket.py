@@ -6,6 +6,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import pytest
 
 from bracket import (
+    decided_matches,
     BracketError,
     Match,
     Podium,
@@ -358,3 +359,10 @@ def test_top_places_leaves_out_players_with_no_points():
 def test_ranked_places_share_a_place_on_tied_points_and_keep_everyone():
     scores = _scores([(1, 5), (2, 5), (3, 5), (4, 2), (5, 0)])
     assert [(place, s.user_id) for place, s in ranked_places(scores)] == [(1, 1), (1, 2), (1, 3), (4, 4), (5, 5)]
+
+
+def test_decided_matches_lists_winner_and_loser_of_each_game_in_bracket_order():
+    matches_by_id = matches_from_pairs([(1, 2), (3, None)])
+    feeders, results = _play_out(matches_by_id, max)
+    decided = [(m.round, winner, loser) for m, winner, loser in decided_matches(matches_by_id, feeders, results)]
+    assert decided == [(1, 2, 1), (2, 3, 2)]  # the bye isn't a game

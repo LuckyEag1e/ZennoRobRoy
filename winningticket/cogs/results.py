@@ -55,10 +55,23 @@ async def _record_and_announce(interaction: discord.Interaction, session: Tourna
     finally:
         conn.close()
 
-    await interaction.response.edit_message(content=f"✅ Result recorded. {advance_text}", view=None)
+    # The announcement tells the organizer everything, so their menu just goes away,
+    # unless the announcement can't be posted.
+    await interaction.response.defer()
+    announced = False
     if interaction.channel is not None:
-        await interaction.channel.send(
-            f"📣 Round {match.played_round}: **{winner_label}** defeats **{loser_label}**. {advance_text}"
+        try:
+            await interaction.channel.send(
+                f"📣 Round {match.played_round}: **{winner_label}** defeats **{loser_label}**. {advance_text}"
+            )
+            announced = True
+        except discord.HTTPException:
+            pass
+    if announced:
+        await interaction.delete_original_response()
+    else:
+        await interaction.edit_original_response(
+            content=f"✅ Result recorded, but it couldn't be announced here. {advance_text}", view=None
         )
 
 

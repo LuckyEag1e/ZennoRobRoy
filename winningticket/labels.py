@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Callable, Optional
 
 from bracket import Match, Podium, UserScore, byes_in_round, effective_winner, matches_in_round, rounds, top_places
+from ratings import Ratings
 
 MEDALS = {1: "🥇", 2: "🥈", 3: "🥉"}
 
@@ -84,6 +85,93 @@ def pickem_podium_lines(scores: list[UserScore], player_label: Callable[[int], s
     return [f"{MEDALS[place]} {player_label(s.user_id)} — {score_label(s)}" for place, s in placed]
 
 
+def name_taken_message(existing) -> str:
+    """Why a new tournament can't have `existing`'s name. A concluded tournament keeps its
+    name, so the history commands never mix two tournaments up."""
+    name = existing["name"]
+    if existing["status"] == "concluded":
+        return f"'{name}' was the name of a concluded tournament, and names aren't reused. Pick another name."
+    return f"A tournament named '{name}' already exists in this server."
+
+
+# Shown privately at a member's first sign-up, before anything is tied to their account.
+CONSENT_NOTICE = (
+    "Before you're signed up: WinningTicket can link your tournament entries, results, and Elo rating "
+    "to your Discord account, so your history and seeding follow you from one tournament to the next. "
+    "That also covers anything else it keeps about you as a player in the future. All data collected "
+    "will not be used for any purpose other than providing a fair and competitive experience for "
+    "participants in hosted events.\n"
+    "**Agree** to link them. The bot remembers your choice. You may opt out at any time with the "
+    "`/optout` command, which will unlink all data previously associated with your account.\n"
+    "**Opt Out** to enter by your display name only. Nothing is linked to your account, and you're "
+    "seeded at the default rating.\n"
+    "Opting out doesn't delete any data: your past entries stay in tournament history under your "
+    "display name."
+)
+# Prediction picks are always saved with the member's account, since the pool scores them.
+OPTED_OUT_NOTE = (
+    "Your entry isn't linked to your account, so ask an organizer if you need to withdraw. If you use "
+    "`/predict`, your picks are still saved with your Discord account and appear in this tournament's history."
+)
+OPT_OUT_CONFIRMATION = "opt out"
+
+
+def name_held_message(tournament: str, name: str) -> str:
+    """Why a member can't sign up under the name of an entrant with no account behind it."""
+    return (f"**{tournament}** already has an entrant named {name} with no account behind it. If that's you, "
+            f"ask an organizer to link you to it. If not, ask them to add you under another name.")
+
+
+def opted_out_message(unlinked: int) -> str:
+    """What /optout says once it's done."""
+    if not unlinked:
+        done = "Nothing of yours is linked to your account now."
+    else:
+        entry_word = "entry is" if unlinked == 1 else "entries are"
+        done = f"{unlinked} of your {entry_word} no longer linked to your account. They keep your name, and your rating is back to the default."
+    return (f"{done} You'll be asked again the next time you sign up. Your `/predict` picks stay with your "
+            f"account in each tournament's history.")
+
+
+FORMAT_NAMES = {"single_elim": "Single elimination"}
+
+
+def history_line(summary) -> str:
+    """One concluded tournament in /history list: its name, champion, size, format, whether
+    it was played in teams, and the day its final was recorded."""
+    entrant_word = "entrant" if summary.entrants == 1 else "entrants"
+    finished = summary.finished_at[:10] if summary.finished_at else "unfinished"
+    return (f"{summary.name}: 🏆 {summary.champion or 'no champion'} · {summary.entrants} {entrant_word} · "
+            f"{FORMAT_NAMES[summary.format]} · {'Teams' if summary.has_teams else 'Singles'} · {finished}")
+
+
+def seeding_lines(tournament, teams_by_id: dict) -> list[str]:
+    """How a tournament's bracket was seeded, then its entrants in seed order. Seeds can
+    also come from a CSV or /admin editteam, so only seeds from closing sign-ups by rating
+    are described as rating seeds."""
+    seeded = sorted((team for team in teams_by_id.values() if team["seed"] is not None), key=lambda team: team["seed"])
+    unseeded = sorted(team["name"] for team in teams_by_id.values() if team["seed"] is None)
+    if not seeded:
+        return ["This bracket wasn't seeded."]
+    if tournament["seeding_mode"] in ("standard", "slide"):
+        lines = [f"Entrants were {draw_description(tournament['seeding_mode'])}."]
+    else:
+        lines = ["Seeds were set by the organizers."]
+    lines += [f"{team['seed']}. {team['name']}" for team in seeded]
+    if unseeded:
+        lines.append("Unseeded: " + ", ".join(unseeded))
+    return lines
+
+
+def draw_description(seeding_mode: str) -> str:
+    """How closing registration put the entrants into the bracket."""
+    if seeding_mode == "random":
+        return "drawn into the bracket at random"
+    if seeding_mode == "slide":
+        return "seeded into the bracket by rating, with the top seeds playing mid-ranked seeds first"
+    return "seeded into the bracket by rating"
+
+
 def entrant_lines(entrants: list, player_label: Callable[[int], str]) -> list[str]:
     """A numbered sign-up list, with `player_label` naming each entrant's user by id."""
     lines = []
@@ -91,6 +179,17 @@ def entrant_lines(entrants: list, player_label: Callable[[int], str]) -> list[st
         account = "no Discord account" if entrant["user_id"] is None else player_label(entrant["user_id"])
         lines.append(f"{number}. {entrant['name']} ({account})")
     return lines
+
+
+def rating_lines(user_id: int, ratings: Ratings) -> list[str]:
+    """A member's singles and team Elo, saying which ones they haven't earned by playing yet."""
+    singles = f"Singles: **{ratings.singles_rating(user_id):.0f}**"
+    if user_id not in ratings.singles:
+        singles += " (provisional: no singles games yet)"
+    team = f"Team: **{ratings.team_rating(user_id):.0f}**"
+    if user_id not in ratings.team:
+        team += " (provisional: no team games yet" + (", so it starts from singles)" if user_id in ratings.singles else ")")
+    return [singles, team]
 
 
 def ban_lines(bans: list, player_label: Callable[[int], str]) -> list[str]:
@@ -121,6 +220,8 @@ CURRENT_FEATURES = [
     "picks score more in later rounds, and a live leaderboard tracks everyone.",
     "**Sign-ups:** players register themselves, and the bracket is drawn automatically when "
     "sign-ups close. Organizers can still build a bracket from a CSV instead.",
+    "**Automatic seeding:** each player's Elo rating from past tournaments decides their "
+    "seed, so the strongest players don't meet early. `/rating` shows yours.",
     "**Live results:** organizers record results as games finish, the bot announces who "
     "advances, and anyone can check the bracket or see how the pool picked each matchup.",
     "**Final results:** concluding a tournament posts the podium and the top predictors, "
@@ -128,7 +229,6 @@ CURRENT_FEATURES = [
     "**Anonymous feedback** for the organizers.",
 ]
 PLANNED_FEATURES = [
-    "**Automatic seeding** from each player's past results.",
     "**Self-reported results:** both players confirm a match result, and organizers only "
     "step in when they disagree.",
     "**More formats:** double elimination and round robin.",

@@ -246,6 +246,18 @@ class FakeInteraction:
             raise _not_found("Unknown Message")
         return self.sent
 
+    async def edit_original_response(self, **kwargs) -> FakeMessage:
+        return await (await self._original()).edit(**kwargs)
+
+    async def delete_original_response(self) -> None:
+        await (await self._original()).delete()
+
+    async def _original(self) -> FakeMessage:
+        # A button or menu that edited or deferred has the message it's on as its response.
+        if self.sent is None and self.response.kind in ("edit", "defer") and self.message is not None:
+            return self.message
+        return await self.original_response()
+
 
 class FakeBot:
     def __init__(self) -> None:

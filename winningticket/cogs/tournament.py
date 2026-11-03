@@ -12,6 +12,7 @@ from discord.ext import commands, tasks
 import db
 from common import (
     load_bracket_embed,
+    refuse_taken_name,
     requires_manage_server,
     resolve_emoji,
     resolve_tournament,
@@ -230,10 +231,7 @@ class TournamentCog(commands.Cog):
     async def create(self, interaction: discord.Interaction, name: str, csv_file: discord.Attachment) -> None:
         conn = db.get_connection()
         try:
-            if db.get_tournament_by_name(conn, interaction.guild_id, name) is not None:
-                await interaction.response.send_message(
-                    f"A tournament named '{name}' already exists in this server.", ephemeral=True
-                )
+            if await refuse_taken_name(interaction, conn, name):
                 return
 
             raw = await csv_file.read()
@@ -304,7 +302,7 @@ class TournamentCog(commands.Cog):
         finally:
             conn.close()
         await interaction.followup.send(
-            f"**{name}** is concluded. Its results are saved, and the name is free for a new tournament.",
+            f"**{name}** is concluded. Its results are saved and count toward ratings, and `/history` shows it.",
             ephemeral=True,
         )
 

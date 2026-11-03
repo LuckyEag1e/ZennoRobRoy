@@ -360,29 +360,34 @@ def pick_distribution(
     return counts
 
 
+def decided_matches(
+    matches_by_id: dict[int, Match],
+    feeders_by_target: dict[int, dict[str, Match]],
+    results_by_match: dict[int, int],
+) -> list[tuple[Match, int, int]]:
+    """(match, winner, loser) for every game with a result, in bracket order. A result
+    naming a team that isn't in its match is left out, since it has no loser."""
+    slots = resolve_all_slots(matches_by_id, results_by_match.get, feeders_by_target)
+    decided = []
+    for match in sorted(matches_by_id.values(), key=bracket_order):
+        winner = results_by_match.get(match.id)
+        team_a, team_b = slots[match.id]
+        if winner is not None and winner in (team_a, team_b) and None not in (team_a, team_b):
+            decided.append((match, winner, team_b if winner == team_a else team_a))
+    return decided
+
+
 def podium(
     matches_by_id: dict[int, Match],
     feeders_by_target: dict[int, dict[str, Match]],
     results_by_match: dict[int, int],
 ) -> Podium:
     """The final's winner and loser, and the losers of the games that fed into the final."""
-    slots = resolve_all_slots(matches_by_id, results_by_match.get, feeders_by_target)
-
-    def loser(match: Match) -> Optional[int]:
-        winner = results_by_match.get(match.id)
-        if winner is None:
-            return None
-        team_a, team_b = slots[match.id]
-        if winner == team_a:
-            return team_b
-        if winner == team_b:
-            return team_a
-        return None  # a result naming a team that isn't in this match
-
+    loser_of = {match.id: loser for match, _, loser in decided_matches(matches_by_id, feeders_by_target, results_by_match)}
     final = final_match(matches_by_id)
     semi_finals = [m for m in feeders_by_target.get(final.id, {}).values() if m is not None and not is_bye(m)]
-    third_places = [team for team in map(loser, semi_finals) if team is not None]
-    return Podium(results_by_match.get(final.id), loser(final), third_places)
+    third_places = [loser_of[m.id] for m in semi_finals if m.id in loser_of]
+    return Podium(results_by_match.get(final.id), loser_of.get(final.id), third_places)
 
 
 def ranked_places(scores: list[UserScore]) -> list[tuple[int, UserScore]]:
