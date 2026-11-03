@@ -32,17 +32,19 @@ rsync -az \
   ./ "$DEPLOY_HOST:$DEPLOY_DIR/"
 echo "    NOTE: this includes data/tourney.db and .env if present locally -- fine for a"
 echo "    one-time initial deploy, but deploy.sh (routine updates) never touches either again."
+# rsync keeps the local mode, which is often group- or world-readable, and .env holds the bot token.
+ssh "$DEPLOY_HOST" "if [ -f $DEPLOY_DIR/.env ]; then chmod 600 $DEPLOY_DIR/.env; fi"
 
 echo "==> Setting up venv + dependencies"
 ssh "$DEPLOY_HOST" "cd $DEPLOY_DIR && python3 -m venv .venv && .venv/bin/pip install -q --upgrade pip && .venv/bin/pip install -q -r requirements.txt"
 
 echo "==> Installing systemd service"
+# Piped straight into place rather than staged in /tmp, where another user on either host could
+# swap the file out before sudo installs it as a root-run unit.
 sed -e "s|__DEPLOY_USER__|$DEPLOY_USER|g" -e "s|__DEPLOY_DIR__|$DEPLOY_DIR|g" \
-  deploy/winningticket.service.template > /tmp/"$DEPLOY_SERVICE_NAME".service
-scp /tmp/"$DEPLOY_SERVICE_NAME".service "$DEPLOY_HOST:/tmp/$DEPLOY_SERVICE_NAME.service"
-rm /tmp/"$DEPLOY_SERVICE_NAME".service
-ssh "$DEPLOY_HOST" "sudo mv /tmp/$DEPLOY_SERVICE_NAME.service /etc/systemd/system/$DEPLOY_SERVICE_NAME.service && \
-  sudo systemctl daemon-reload && sudo systemctl enable --now $DEPLOY_SERVICE_NAME"
+  deploy/winningticket.service.template |
+  ssh "$DEPLOY_HOST" "sudo tee /etc/systemd/system/$DEPLOY_SERVICE_NAME.service > /dev/null"
+ssh "$DEPLOY_HOST" "sudo systemctl daemon-reload && sudo systemctl enable --now $DEPLOY_SERVICE_NAME"
 
 sleep 3
 echo "==> Status"
