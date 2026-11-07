@@ -7,7 +7,8 @@ const { EmbedBuilder } = require('discord.js');
 
 const NEWS_API = 'https://umamusume.com/api/ajax/pr_info_index?format=json';
 const NEWS_PAGE = 'https://umamusume.com/news/';
-const STATE_FILE = path.join(__dirname, '..', 'data', 'news.json');
+// ZENNO_DATA_DIR lets the test suite point this at a temp dir instead of the live data/.
+const STATE_FILE = path.join(process.env.ZENNO_DATA_DIR || path.join(__dirname, '..', 'data'), 'news.json');
 const FETCH_LIMIT = 20;
 const CATEGORY_LABELS = { 1: 'Game', 3: 'Media' };
 
