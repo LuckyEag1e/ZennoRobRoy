@@ -1,7 +1,9 @@
 const fs = require('fs');
 const path = require('path');
 
-const CONFIG_FILE = path.join(__dirname, '..', 'data', 'config.json');
+// ZENNO_DATA_DIR lets the test suite point this at a temp dir instead of the live data/.
+const DATA_DIR = process.env.ZENNO_DATA_DIR || path.join(__dirname, '..', 'data');
+const CONFIG_FILE = path.join(DATA_DIR, 'config.json');
 
 function load() {
   if (!fs.existsSync(CONFIG_FILE)) return { quota: {}, authorized: {} };

@@ -1,7 +1,8 @@
 const fs = require('fs');
 const path = require('path');
 
-const DATA_DIR = path.join(__dirname, '..', 'data');
+// ZENNO_DATA_DIR lets the test suite point this at a temp dir instead of the live data/.
+const DATA_DIR = process.env.ZENNO_DATA_DIR || path.join(__dirname, '..', 'data');
 
 function ensureDir(dir) {
   fs.mkdirSync(dir, { recursive: true });
