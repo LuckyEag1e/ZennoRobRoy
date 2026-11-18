@@ -13,6 +13,7 @@ import db
 from bracket import BracketError
 from common import (
     BotView,
+    bot_plays_for_testing,
     edit_signups_message,
     load_bracket_embed,
     refuse_taken_name,
@@ -293,8 +294,10 @@ class RegistrationCog(commands.Cog):
                     f"{user.display_name} is already signed up for **{tournament}**.", ephemeral=True
                 )
                 return
-            # A member's entry is only linked to them once they've agreed to it themselves.
-            linked = user is not None and db.has_agreed(conn, interaction.guild_id, user.id)
+            # A member's entry is only linked to them once they've agreed to it themselves. The
+            # bot can't agree to anything, so it's only linked while it plays for testing.
+            playing_bot = user is not None and user.id == interaction.client.user.id and bot_plays_for_testing()
+            linked = user is not None and (playing_bot or db.has_agreed(conn, interaction.guild_id, user.id))
             entrant = db.register_entrant(
                 conn, tournament_row["id"], name or user.display_name, user.id if linked else None
             )

@@ -380,3 +380,34 @@ def test_a_room_added_to_the_category_is_used_straight_away(tmp_path):
         assert not sim.issues
     finally:
         asyncio.run(sim.close())
+
+
+def test_the_bot_readies_up_for_its_own_entry_when_playing_for_testing(world, monkeypatch):
+    sim, organizer, players, tid, teams, matches, category = world
+    monkeypatch.setenv("BOT_PLAYS_FOR_TESTING", "1")
+    conn = db.get_connection()
+    conn.execute("DELETE FROM team_members WHERE team_id = ?", (teams["Blaze"],))
+    conn.commit()
+    db.link_team_member(conn, tid, teams["Blaze"], sim.bot.user.id)
+    conn.close()
+    _loop(sim)  # calls the match and posts the call
+    [call] = _posts(sim)
+    assert "Blaze ⏳" in call.content
+    _loop(sim)  # the bot readies up once its call is out
+    assert "Blaze ✅" in call.content
+    _click(sim, players["Ace"], call, "Ready Up")
+    [start] = _posts(sim)
+    assert start.content.startswith("▶️ Round 1: **Ace** vs **Blaze**.")
+    assert not sim.issues
+
+
+def test_the_bot_never_readies_up_unless_playing_for_testing(world, monkeypatch):
+    sim, organizer, players, tid, teams, matches, category = world
+    monkeypatch.delenv("BOT_PLAYS_FOR_TESTING", raising=False)
+    conn = db.get_connection()
+    db.link_team_member(conn, tid, teams["Blaze"], sim.bot.user.id)
+    conn.close()
+    _loop(sim)
+    _loop(sim)
+    [call] = _posts(sim)
+    assert "Blaze ⏳" in call.content

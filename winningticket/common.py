@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import sqlite3
 import time
 from dataclasses import dataclass
@@ -17,6 +18,13 @@ from embeds import render_bracket_embed
 from labels import bracket_notes, matchup_label, name_taken_message, team_label
 
 log = logging.getLogger("winningticket")
+
+def bot_plays_for_testing() -> bool:
+    """With BOT_PLAYS_FOR_TESTING=1 in .env, an organizer can sign the bot itself up with
+    `/registration add`, and it readies up for its called matches, so one person can test
+    a coordinated tournament. Never turn it on for real tournaments."""
+    return os.environ.get("BOT_PLAYS_FOR_TESTING") == "1"
+
 
 # Discord's limit on options in one select menu.
 MAX_SELECT_OPTIONS = 25

@@ -73,6 +73,22 @@ def _start(conn: sqlite3.Connection, tournament: sqlite3.Row, match_id: int, roo
         db.give_room(conn, tournament["guild_id"], match_id, rooms)
 
 
+def ready_up_for(conn: sqlite3.Connection, tournament: sqlite3.Row, user_id: int, rooms: list[int]) -> list[int]:
+    """Ready up `user_id`'s side in each of the tournament's called matches whose call has
+    been posted, as if they'd pressed Ready Up. Returns the matches readied."""
+    readied = []
+    for call in db.get_calls(conn, tournament["id"]):
+        post = db.get_match_post(conn, call["match_id"])
+        if call["started_at"] is not None or post is None or post["message_id"] is None:
+            continue
+        sides = (call["team_a_id"], call["team_b_id"])
+        team = next((side for side in sides if user_id in db.team_member_ids(conn, side)), None)
+        if team is not None and team not in db.get_ready_teams(conn, call["match_id"]):
+            ready_up(conn, call["match_id"], user_id, rooms)
+            readied.append(call["match_id"])
+    return readied
+
+
 def ready_up(conn: sqlite3.Connection, match_id: int, user_id: int, rooms: list[int]) -> str:
     """Ready up the side `user_id` plays on, starting the match once both sides are ready.
     Returns what to tell them privately."""

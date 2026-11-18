@@ -18,6 +18,7 @@ from common import (
     TournamentSession,
     WinnerPicker,
     announce,
+    bot_plays_for_testing,
     outdated_pick_message,
     requires_manage_server,
     resolve_tournament,
@@ -100,7 +101,10 @@ class ResultsCog(commands.Cog):
                 now = datetime.now(timezone.utc)
                 for tournament in db.get_coordinated_tournaments(conn):
                     try:
-                        coordination.tend(conn, tournament, now, match_rooms(self.bot, tournament["guild_id"], conn))
+                        rooms = match_rooms(self.bot, tournament["guild_id"], conn)
+                        if bot_plays_for_testing():
+                            coordination.ready_up_for(conn, tournament, self.bot.user.id, rooms)
+                        coordination.tend(conn, tournament, now, rooms)
                     except Exception:
                         log.exception("Couldn't call matches for tournament %s", tournament["id"])
                 for step in reports.due_steps(conn, now):
