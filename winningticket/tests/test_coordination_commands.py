@@ -12,7 +12,7 @@ import pytest
 
 import db
 from bracket import bracket_order
-from sim.discord_fakes import FakeAttachment, FakeCategory
+from sim.discord_fakes import FakeAttachment, FakeCategory, FakeVoiceChannel
 from sim.harness import GUILD_ID, Simulation
 
 CSV = b"team_a,team_b\nAce,Blaze\nCyan,Dune\n"
@@ -225,5 +225,158 @@ def test_more_places_than_rooms_is_refused(tmp_path):
     try:
         reply = asyncio.run(sim.run(organizer, "admin matchslots", tournament="Cup", match_slots=3)).sent
         assert reply.content == "There's only 1 match room, so only 1 match can be called at once."
+    finally:
+        asyncio.run(sim.close())
+
+
+def _admin(sim, organizer, command, **options):
+    return asyncio.run(sim.run(organizer, command, tournament="Cup", **options)).sent
+
+
+def _calls(tournament_id):
+    conn = db.get_connection()
+    try:
+        return [call["match_id"] for call in db.get_calls(conn, tournament_id)]
+    finally:
+        conn.close()
+
+
+def _set_result(sim, organizer, match_id, winner, confirm=False):
+    """/admin setresult on `match_id`, picking `winner`, and Confirm when it overwrites."""
+    async def go():
+        menu = (await sim.run(organizer, "admin setresult", tournament="Cup")).sent
+        await sim.choose(organizer, menu, str(match_id))
+        await sim.click(organizer, menu, winner)
+        if confirm:
+            await sim.click(organizer, menu, "Confirm")
+    asyncio.run(go())
+
+
+def _forfeit_blaze(sim, players, matches):
+    """Ace readies up for the first match and Blaze never does, so Ace wins by forfeit."""
+    _loop(sim)
+    [call] = _posts(sim)
+    _click(sim, players["Ace"], call, "Ready Up")
+    _age_call(matches[0], 6)
+    _loop(sim)
+    _age_call(matches[0], 6)
+    _loop(sim)
+
+
+def test_withdrawing_a_called_entrant_frees_the_place_for_the_next_match(world):
+    sim, organizer, players, tid, teams, matches, category = world
+    _loop(sim)
+    [call] = _posts(sim)
+    _admin(sim, organizer, "admin withdraw", entrant="Blaze", reason="withdrawn")
+    _loop(sim)
+    assert call.content.startswith("Round 1: **Ace** wins by walkover.") and call.view is None
+    assert _calls(tid) == [matches[1]]
+    assert _posts(sim)[-1].content.startswith("🎮 Round 1: **Cyan** vs **Dune** is up!")
+    assert not sim.issues
+
+
+def test_an_organizer_result_during_a_call_ends_it_on_the_call(world):
+    sim, organizer, players, tid, teams, matches, category = world
+    _loop(sim)
+    [call] = _posts(sim)
+
+    async def record():
+        menu = (await sim.run(organizer, "match result", tournament="Cup")).sent
+        await sim.choose(organizer, menu, str(matches[0]))
+        await sim.click(organizer, menu, "Blaze")
+    asyncio.run(record())
+    assert call.content.startswith(f"📣 Round 1: **Blaze** defeats **Ace** (recorded by <@{organizer.id}>).")
+    assert call.view is None
+    _loop(sim)
+    assert _calls(tid) == [matches[1]]
+    assert not sim.issues
+
+
+def test_changing_an_earlier_result_calls_the_final_off_and_calls_it_again(world):
+    sim, organizer, players, tid, teams, matches, category = world
+    conn = db.get_connection()
+    db.record_result(conn, tid, matches[0], teams["Ace"], organizer.id)
+    db.record_result(conn, tid, matches[1], teams["Cyan"], organizer.id)
+    conn.close()
+    _loop(sim)
+    [final_call] = _posts(sim)
+    assert final_call.content.startswith("🎮 Round 2: **Ace** vs **Cyan** is up!")
+
+    _set_result(sim, organizer, matches[0], "Blaze", confirm=True)
+    _loop(sim)
+    assert final_call.content == "Round 2: **Ace** vs **Cyan** is off, because an earlier result changed."
+    assert final_call.view is None
+    _loop(sim)  # the new call gets a post of its own once the old one has ended
+    assert _posts(sim)[-1].content.startswith("🎮 Round 2: **Blaze** vs **Cyan** is up!")
+    assert _calls(tid) == [matches[2]]
+    assert not sim.issues
+
+
+def test_turning_calls_off_lets_a_called_match_finish_but_calls_no_more(world):
+    sim, organizer, players, tid, teams, matches, category = world
+    _loop(sim)
+    [call] = _posts(sim)
+    reply = _admin(sim, organizer, "admin matchslots")
+    assert reply.content == "The bot no longer calls **Cup**'s matches. Matches it already called carry on."
+    _click(sim, players["Ace"], call, "Ready Up")
+    _click(sim, players["Blaze"], call, "Ready Up")
+    [start] = _posts(sim)
+    assert start.content.startswith("▶️ Round 1: **Ace** vs **Blaze**.")
+
+    conn = db.get_connection()
+    db.record_result(conn, tid, matches[0], teams["Ace"], organizer.id)
+    conn.close()
+    _loop(sim)
+    assert _calls(tid) == []
+    assert not any("is up!" in post.content for post in _posts(sim))
+    assert not sim.issues
+
+
+def test_an_organizer_can_overwrite_a_forfeit(world):
+    sim, organizer, players, tid, teams, matches, category = world
+    _forfeit_blaze(sim, players, matches)
+    assert matches[0] in _outcomes(tid).forfeits
+    _set_result(sim, organizer, matches[0], "Blaze", confirm=True)
+    outcomes = _outcomes(tid)
+    assert outcomes.played[matches[0]] == teams["Blaze"] and matches[0] not in outcomes.forfeits
+    assert not sim.issues
+
+
+def test_an_organizer_can_clear_a_forfeit_and_the_match_is_called_again_in_turn(world):
+    sim, organizer, players, tid, teams, matches, category = world
+    _forfeit_blaze(sim, players, matches)
+
+    async def clear():
+        menu = (await sim.run(organizer, "admin clearresult", tournament="Cup")).sent
+        await sim.choose(organizer, menu, str(matches[0]))
+        await sim.click(organizer, menu, "Confirm")
+    asyncio.run(clear())
+    assert matches[0] not in _outcomes(tid).decided
+    _loop(sim)
+    assert _calls(tid) == [matches[1]]  # the one place went to the next match meanwhile
+
+    conn = db.get_connection()
+    db.record_result(conn, tid, matches[1], teams["Cyan"], organizer.id)
+    conn.close()
+    _loop(sim)
+    assert _calls(tid) == [matches[0]]
+    assert not sim.issues
+
+
+def test_a_room_added_to_the_category_is_used_straight_away(tmp_path):
+    sim, organizer, players, tid, teams, matches, category = _build(tmp_path, rooms=2, slots=2)
+    try:
+        _loop(sim)
+        first_call, second_call = _posts(sim)
+        category.voice_channels.pop()
+        for user, call in ((players["Ace"], first_call), (players["Blaze"], first_call),
+                           (players["Cyan"], second_call), (players["Dune"], second_call)):
+            _click(sim, user, call, "Ready Up")
+        new_room = FakeVoiceChannel(999, "Room 3")
+        category.voice_channels.append(new_room)
+        _loop(sim)
+        assert any(post.content.startswith("▶️ Round 1: **Cyan** vs **Dune**.") and f"<#{new_room.id}>" in post.content
+                   for post in _posts(sim))
+        assert not sim.issues
     finally:
         asyncio.run(sim.close())
