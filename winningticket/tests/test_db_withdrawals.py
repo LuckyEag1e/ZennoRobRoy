@@ -206,3 +206,11 @@ def test_reinstating_the_finalist_who_left_reopens_the_final(tournament):
     db.reinstate_entrant(conn, tid, team["C"])
     assert _status(conn, tid) == "in_progress"
     assert final not in db.get_outcomes(conn, tid).decided
+
+
+def test_no_result_can_be_recorded_over_a_walkover(tournament):
+    conn, tid, semi_1, _, _, team = tournament
+    db.withdraw_entrant(conn, tid, team["B"], "withdrawn", 1)
+    with pytest.raises(ValueError):
+        db.record_result(conn, tid, semi_1, team["B"], 1)
+    assert db.get_outcomes(conn, tid).played == {}

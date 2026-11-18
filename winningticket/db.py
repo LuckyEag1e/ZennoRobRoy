@@ -785,6 +785,10 @@ def record_result(conn: sqlite3.Connection, tournament_id: int, match_id: int,
 
 def _record_result(conn: sqlite3.Connection, tournament_id: int, match_id: int,
                    winner_team_id: int, recorded_by: int) -> list[int]:
+    if match_id in get_outcomes(conn, tournament_id).unplayed:
+        # Withdrawals settled it with no game, so a played result would be made up.
+        # Reinstating the entrant reopens the match.
+        raise ValueError(f"match {match_id} was settled by withdrawals, so it has no game to record")
     conn.execute("DELETE FROM skipped_matches WHERE match_id = ?", (match_id,))
     conn.execute(
         """INSERT INTO match_results (match_id, winner_team_id, recorded_by)
