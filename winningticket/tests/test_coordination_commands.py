@@ -429,3 +429,35 @@ def test_a_vote_on_a_started_match_counts_down_on_its_post(world):
                                     "or it's recorded <t:")
     assert [item.item.label for item in start.view.children] == ["Report Result"]
     assert not sim.issues
+
+
+def test_a_post_taken_over_while_its_new_message_was_sending_leaves_no_stray_message(world):
+    sim, organizer, players, tid, teams, matches, category = world
+    _loop(sim)
+    [call] = _posts(sim)
+    _click(sim, players["Ace"], call, "Ready Up")
+    send = sim.channel.send
+
+    async def taken_over_mid_send(*args, **kwargs):
+        # An announcement edits the old message and forgets the post while this one sends.
+        conn = db.get_connection()
+        db.forget_match_post(conn, matches[0], call.id)
+        conn.close()
+        return await send(*args, **kwargs)
+    sim.channel.send = taken_over_mid_send
+    _click(sim, players["Blaze"], call, "Ready Up")  # would send the start post afresh
+    sim.channel.send = send
+    assert _posts(sim) == [call]  # the start message it sent was deleted, and the old one left alone
+    assert not sim.issues
+
+
+def test_report_result_on_a_deleted_tournament_says_so(world):
+    sim, organizer, players, tid, teams, matches, category = world
+    _loop(sim)
+    [call] = _posts(sim)
+    _click(sim, players["Ace"], call, "Ready Up")
+    _click(sim, players["Blaze"], call, "Ready Up")
+    [start] = _posts(sim)
+    asyncio.run(sim.run(organizer, "admin deletetournament", tournament="Cup", confirm_name="Cup"))
+    assert _click(sim, players["Ace"], start, "Report Result").content == "That tournament no longer exists."
+    assert not sim.issues

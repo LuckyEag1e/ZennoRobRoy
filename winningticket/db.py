@@ -1068,23 +1068,46 @@ def claim_match_post(conn: sqlite3.Connection, match_id: int, channel_id: int, t
         ).rowcount > 0
 
 
-def set_match_post(conn: sqlite3.Connection, match_id: int, message_id: int, shown: str, pinged: str | None) -> None:
-    """Record what the post's message now shows, which also ends any claim to send one."""
+def set_match_post(conn: sqlite3.Connection, match_id: int, message_id: int, shown: str, pinged: str | None) -> bool:
+    """Record what the post's message `message_id` now shows after an edit. False, with
+    nothing changed, if the post has moved on to another message, or was forgotten."""
     with conn:
-        conn.execute("UPDATE match_posts SET message_id = ?, shown = ?, pinged = ?, sending_at = NULL WHERE match_id = ?",
-                     (message_id, shown, pinged, match_id))
+        return conn.execute("UPDATE match_posts SET shown = ?, pinged = ? WHERE match_id = ? AND message_id = ?",
+                            (shown, pinged, match_id, message_id)).rowcount > 0
 
 
-def claim_post_send(conn: sqlite3.Connection, match_id: int) -> bool:
-    """Claim the sending of a new message for a match's post. False if something else is
-    sending one. A claim older than a minute is taken over, since whatever made it must
-    have stopped partway (the bot restarting mid-send)."""
+def claim_post_send(conn: sqlite3.Connection, match_id: int) -> str | None:
+    """Claim the sending of a new message for a match's post, returning the claim to pass
+    to take_over_match_post. None if something else is sending one. A claim older than a
+    minute is taken over, since whatever made it must have stopped partway (the bot
+    restarting mid-send)."""
+    with conn:
+        claim = conn.execute("SELECT strftime('%Y-%m-%dT%H:%M:%fZ','now')").fetchone()[0]
+        taken = conn.execute(
+            """UPDATE match_posts SET sending_at = ?
+               WHERE match_id = ? AND (sending_at IS NULL OR sending_at < strftime('%Y-%m-%dT%H:%M:%fZ','now','-1 minute'))""",
+            (claim, match_id),
+        ).rowcount > 0
+        return claim if taken else None
+
+
+def take_over_match_post(conn: sqlite3.Connection, match_id: int, claim: str, message_id: int, shown: str,
+                         pinged: str | None) -> bool:
+    """Make the newly sent `message_id` the post's message, ending the claim to send it.
+    False, with nothing changed, if the claim no longer holds: an announcement took the
+    post over, a new call claimed it afresh, or the claim was given up as stuck."""
     with conn:
         return conn.execute(
-            """UPDATE match_posts SET sending_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
-               WHERE match_id = ? AND (sending_at IS NULL OR sending_at < strftime('%Y-%m-%dT%H:%M:%fZ','now','-1 minute'))""",
-            (match_id,),
+            """UPDATE match_posts SET message_id = ?, shown = ?, pinged = ?, sending_at = NULL
+               WHERE match_id = ? AND sending_at = ?""", (message_id, shown, pinged, match_id, claim)
         ).rowcount > 0
+
+
+def forget_match_post(conn: sqlite3.Connection, match_id: int, message_id: int | None) -> None:
+    """Forget a post whose message `message_id` shows how its match ended, unless a newer
+    post has taken its place."""
+    with conn:
+        conn.execute("DELETE FROM match_posts WHERE match_id = ? AND message_id IS ?", (match_id, message_id))
 
 
 def release_post_send(conn: sqlite3.Connection, match_id: int) -> None:

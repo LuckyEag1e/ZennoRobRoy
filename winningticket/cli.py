@@ -197,7 +197,13 @@ class WinningTicketCLI(cmd.Cmd):
             buttons = [name for name, shown in (("Ready Up", state.ready_button), ("Report Result", state.report_button))
                        if shown]
             print(f"(match post{'' if fresh else ' edited'}) {state.text}" + "".join(f" [{name}]" for name in buttons))
-            db.set_match_post(self.conn, match_id, 0, state.text, state.ping or post["pinged"])
+            if fresh:
+                db.take_over_match_post(self.conn, match_id, db.claim_post_send(self.conn, match_id), 0, state.text,
+                                        state.ping or post["pinged"])
+                if state.ping is not None and state.ping.startswith("warning:"):
+                    db.warn_on_match_post(self.conn, match_id)
+            else:
+                db.set_match_post(self.conn, match_id, 0, state.text, post["pinged"])
         if state.final:
             db.delete_match_post(self.conn, match_id)
 

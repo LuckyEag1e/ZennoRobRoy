@@ -98,6 +98,9 @@ class ReportResultButton(discord.ui.DynamicItem[discord.ui.Button], template=r"r
         conn = db.get_connection()
         try:
             tournament = db.get_tournament(conn, db.get_match_tournament_id(conn, self.match_id))
+            if tournament is None:
+                await interaction.response.send_message("That tournament no longer exists.", ephemeral=True)
+                return
             if db.get_entrant_team_id(conn, tournament["id"], interaction.user.id) not in db.match_now(
                     conn, tournament["id"], self.match_id).teams:
                 found = "This isn't your match."
@@ -235,23 +238,35 @@ async def sync_match_post(client: discord.Client, conn: sqlite3.Connection, matc
     state = match_posts.describe(conn, post, mention, room_mention)
     if post["message_id"] is None or (state.ping is not None and state.ping != post["pinged"]):
         if post["message_id"] is None and state.final:
-            db.delete_match_post(conn, match_id)  # it never got as far as being sent
+            db.forget_match_post(conn, match_id, None)  # it never got as far as being sent
             return
-        if not db.claim_post_send(conn, match_id):
+        claim = db.claim_post_send(conn, match_id)
+        if claim is None:
             return  # something else is sending it right now
         message = await send_public(client.get_channel(post["channel_id"]), state.text, view=_view(state, match_id))
         if message is None:
             db.release_post_send(conn, match_id)  # tried again on the next check
             return
-        if post["message_id"] is not None and not await _delete_message(client, post["channel_id"], post["message_id"]):
-            db.keep_replaced_match_post(conn, post["channel_id"], post["message_id"])
-        db.set_match_post(conn, match_id, message.id, state.text, state.ping or post["pinged"])
+        if db.take_over_match_post(conn, match_id, claim, message.id, state.text, state.ping or post["pinged"]):
+            old = post["message_id"]
+        else:
+            old = message.id  # the post moved on while this was sending, so this message isn't wanted
+        if old is not None and not await _delete_message(client, post["channel_id"], old):
+            db.keep_replaced_match_post(conn, post["channel_id"], old)
+        if old == message.id:
+            return
+        if state.ping is not None and state.ping.startswith("warning:"):
+            db.warn_on_match_post(conn, match_id)  # the other side's time runs from when they're told
+        shown_message = message.id
     elif state.text != post["shown"]:
         if await _edit(client, conn, post, state.text, _view(state, match_id)) is not PostEdit.EDITED:
             return
         db.set_match_post(conn, match_id, post["message_id"], state.text, post["pinged"])
+        shown_message = post["message_id"]
+    else:
+        shown_message = post["message_id"]
     if state.final:
-        db.delete_match_post(conn, match_id)
+        db.forget_match_post(conn, match_id, shown_message)
 
 
 async def announce_match_change(client: discord.Client, channel: discord.abc.Messageable | None, match_id: int,
@@ -267,7 +282,7 @@ async def announce_match_change(client: discord.Client, channel: discord.abc.Mes
         if post is not None and post["message_id"] is not None:
             edit = await _edit(client, conn, post, text, None)
         if edit is PostEdit.EDITED:
-            db.delete_match_post(conn, match_id)
+            db.forget_match_post(conn, match_id, post["message_id"])
             return True
         if await send_public(channel, text, ping=False) is None:
             return False  # a post that's still there is left for the background check to bring up to date
