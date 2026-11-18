@@ -104,6 +104,7 @@ class AdminCog(commands.Cog):
             if tournament_row is None:
                 return
             status = db.set_tournament_status(conn, tournament_row["id"], status)
+            db.set_tournament_channel_if_missing(conn, tournament_row["id"], interaction.channel_id)
         finally:
             conn.close()
         await interaction.response.send_message(f"Status for **{tournament}** set to `{status}`.", ephemeral=True)
@@ -524,6 +525,7 @@ class AdminCog(commands.Cog):
             problem = match_slots_problem(self.bot, interaction.guild_id, conn, match_slots) if match_slots else None
             if problem is None:
                 db.set_match_slots(conn, tournament_row["id"], match_slots)
+                db.set_tournament_channel_if_missing(conn, tournament_row["id"], interaction.channel_id)
         finally:
             conn.close()
         if problem is not None:

@@ -1167,10 +1167,13 @@ def set_match_slots(conn: sqlite3.Connection, tournament_id: int, match_slots: i
                          (tournament_id,))
 
 
-def get_coordinated_tournaments(conn: sqlite3.Connection) -> list[sqlite3.Row]:
-    """In-progress tournaments whose matches the bot calls."""
+def get_tournaments_to_tend(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    """In-progress tournaments whose matches the bot calls, or that still have calls from
+    before it stopped, which carry on until their matches are decided."""
     return conn.execute(
-        "SELECT * FROM tournaments WHERE status = 'in_progress' AND match_slots IS NOT NULL ORDER BY id"
+        """SELECT * FROM tournaments t WHERE t.status = 'in_progress' AND (t.match_slots IS NOT NULL OR EXISTS
+               (SELECT 1 FROM match_calls c JOIN matches m ON m.id = c.match_id WHERE m.tournament_id = t.id))
+           ORDER BY t.id"""
     ).fetchall()
 
 
@@ -1197,10 +1200,12 @@ def get_match_queue(conn: sqlite3.Connection, guild_id: int) -> list[sqlite3.Row
 
 
 def count_server_calls(conn: sqlite3.Connection, guild_id: int) -> int:
-    """Called matches across all of a server's tournaments, which share its rooms."""
+    """Called matches across all of a server's in-progress tournaments, which share its
+    rooms. A tournament that stopped being played doesn't hold rooms with its calls."""
     return conn.execute(
         """SELECT COUNT(*) FROM match_calls c JOIN matches m ON m.id = c.match_id
-           JOIN tournaments t ON t.id = m.tournament_id WHERE t.guild_id = ?""", (guild_id,)
+           JOIN tournaments t ON t.id = m.tournament_id WHERE t.guild_id = ? AND t.status = 'in_progress'""",
+        (guild_id,)
     ).fetchone()[0]
 
 
@@ -1251,10 +1256,11 @@ def start_match(conn: sqlite3.Connection, match_id: int) -> bool:
 
 
 def held_rooms(conn: sqlite3.Connection, guild_id: int) -> set[int]:
-    """Rooms in use by a called match anywhere in the server."""
+    """Rooms in use by a called match in any of the server's in-progress tournaments."""
     return {r["room_id"] for r in conn.execute(
         """SELECT c.room_id FROM match_calls c JOIN matches m ON m.id = c.match_id
-           JOIN tournaments t ON t.id = m.tournament_id WHERE t.guild_id = ? AND c.room_id IS NOT NULL""",
+           JOIN tournaments t ON t.id = m.tournament_id
+           WHERE t.guild_id = ? AND t.status = 'in_progress' AND c.room_id IS NOT NULL""",
         (guild_id,))}
 
 

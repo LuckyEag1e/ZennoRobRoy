@@ -10,6 +10,7 @@ from datetime import datetime, timedelta
 from itertools import groupby
 from typing import Optional
 
+import coordination
 import db
 from bracket import Match, resolvable_matches, resolve_all_slots, resolve_slot
 from labels import advance_text, called_off_line, report_timed_out, result_line, team_label, walkover_line
@@ -144,7 +145,8 @@ def find_reportable_match(conn: sqlite3.Connection, tournament: sqlite3.Row, use
         # Their side could never answer a vote, so the timeout would hand over every such match.
         return f"**{team_label(teams_by_id, other)}** has no Discord account behind them, so an organizer records this match."
     call = db.get_call(conn, match.id)
-    if tournament["match_slots"] is not None and (call is None or call["started_at"] is None):
+    # A match the bot calls, or already called, is reported once both sides have readied up.
+    if (call is not None and call["started_at"] is None) or (call is None and coordination.calls_matches(tournament)):
         return (f"Your match in **{name}** hasn't started yet. Once it's called, both sides ready up, "
                 f"and then you can report it.")
     vote = next((v for v in db.get_reports(conn, match.id) if v["team_id"] == team_id), None)

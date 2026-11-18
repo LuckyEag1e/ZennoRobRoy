@@ -170,7 +170,7 @@ class WinningTicketCLI(cmd.Cmd):
         match's post from a background loop. The CLI has none, so it does the same before
         each command, printing what the bot would post or edit."""
         now = datetime.now(timezone.utc)
-        for tournament in db.get_coordinated_tournaments(self.conn):
+        for tournament in db.get_tournaments_to_tend(self.conn):
             coordination.tend(self.conn, tournament, now, self.rooms)
         coordination.call_queued(self.conn, GUILD_ID, self.rooms)
         for step in reports.due_steps(self.conn, now):
@@ -709,6 +709,7 @@ class WinningTicketCLI(cmd.Cmd):
         if tournament is None:
             return
         print(f"Status set to {db.set_tournament_status(self.conn, tournament['id'], status)}.")
+        db.set_tournament_channel_if_missing(self.conn, tournament["id"], 0)
 
     def do_admin_delete(self, arg: str) -> None:
         "Permanently delete a tournament (asks you to retype the name): admin_delete <name>"
@@ -922,6 +923,7 @@ class WinningTicketCLI(cmd.Cmd):
         if tournament is None or match_slots is False or not self._match_slots_fit(match_slots):
             return
         db.set_match_slots(self.conn, tournament["id"], match_slots)
+        db.set_tournament_channel_if_missing(self.conn, tournament["id"], 0)
         print(f"'{parts[0]}' " + (f"has up to {match_slots} matches called at once." if match_slots
                                   else "no longer has its matches called."))
 

@@ -10,6 +10,7 @@ import pytest
 
 import coordination
 import db
+import reports
 from bracket import bracket_order
 from csv_import import import_tournament, parse_csv
 
@@ -186,7 +187,7 @@ def _decide(conn, tid, match_id):
 
 def _tend_server(conn, rooms):
     """One check of the bot's loop: every coordinated tournament, in the order it takes them."""
-    for tournament in db.get_coordinated_tournaments(conn):
+    for tournament in db.get_tournaments_to_tend(conn):
         coordination.tend(conn, tournament, datetime.now(timezone.utc), rooms)
     coordination.call_queued(conn, 1, rooms)
 
@@ -270,3 +271,36 @@ def test_nobody_is_reminded_or_forfeits_until_the_post_asking_them_has_gone_out(
     assert db.get_call(conn, semi_1)["reminded_at"] is not None
     _tend(conn, tid, rooms=[1, 2], minutes=30)  # the reminder was never posted
     assert semi_1 not in db.get_outcomes(conn, tid).decided
+
+
+def test_calls_left_after_calls_are_turned_off_still_run_their_course(tournament):
+    conn, tid, teams, semi_1, semi_2 = tournament
+    _tend(conn, tid, rooms=[1, 2])
+    _show_post(conn, semi_1, "call")
+    db.set_match_slots(conn, tid, None)
+    assert [t["id"] for t in db.get_tournaments_to_tend(conn)] == [tid]
+    _tend(conn, tid, rooms=[1, 2], minutes=6)
+    assert db.get_call(conn, semi_1)["reminded_at"] is not None
+
+
+def test_a_tournament_that_stopped_being_played_holds_no_rooms(server):
+    cup, cup_round_1 = _eight_entrant_tournament(server, "Cup", slots=2, first_user_id=10)
+    _tend_server(server, rooms=[1, 2])
+    db.set_tournament_status(server, cup, "predictions_open")  # forced back by an organizer
+    assert db.count_server_calls(server, 1) == 0
+    shield, shield_round_1 = _eight_entrant_tournament(server, "Shield", slots=2, first_user_id=20)
+    _tend_server(server, rooms=[1, 2])
+    assert _called(server, shield) == shield_round_1[:2]
+
+
+def test_matches_can_be_reported_in_a_tournament_with_nowhere_to_post_calls(tmp_path):
+    conn = db.get_connection(tmp_path / "test.db")
+    db.init_db(conn)
+    tid = import_tournament(conn, 1, "Test", 1, parse_csv("team_a,team_b\nA,B\n"))
+    for user_id, team_id in enumerate(sorted(db.get_teams(conn, tid)), start=10):
+        db.link_team_member(conn, tid, team_id, user_id)
+    db.set_match_slots(conn, tid, 1)
+    db.set_tournament_status(conn, tid, "in_progress")  # forced, so no channel was set
+    found = reports.find_reportable_match(conn, db.get_tournament(conn, tid), 10)
+    assert not isinstance(found, str), found
+    conn.close()

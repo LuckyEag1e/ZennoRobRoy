@@ -17,6 +17,12 @@ READY_REMINDER_AFTER = timedelta(minutes=5)
 READY_FORFEIT_AFTER = timedelta(minutes=5)
 
 
+def calls_matches(tournament: sqlite3.Row) -> bool:
+    """Whether the bot calls the tournament's matches: it needs places for them, and a
+    channel to post the calls in."""
+    return tournament["match_slots"] is not None and tournament["channel_id"] is not None
+
+
 def needs_ready_up(conn: sqlite3.Connection, teams: tuple[int, int]) -> bool:
     """Only a match with Discord users on both sides waits for them to ready up."""
     return all(db.team_member_ids(conn, team) for team in teams)
@@ -29,9 +35,9 @@ def forfeit_deadline(call: sqlite3.Row) -> datetime:
 
 
 def tend(conn: sqlite3.Connection, tournament: sqlite3.Row, now: datetime, rooms: list[int]) -> None:
-    """Move a coordinated tournament's calls along as of `now`: remind and then forfeit
-    sides that haven't readied, give started matches a free one of `rooms`, and queue
-    matches as they become ready to call, for call_queued."""
+    """Move a tournament's calls along as of `now`: remind and then forfeit sides that
+    haven't readied, give started matches a free one of `rooms`, and, while the bot calls
+    its matches, queue them as they become ready to call, for call_queued."""
     for call in db.get_calls(conn, tournament["id"]):
         # A call's post can end early, when it was about an earlier matchup, so each call
         # gets a new one if it has none.
@@ -53,7 +59,8 @@ def tend(conn: sqlite3.Connection, tournament: sqlite3.Row, now: datetime, rooms
     outcomes = db.get_outcomes(conn, tournament["id"])
     called = {call["match_id"] for call in db.get_calls(conn, tournament["id"])}
     ready = resolvable_matches(matches_by_id, feeders, outcomes.winners.get, outcomes.decided)
-    db.update_match_queue(conn, tournament["id"], [m.id for m in sorted(ready, key=bracket_order) if m.id not in called])
+    if calls_matches(tournament):
+        db.update_match_queue(conn, tournament["id"], [m.id for m in sorted(ready, key=bracket_order) if m.id not in called])
 
 
 def call_queued(conn: sqlite3.Connection, guild_id: int, rooms: list[int]) -> None:
@@ -65,7 +72,7 @@ def call_queued(conn: sqlite3.Connection, guild_id: int, rooms: list[int]) -> No
         if free_rooms <= 0:
             return
         tournament = db.get_tournament(conn, queued["tournament_id"])
-        if tournament["channel_id"] is None or len(db.get_calls(conn, tournament["id"])) >= tournament["match_slots"]:
+        if not calls_matches(tournament) or len(db.get_calls(conn, tournament["id"])) >= tournament["match_slots"]:
             continue
         _call(conn, tournament, queued["match_id"], db.match_now(conn, tournament["id"], queued["match_id"]).teams, rooms)
         free_rooms -= 1

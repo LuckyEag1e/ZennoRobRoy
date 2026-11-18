@@ -99,8 +99,8 @@ class ResultsCog(commands.Cog):
             conn = db.get_connection()
             try:
                 now = datetime.now(timezone.utc)
-                coordinated = db.get_coordinated_tournaments(conn)
-                for tournament in coordinated:
+                tended = db.get_tournaments_to_tend(conn)
+                for tournament in tended:
                     try:
                         rooms = match_rooms(self.bot, tournament["guild_id"], conn)
                         if bot_plays_for_testing():
@@ -108,7 +108,7 @@ class ResultsCog(commands.Cog):
                         coordination.tend(conn, tournament, now, rooms)
                     except Exception:
                         log.exception("Couldn't tend matches for tournament %s", tournament["id"])
-                for guild_id in {tournament["guild_id"] for tournament in coordinated}:
+                for guild_id in {tournament["guild_id"] for tournament in tended}:
                     try:
                         coordination.call_queued(conn, guild_id, match_rooms(self.bot, guild_id, conn))
                     except Exception:
