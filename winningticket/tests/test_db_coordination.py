@@ -36,7 +36,9 @@ def tournament(tmp_path):
 
 def _tend(conn, tid, rooms, minutes=0):
     now = datetime.now(timezone.utc) + timedelta(minutes=minutes)
-    coordination.tend(conn, db.get_tournament(conn, tid), now, rooms)
+    tournament = db.get_tournament(conn, tid)
+    coordination.tend(conn, tournament, now, rooms)
+    coordination.call_queued(conn, tournament["guild_id"], rooms)
 
 
 def test_no_more_matches_are_called_than_there_are_rooms(tournament):
@@ -178,6 +180,7 @@ def _tend_server(conn, rooms):
     """One check of the bot's loop: every coordinated tournament, in the order it takes them."""
     for tournament in db.get_coordinated_tournaments(conn):
         coordination.tend(conn, tournament, datetime.now(timezone.utc), rooms)
+    coordination.call_queued(conn, 1, rooms)
 
 
 def test_only_as_many_matches_as_places_are_called_and_a_free_place_is_refilled(server):
@@ -217,12 +220,33 @@ def test_tournaments_in_one_server_share_its_rooms(server):
     assert db.count_server_calls(server, 1) == 3
 
 
-def test_a_room_that_comes_free_goes_to_the_tournament_with_fewest_matches_called(server):
+def test_a_match_that_became_ready_later_waits_behind_another_tournaments(server):
     cup, cup_round_1 = _eight_entrant_tournament(server, "Cup", slots=2, first_user_id=10)
+    _tend_server(server, rooms=[1, 2])
+    shield, shield_round_1 = _eight_entrant_tournament(server, "Shield", slots=2, first_user_id=20)
+    _tend_server(server, rooms=[1, 2])  # Shield's matches queue behind Cup's two still waiting
+    for match_id in cup_round_1[:2]:
+        _decide(server, cup, match_id)
+        _tend_server(server, rooms=[1, 2])
+    assert _called(server, cup) == cup_round_1[2:]  # Cup's semi-final is ready now, but last in line
+    assert _called(server, shield) == []
+
+    _decide(server, cup, cup_round_1[2])
+    _tend_server(server, rooms=[1, 2])
+    assert _called(server, shield) == [shield_round_1[0]]
+    assert _called(server, cup) == [cup_round_1[3]]
+
+
+def test_a_match_whose_tournament_has_no_place_free_lets_the_next_in_line_go(server):
+    cup, cup_round_1 = _eight_entrant_tournament(server, "Cup", slots=1, first_user_id=10)
     shield, shield_round_1 = _eight_entrant_tournament(server, "Shield", slots=2, first_user_id=20)
     _tend_server(server, rooms=[1, 2])
-    assert _called(server, cup) == cup_round_1[:2] and _called(server, shield) == []
-    _decide(server, cup, cup_round_1[0])
-    _tend_server(server, rooms=[1, 2])
-    assert _called(server, cup) == [cup_round_1[1]]
+    assert _called(server, cup) == [cup_round_1[0]]
     assert _called(server, shield) == [shield_round_1[0]]
+
+
+def test_turning_calls_off_takes_a_tournaments_matches_out_of_the_queue(server):
+    cup, _ = _eight_entrant_tournament(server, "Cup", slots=1, first_user_id=10)
+    _tend_server(server, rooms=[1])
+    db.set_match_slots(server, cup, None)
+    assert db.get_match_queue(server, 1) == []

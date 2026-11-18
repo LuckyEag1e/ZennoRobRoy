@@ -9,7 +9,7 @@ import sqlite3
 from datetime import datetime, timedelta
 
 import db
-from bracket import bracket_order, resolvable_matches, resolve_all_slots
+from bracket import bracket_order, resolvable_matches
 
 # A side that hasn't readied up is reminded after this long, and forfeits once the
 # reminder has been up this long.
@@ -30,8 +30,8 @@ def forfeit_deadline(call: sqlite3.Row) -> datetime:
 
 def tend(conn: sqlite3.Connection, tournament: sqlite3.Row, now: datetime, rooms: list[int]) -> None:
     """Move a coordinated tournament's calls along as of `now`: remind and then forfeit
-    sides that haven't readied, give started matches a free one of `rooms`, and call the
-    next matches while places are free."""
+    sides that haven't readied, give started matches a free one of `rooms`, and queue
+    matches as they become ready to call, for call_queued."""
     for call in db.get_calls(conn, tournament["id"]):
         # A call's post can end early, when it was about an earlier matchup, so each call
         # gets a new one if it has none.
@@ -46,19 +46,26 @@ def tend(conn: sqlite3.Connection, tournament: sqlite3.Row, now: datetime, rooms
         elif call["room_id"] is None:
             db.give_room(conn, tournament["guild_id"], call["match_id"], rooms)
 
-    # Every called match needs a room once it starts, and the server's tournaments share the
-    # rooms, so a match is only called while both the tournament and the server have room.
-    places = min(tournament["match_slots"] - len(db.get_calls(conn, tournament["id"])),
-                 len(rooms) - db.count_server_calls(conn, tournament["guild_id"]))
-    if places <= 0 or tournament["channel_id"] is None:
-        return
     matches_by_id, feeders, _ = db.load_bracket(conn, tournament["id"])
     outcomes = db.get_outcomes(conn, tournament["id"])
-    slots = resolve_all_slots(matches_by_id, outcomes.winners.get, feeders)
     called = {call["match_id"] for call in db.get_calls(conn, tournament["id"])}
     ready = resolvable_matches(matches_by_id, feeders, outcomes.winners.get, outcomes.decided)
-    for match in sorted((m for m in ready if m.id not in called), key=bracket_order)[:places]:
-        _call(conn, tournament, match.id, slots[match.id], rooms)
+    db.update_match_queue(conn, tournament["id"], [m.id for m in sorted(ready, key=bracket_order) if m.id not in called])
+
+
+def call_queued(conn: sqlite3.Connection, guild_id: int, rooms: list[int]) -> None:
+    """Call the server's queued matches, longest waiting first, while the server has a room
+    free and each match's tournament a place free. The server's tournaments share its
+    rooms, so a match never waits behind one that became ready after it."""
+    free_rooms = len(rooms) - db.count_server_calls(conn, guild_id)
+    for queued in db.get_match_queue(conn, guild_id):
+        if free_rooms <= 0:
+            return
+        tournament = db.get_tournament(conn, queued["tournament_id"])
+        if tournament["channel_id"] is None or len(db.get_calls(conn, tournament["id"])) >= tournament["match_slots"]:
+            continue
+        _call(conn, tournament, queued["match_id"], db.match_now(conn, tournament["id"], queued["match_id"]).teams, rooms)
+        free_rooms -= 1
 
 
 def _call(conn: sqlite3.Connection, tournament: sqlite3.Row, match_id: int, teams: tuple[int, int],

@@ -99,14 +99,20 @@ class ResultsCog(commands.Cog):
             conn = db.get_connection()
             try:
                 now = datetime.now(timezone.utc)
-                for tournament in db.get_coordinated_tournaments(conn):
+                coordinated = db.get_coordinated_tournaments(conn)
+                for tournament in coordinated:
                     try:
                         rooms = match_rooms(self.bot, tournament["guild_id"], conn)
                         if bot_plays_for_testing():
                             coordination.ready_up_for(conn, tournament, self.bot.user.id, rooms)
                         coordination.tend(conn, tournament, now, rooms)
                     except Exception:
-                        log.exception("Couldn't call matches for tournament %s", tournament["id"])
+                        log.exception("Couldn't tend matches for tournament %s", tournament["id"])
+                for guild_id in {tournament["guild_id"] for tournament in coordinated}:
+                    try:
+                        coordination.call_queued(conn, guild_id, match_rooms(self.bot, guild_id, conn))
+                    except Exception:
+                        log.exception("Couldn't call matches for server %s", guild_id)
                 for step in reports.due_steps(conn, now):
                     try:
                         await self._take_step(conn, step)

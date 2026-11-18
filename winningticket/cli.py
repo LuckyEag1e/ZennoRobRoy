@@ -172,6 +172,7 @@ class WinningTicketCLI(cmd.Cmd):
         now = datetime.now(timezone.utc)
         for tournament in db.get_coordinated_tournaments(self.conn):
             coordination.tend(self.conn, tournament, now, self.rooms)
+        coordination.call_queued(self.conn, GUILD_ID, self.rooms)
         for step in reports.due_steps(self.conn, now):
             vote = step.vote
             if step.kind == "warn":

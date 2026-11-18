@@ -201,6 +201,12 @@ CREATE TABLE IF NOT EXISTS match_calls (
     started_at  TEXT,
     room_id     INTEGER
 );
+-- Matches ready to be called, in the order they became ready, across every coordinated
+-- tournament in a server. A room that comes free goes to the longest-waiting match.
+CREATE TABLE IF NOT EXISTS match_queue (
+    position    INTEGER PRIMARY KEY AUTOINCREMENT,
+    match_id    INTEGER NOT NULL UNIQUE REFERENCES matches(id) ON DELETE CASCADE
+);
 CREATE TABLE IF NOT EXISTS match_ready (
     match_id    INTEGER NOT NULL REFERENCES match_calls(match_id) ON DELETE CASCADE,
     team_id     INTEGER NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
@@ -1129,18 +1135,41 @@ def set_tournament_channel_if_missing(conn: sqlite3.Connection, tournament_id: i
 
 
 def set_match_slots(conn: sqlite3.Connection, tournament_id: int, match_slots: int | None) -> None:
+    """With None, the bot stops calling the tournament's matches, so they leave the queue
+    rather than keep their place for later."""
     with conn:
         conn.execute("UPDATE tournaments SET match_slots = ? WHERE id = ?", (match_slots, tournament_id))
+        if match_slots is None:
+            conn.execute("DELETE FROM match_queue WHERE match_id IN (SELECT id FROM matches WHERE tournament_id = ?)",
+                         (tournament_id,))
 
 
 def get_coordinated_tournaments(conn: sqlite3.Connection) -> list[sqlite3.Row]:
-    """In-progress tournaments whose matches the bot calls, those with the fewest matches
-    called first. A server's tournaments share its rooms, so whichever goes first gets a
-    room that came free."""
+    """In-progress tournaments whose matches the bot calls."""
     return conn.execute(
-        """SELECT t.* FROM tournaments t WHERE t.status = 'in_progress' AND t.match_slots IS NOT NULL
-           ORDER BY (SELECT COUNT(*) FROM match_calls c JOIN matches m ON m.id = c.match_id
-                     WHERE m.tournament_id = t.id), t.id"""
+        "SELECT * FROM tournaments WHERE status = 'in_progress' AND match_slots IS NOT NULL ORDER BY id"
+    ).fetchall()
+
+
+def update_match_queue(conn: sqlite3.Connection, tournament_id: int, ready: list[int]) -> None:
+    """Queue the tournament's matches in `ready` that aren't queued yet, in that order and
+    behind every match already queued in the server, and drop its matches no longer ready."""
+    with conn:
+        queued = {row["match_id"] for row in conn.execute(
+            """SELECT q.match_id FROM match_queue q JOIN matches m ON m.id = q.match_id
+               WHERE m.tournament_id = ?""", (tournament_id,))}
+        conn.executemany("DELETE FROM match_queue WHERE match_id = ?", [(m,) for m in queued - set(ready)])
+        conn.executemany("INSERT OR IGNORE INTO match_queue (match_id) VALUES (?)", [(m,) for m in ready])
+
+
+def get_match_queue(conn: sqlite3.Connection, guild_id: int) -> list[sqlite3.Row]:
+    """The server's queued matches in coordinated tournaments, longest waiting first, with
+    their tournament_id."""
+    return conn.execute(
+        """SELECT q.match_id, m.tournament_id FROM match_queue q JOIN matches m ON m.id = q.match_id
+           JOIN tournaments t ON t.id = m.tournament_id
+           WHERE t.guild_id = ? AND t.status = 'in_progress' AND t.match_slots IS NOT NULL
+           ORDER BY q.position""", (guild_id,)
     ).fetchall()
 
 
@@ -1169,8 +1198,9 @@ def get_call(conn: sqlite3.Connection, match_id: int) -> sqlite3.Row | None:
 
 
 def call_match(conn: sqlite3.Connection, match_id: int, teams: tuple[int, int]) -> bool:
-    """False if the match was already called."""
+    """Call a match, taking it out of the queue. False if it was already called."""
     with conn:
+        conn.execute("DELETE FROM match_queue WHERE match_id = ?", (match_id,))
         return conn.execute("INSERT OR IGNORE INTO match_calls (match_id, team_a_id, team_b_id) VALUES (?, ?, ?)",
                             (match_id, *teams)).rowcount > 0
 
