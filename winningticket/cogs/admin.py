@@ -7,6 +7,8 @@ from discord import app_commands
 from discord.ext import commands
 
 import db
+import lobby_db
+import lobby_flow
 from bracket import Match, bracket_order, matches_with_both_teams, resolve_all_slots
 from bracket_changes import (
     REINSTATABLE_STATUSES,
@@ -37,6 +39,7 @@ from common import (
 )
 from embeds import EMBED_DESCRIPTION_LIMIT, mention
 from labels import ban_lines, dropped_results_note, feedback_page, join_within, reinstated_line, team_label
+from lobby_posting import sync_posts
 from posting import MATCH_SLOTS_HELP, match_slots_problem
 
 # A walkover follows from a withdrawal, so a played result there would mean the game was
@@ -120,7 +123,7 @@ class AdminCog(commands.Cog):
             return
         conn = db.get_connection()
         try:
-            tournament_row = await resolve_tournament(interaction, conn, tournament, needs_bracket=False)
+            tournament_row = await resolve_tournament(interaction, conn, tournament, needs_bracket=False, formats=db.FORMATS)
             if tournament_row is None:
                 return
             db.delete_tournament(conn, tournament_row["id"])
@@ -205,7 +208,7 @@ class AdminCog(commands.Cog):
                          new_name: str | None = None, new_seed: int | None = None) -> None:
         conn = db.get_connection()
         try:
-            tournament_row = await resolve_tournament(interaction, conn, tournament, needs_bracket=False)
+            tournament_row = await resolve_tournament(interaction, conn, tournament, needs_bracket=False, formats=db.FORMATS)
             if tournament_row is None:
                 return
             team_row = db.get_team_by_name(conn, tournament_row["id"], team)
@@ -375,10 +378,11 @@ class AdminCog(commands.Cog):
         )
 
     async def _find_entrant(self, interaction: discord.Interaction, conn, tournament: str, entrant: str,
-                            allowed_statuses: tuple[str, ...]) -> tuple[sqlite3.Row, sqlite3.Row] | None:
+                            allowed_statuses: tuple[str, ...], formats: tuple[str, ...] = ("single_elim",),
+                            ) -> tuple[sqlite3.Row, sqlite3.Row] | None:
         """The tournament and entrant named, if the tournament's status is one of
         `allowed_statuses`, or None after saying why not."""
-        tournament_row = await resolve_tournament(interaction, conn, tournament)
+        tournament_row = await resolve_tournament(interaction, conn, tournament, formats=formats)
         if tournament_row is None:
             return None
         if tournament_row["status"] not in allowed_statuses:
@@ -397,18 +401,73 @@ class AdminCog(commands.Cog):
     async def withdraw(self, interaction: discord.Interaction, tournament: str, entrant: str, reason: str) -> None:
         conn = db.get_connection()
         try:
-            found = await self._find_entrant(interaction, conn, tournament, entrant, WITHDRAWABLE_STATUSES)
+            found = await self._find_entrant(interaction, conn, tournament, entrant, WITHDRAWABLE_STATUSES, db.FORMATS)
             if found is None:
                 return
             tournament_row, team = found
             if team["withdrawn"]:
                 await interaction.response.send_message(f"**{entrant}** has already left **{tournament}**.", ephemeral=True)
                 return
+            if tournament_row["format"] == "lobbies":
+                # The lobby's post shows who took the spot, so nothing else is announced.
+                reply = lobby_flow.dropout(conn, tournament_row, team["id"], reason, interaction.user.id)
+                await interaction.response.send_message(reply, ephemeral=True)
+                await sync_posts(self.bot, conn, tournament_row["id"])
+                return
             lines, dropped = withdraw_and_describe(conn, tournament_row, team, reason, interaction.user.id, mention)
         finally:
             conn.close()
         await announce(interaction, "\n".join(lines),
                        f"Done. Undo it with `/admin reinstate`.{dropped_results_note(dropped)}", ping=False)
+
+    @group.command(name="setcaptain", description="Make an entrant captain of their 5v5 team")
+    @app_commands.describe(tournament="Event name", entrant="Entrant to make captain")
+    @app_commands.autocomplete(tournament=tournament_name_autocomplete, entrant=playing_entrant_autocomplete)
+    async def setcaptain(self, interaction: discord.Interaction, tournament: str, entrant: str) -> None:
+        conn = db.get_connection()
+        try:
+            found = await self._find_entrant(interaction, conn, tournament, entrant, ("in_progress",), ("lobbies",))
+            if found is None:
+                return
+            tournament_row, team = found
+            lobby = lobby_db.find_lobby_of(conn, tournament_row["id"], team["id"])
+            if lobby is None:
+                reply = f"**{entrant}** isn't playing in a lobby."
+            elif not db.team_member_ids(conn, team["id"]):
+                reply = (f"**{entrant}** has no linked account, so they couldn't give the bot the room code or report "
+                         f"the points. Pick someone with one.")
+            else:
+                lobby_db.set_captain(conn, lobby.id, lobby.side_of(team["id"]), team["id"])
+                reply = f"**{entrant}** now captains their team in lobby {lobby.number}."
+            await interaction.response.send_message(reply, ephemeral=True)
+            await sync_posts(self.bot, conn, tournament_row["id"])
+        finally:
+            conn.close()
+
+    @group.command(name="lobbyswap", description="Bring a waitlisted player into a 5v5 lobby in someone's place")
+    @app_commands.describe(tournament="Event name", leaving="Player giving up their spot (goes to the front of the waitlist)",
+                           joining="Waitlisted player taking the spot")
+    @app_commands.autocomplete(tournament=tournament_name_autocomplete, leaving=playing_entrant_autocomplete,
+                               joining=playing_entrant_autocomplete)
+    async def lobbyswap(self, interaction: discord.Interaction, tournament: str, leaving: str, joining: str) -> None:
+        conn = db.get_connection()
+        try:
+            found = await self._find_entrant(interaction, conn, tournament, leaving, ("in_progress",), ("lobbies",))
+            if found is None:
+                return
+            tournament_row, leaving_team = found
+            joining_team = db.get_team_by_name(conn, tournament_row["id"], joining)
+            if joining_team is None or not lobby_db.bring_in(conn, tournament_row["id"], leaving_team["id"],
+                                                             joining_team["id"]):
+                reply = f"**{leaving}** has to be in a lobby and **{joining}** on the waitlist."
+            elif lobby_db.get_result(conn, lobby_db.find_lobby_of(conn, tournament_row["id"], joining_team["id"]).id):
+                reply = "Swapped, though that lobby's result was already in."
+            else:
+                reply = f"**{joining}** takes **{leaving}**'s spot, and **{leaving}** is first on the waitlist."
+            await interaction.response.send_message(reply, ephemeral=True)
+            await sync_posts(self.bot, conn, tournament_row["id"])
+        finally:
+            conn.close()
 
     @group.command(name="reinstate", description="Undo a dropout, withdrawal or disqualification")
     @app_commands.describe(tournament="Tournament name", entrant="Entrant to bring back")

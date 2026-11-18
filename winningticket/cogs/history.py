@@ -5,8 +5,9 @@ from discord import app_commands
 from discord.ext import commands
 
 import db
+import lobby_flow
 from common import concluded_tournament_autocomplete, load_bracket_embed, resolve_concluded_tournament
-from embeds import EMBED_DESCRIPTION_LIMIT, render_leaderboard_embed
+from embeds import EMBED_DESCRIPTION_LIMIT, mention, render_leaderboard_embed
 from labels import history_line, join_within, seeding_lines
 
 
@@ -30,7 +31,7 @@ class HistoryCog(commands.Cog):
         embed = discord.Embed(title="Concluded tournaments", description=join_within(lines, EMBED_DESCRIPTION_LIMIT))
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
-    @group.command(name="bracket", description="See a concluded tournament's final bracket")
+    @group.command(name="bracket", description="See a concluded tournament's final bracket, or a 5v5 event's lobbies")
     @app_commands.describe(tournament="Concluded tournament")
     @app_commands.autocomplete(tournament=concluded_tournament_autocomplete)
     async def bracket(self, interaction: discord.Interaction, tournament: str) -> None:
@@ -39,7 +40,11 @@ class HistoryCog(commands.Cog):
             tournament_row = await resolve_concluded_tournament(interaction, conn, tournament)
             if tournament_row is None:
                 return
-            embed = load_bracket_embed(conn, tournament_row)
+            if tournament_row["format"] == "lobbies":
+                embed = discord.Embed(title=f"Lobbies: {tournament_row['name']}", description=join_within(
+                    lobby_flow.history_lines(conn, tournament_row, mention), EMBED_DESCRIPTION_LIMIT))
+            else:
+                embed = load_bracket_embed(conn, tournament_row)
         finally:
             conn.close()
         await interaction.response.send_message(embed=embed, ephemeral=True)
@@ -52,6 +57,11 @@ class HistoryCog(commands.Cog):
         try:
             tournament_row = await resolve_concluded_tournament(interaction, conn, tournament)
             if tournament_row is None:
+                return
+            if tournament_row["format"] == "lobbies":
+                await interaction.response.send_message(
+                    f"**{tournament_row['name']}** was a 5v5 event, so it had no seeding or predictions. "
+                    f"`/history bracket` shows its lobbies.", ephemeral=True)
                 return
             lines = seeding_lines(tournament_row, db.get_teams(conn, tournament_row["id"]))
         finally:
@@ -68,6 +78,11 @@ class HistoryCog(commands.Cog):
         try:
             tournament_row = await resolve_concluded_tournament(interaction, conn, tournament)
             if tournament_row is None:
+                return
+            if tournament_row["format"] == "lobbies":
+                await interaction.response.send_message(
+                    f"**{tournament_row['name']}** was a 5v5 event, so it had no seeding or predictions. "
+                    f"`/history bracket` shows its lobbies.", ephemeral=True)
                 return
             embed = render_leaderboard_embed(tournament_row["name"], db.load_scores(conn, tournament_row["id"]))
         finally:

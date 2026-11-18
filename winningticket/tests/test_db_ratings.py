@@ -159,7 +159,8 @@ def test_version_3_database_gets_random_seeding_for_existing_tournaments(tmp_pat
     )
     # Version 3 had neither of the columns added since.
     v3_table = "\n".join(line for line in v3_table.splitlines()
-                         if not any(newer in line for newer in ("seeding_mode", "format", "match_slots", "matches the bot calls")))
+                         if not any(newer in line for newer in ("seeding_mode", "format", "match_slots", "matches the bot calls",
+                                                                    "5v5", "check-in", "starts_at", "lobby_spread", "checkin")))
     conn.executescript(v3_table + "PRAGMA user_version = 3;")
     conn.execute("INSERT INTO tournaments (guild_id, name, created_by, status) VALUES (1, 'Open', 99, 'registration')")
     conn.commit()

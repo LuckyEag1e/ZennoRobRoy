@@ -17,6 +17,10 @@ from pathlib import Path
 import csv_import
 import coordination
 import db
+import lobbies
+import lobby_db
+import lobby_flow
+import lobby_posts
 import match_posts
 import reports
 import tournament_builder
@@ -56,6 +60,7 @@ from labels import (
     SETTLED_BEFORE_LOCK,
     ban_lines,
     bracket_notes,
+    contribution_line,
     crowd_verdict,
     draw_description,
     dropped_results_note,
@@ -75,7 +80,9 @@ from labels import (
     seeding_lines,
     score_label,
     team_label,
+    wrong_format_message,
 )
+from contribution import contributions
 from ratings import compute_ratings
 
 CLI_DB_PATH = Path(__file__).parent / "data" / "cli.db"
@@ -184,6 +191,32 @@ class WinningTicketCLI(cmd.Cmd):
                     print(text)
         for post in db.get_match_posts(self.conn):
             self._sync_match_post(post["match_id"])
+        lobby_flow.tend(self.conn, now)
+        for tournament in lobby_db.get_tournaments_with_posts(self.conn):
+            for post in lobby_db.get_posts(self.conn, tournament["id"]):
+                self._sync_lobby_post(post)
+
+    def _sync_lobby_post(self, post) -> None:
+        """The CLI's version of lobby_posting's post syncing: it prints a post when it would
+        be sent or edited, with who it notifies and its buttons."""
+        state = lobby_posts.describe(self.conn, post, user_label)
+        if state is None:
+            return
+        note = lobby_posts.notification(state, post["pinged"])
+        shown = state.text + "\n" + "|".join(state.buttons)
+        fresh = post["message_id"] is None or note is not None
+        if not fresh and shown == post["shown"]:
+            return
+        notified = f" notifying {', '.join(user_label(u) for u in note[1])}" if note and note[1] else ""
+        buttons = "".join(f" [{name}]" for name in state.buttons)
+        print(f"(5v5 post{'' if fresh else ' edited'}{notified}) {state.text}{buttons}".replace("**", ""))
+        key = post["post_key"]
+        if fresh:
+            claim = lobby_db.claim_post_send(self.conn, post["tournament_id"], key)
+            lobby_db.take_over_post(self.conn, post["tournament_id"], key, claim, 0, shown,
+                                    note[0] if note else post["pinged"])
+        else:
+            lobby_db.set_post_shown(self.conn, post["tournament_id"], key, 0, shown)
 
     def _sync_match_post(self, match_id: int) -> None:
         """The CLI's version of posting.sync_match_post. It has no messages, so every post
@@ -288,8 +321,14 @@ class WinningTicketCLI(cmd.Cmd):
     def do_conclude(self, arg: str) -> None:
         "Archive a finished tournament and show its final results: conclude <name>"
         name = arg.strip()
-        tournament = self._require_next_status(name, "concluded")
+        tournament = self._require_next_status(name, "concluded", db.FORMATS)
         if tournament is None:
+            return
+        if tournament["format"] == "lobbies":
+            print(f"{name} is over! How each lobby went:")
+            print("\n".join(lobby_flow.lobby_summary_lines(self.conn, tournament)))
+            db.set_tournament_status(self.conn, tournament["id"], "concluded")
+            print(f"\n'{name}' concluded. Its results count toward balancing future 5v5 teams, and 'history' lists it.")
             return
         if not db.final_decided(self.conn, tournament["id"]):
             print(f"'{name}' has no result for its final yet, so it can't be concluded.")
@@ -346,9 +385,13 @@ class WinningTicketCLI(cmd.Cmd):
             print(f"- {history_line(summary)}")
 
     def do_history_bracket(self, arg: str) -> None:
-        "Show a concluded tournament's final bracket: history_bracket <name>"
+        "Show a concluded tournament's final bracket, or a 5v5 event's lobbies: history_bracket <name>"
         tournament = self._require_concluded(arg.strip())
-        if tournament is not None:
+        if tournament is None:
+            return
+        if tournament["format"] == "lobbies":
+            print("\n".join(lobby_flow.history_lines(self.conn, tournament, user_label)).replace("**", ""))
+        else:
             self._print_bracket(tournament)
 
     def do_history_seeding(self, arg: str) -> None:
@@ -366,7 +409,21 @@ class WinningTicketCLI(cmd.Cmd):
     # -- registration --------------------------------------------------------
 
     def do_regopen(self, arg: str) -> None:
-        "Create a tournament that takes sign-ups, closing automatically after --closes-in hours if given: regopen <name> [--closes-in HOURS] [--seeding standard|slide|random] [--match-slots N]"
+        "Create a tournament that takes sign-ups, closing automatically after --closes-in hours if given. A 5v5 event (--format lobbies) needs --starts-in: regopen <name> [--closes-in HOURS] [--seeding standard|slide|random] [--match-slots N] [--format single_elim|lobbies] [--starts-in HOURS] [--spread tier|balanced|random]"
+        arg, format = take_option(arg, "--format")
+        arg, starts_in = take_option(arg, "--starts-in")
+        arg, spread = take_option(arg, "--spread")
+        format = format or "single_elim"
+        if format not in db.FORMATS or (spread is not None and spread not in lobbies.SPREADS):
+            print(f"--format must be one of {', '.join(db.FORMATS)}, and --spread one of {', '.join(lobbies.SPREADS)}")
+            return
+        starts_at = None
+        if format == "lobbies":
+            try:
+                starts_at = datetime.now(timezone.utc) + timedelta(hours=float(starts_in or ""))
+            except ValueError:
+                print("A 5v5 event needs --starts-in HOURS, so players know when to play.")
+                return
         rest, seeding = take_option(arg, "--seeding")
         rest, slots = take_option(rest, "--match-slots")
         name, hours = take_option(rest, "--closes-in")
@@ -390,16 +447,25 @@ class WinningTicketCLI(cmd.Cmd):
             closes_at = datetime.now(timezone.utc) + timedelta(hours=closes_in)
         if self._name_taken(name):
             return
-        tournament_id = db.open_registration(self.conn, GUILD_ID, name, self.user_id, None,
+        # A 5v5 event's posts need a channel to belong to; the CLI's one pretend channel is 0.
+        channel_id = 0 if format == "lobbies" else None
+        tournament_id = db.open_registration(self.conn, GUILD_ID, name, self.user_id, channel_id,
                                              db.to_db_time(closes_at) if closes_at is not None else None,
-                                             seeding or "standard")
+                                             seeding or "standard", format,
+                                             db.to_db_time(starts_at) if starts_at is not None else None,
+                                             (spread or "balanced") if format == "lobbies" else None)
         db.set_match_slots(self.conn, tournament_id, match_slots)
         closing = f" Sign-ups close at {closes_at:%H:%M:%S} UTC." if closes_at is not None else ""
         print(f"Sign-ups open for '{name}'.{closing} Use 'as' to switch users, then 'register {name}'.")
 
     def do_register(self, arg: str) -> None:
-        "Sign up the current user: register <name>"
-        tournament = self._require_registration(arg.strip())
+        "Sign up the current user (5v5 events ask whether you'll captain): register <name> [--captain want|can|no]"
+        name, captain = take_option(arg, "--captain")
+        tournament = self._require_tournament(name, needs_bracket=False, formats=db.FORMATS)
+        if tournament is not None and tournament["format"] == "lobbies":
+            self._lobby_sign_up(tournament, captain)
+            return
+        tournament = self._require_registration(name)
         if tournament is None:
             return
         if db.get_entrant_team_id(self.conn, tournament["id"], self.user_id) is not None:
@@ -429,6 +495,10 @@ class WinningTicketCLI(cmd.Cmd):
 
     def do_unregister(self, arg: str) -> None:
         "Withdraw the current user: unregister <name>"
+        found = self._require_tournament(arg.strip(), needs_bracket=False, formats=db.FORMATS)
+        if found is not None and found["format"] == "lobbies" and found["status"] != "registration":
+            self.do_dropout(arg)
+            return
         tournament = self._require_registration(arg.strip())
         if tournament is None:
             return
@@ -439,13 +509,15 @@ class WinningTicketCLI(cmd.Cmd):
 
     def do_entrants(self, arg: str) -> None:
         "List who has signed up: entrants <name>"
-        tournament = self._require_tournament(arg.strip(), needs_bracket=False)
+        tournament = self._require_tournament(arg.strip(), needs_bracket=False, formats=db.FORMATS)
         if tournament is None:
             return
         entrants = db.get_entrants(self.conn, tournament["id"])
         if not entrants:
             print("Nobody has signed up yet.")
-        for line in entrant_lines(entrants, user_label):
+        lines = (lobby_flow.entrant_lines(self.conn, tournament, user_label) if tournament["format"] == "lobbies"
+                 else entrant_lines(entrants, user_label))
+        for line in lines:
             print(line)
 
     def do_regadd(self, arg: str) -> None:
@@ -495,12 +567,17 @@ class WinningTicketCLI(cmd.Cmd):
         print(f"Withdrew {parts[1]}.")
 
     def do_regclose(self, arg: str) -> None:
-        "Close sign-ups and draw the bracket, optionally overriding how it's seeded: regclose <name> [--seeding standard|slide|random]"
+        "Close sign-ups and draw the bracket, optionally overriding how it's seeded. For a 5v5 event, --lobbies picks how many lobbies (the proposal if left out): regclose <name> [--seeding standard|slide|random] [--lobbies N] [--spread tier|balanced|random]"
+        arg, lobby_count = take_option(arg, "--lobbies")
+        arg, spread = take_option(arg, "--spread")
         name, seeding = take_option(arg, "--seeding")
         if not check_seeding(seeding):
             return
         tournament = self._require_registration(name)
         if tournament is None:
+            return
+        if tournament["format"] == "lobbies":
+            self._close_lobbies(tournament, lobby_count, spread)
             return
         seeding = seeding or tournament["seeding_mode"]
         try:
@@ -512,7 +589,7 @@ class WinningTicketCLI(cmd.Cmd):
         self.do_bracket(tournament["name"])
 
     def do_rating(self, arg: str) -> None:
-        "Show a user's singles and team Elo (yours if no user_id): rating [user_id]"
+        "Show a user's singles and team Elo and 5v5 contribution (yours if no user_id): rating [user_id]"
         user_id = self.user_id
         if arg.strip():
             try:
@@ -522,7 +599,8 @@ class WinningTicketCLI(cmd.Cmd):
                 return
         ratings = compute_ratings(db.load_match_history(self.conn, GUILD_ID))
         print(f"Elo rating: {user_label(user_id)}")
-        for line in rating_lines(user_id, ratings):
+        by_user = contributions(lobby_db.load_lobby_history(self.conn, GUILD_ID))
+        for line in rating_lines(user_id, ratings) + [contribution_line(user_id, by_user)]:
             print(f"  {line.replace('**', '')}")
 
     # -- predictions ---------------------------------------------------------
@@ -652,9 +730,16 @@ class WinningTicketCLI(cmd.Cmd):
         self._sync_match_post(call["match_id"])
 
     def do_dropout(self, arg: str) -> None:
-        "Drop the current user out, giving their remaining matches to their opponents: dropout <name>"
-        tournament = self._require_tournament(arg.strip())
+        "Drop the current user out, giving their remaining matches to their opponents (or a 5v5 spot to the waitlist): dropout <name>"
+        tournament = self._require_tournament(arg.strip(), formats=db.FORMATS)
         if tournament is None:
+            return
+        team_id = db.get_entrant_team_id(self.conn, tournament["id"], self.user_id)
+        if tournament["format"] == "lobbies" and team_id is not None:
+            if input(f"Retype '{tournament['name']}' to confirm: ").strip() != tournament["name"]:
+                print("Confirmation didn't match. You're still in.")
+                return
+            print(lobby_flow.dropout(self.conn, tournament, team_id, "dropped", self.user_id).replace("**", ""))
             return
         team = db.get_teams(self.conn, tournament["id"]).get(
             db.get_entrant_team_id(self.conn, tournament["id"], self.user_id))
@@ -714,7 +799,7 @@ class WinningTicketCLI(cmd.Cmd):
     def do_admin_delete(self, arg: str) -> None:
         "Permanently delete a tournament (asks you to retype the name): admin_delete <name>"
         name = arg.strip()
-        tournament = self._require_tournament(name, needs_bracket=False)
+        tournament = self._require_tournament(name, needs_bracket=False, formats=db.FORMATS)
         if tournament is None:
             return
         if input(f"Type '{name}' again to confirm permanent deletion: ").strip() != name:
@@ -748,7 +833,7 @@ class WinningTicketCLI(cmd.Cmd):
         if new_name is None and not seed_given:
             print("Provide a new name and/or --seed N")
             return
-        tournament = self._require_tournament(name, needs_bracket=False)
+        tournament = self._require_tournament(name, needs_bracket=False, formats=db.FORMATS)
         if tournament is None:
             return
         team_row = db.get_team_by_name(self.conn, tournament["id"], team)
@@ -853,12 +938,15 @@ class WinningTicketCLI(cmd.Cmd):
         if len(parts) != 3 or parts[2] not in ("withdrawn", "disqualified"):
             print("usage: admin_withdraw <name> <entrant> withdrawn|disqualified")
             return
-        found = self._require_entrant(*parts[:2], WITHDRAWABLE_STATUSES)
+        found = self._require_entrant(*parts[:2], WITHDRAWABLE_STATUSES, db.FORMATS)
         if found is None:
             return
         tournament, team = found
         if team["withdrawn"]:
             print(f"{team['name']} has already left.")
+            return
+        if tournament["format"] == "lobbies":
+            print(lobby_flow.dropout(self.conn, tournament, team["id"], parts[2], self.user_id).replace("**", ""))
             return
         lines, dropped = withdraw_and_describe(self.conn, tournament, team, parts[2], self.user_id, user_label)
         print("\n".join(lines) + dropped_results_note(dropped))
@@ -1019,6 +1107,183 @@ class WinningTicketCLI(cmd.Cmd):
 
     # -- everyone else ----------------------------------------------------------
 
+    # -- 5v5 events -----------------------------------------------------------
+
+    def _lobby_sign_up(self, tournament, captain: str | None) -> None:
+        if captain not in lobby_flow.CAPTAIN_CHOICES:
+            print(lobby_flow.CAPTAIN_QUESTION)
+            captain = input("want, can or no? ").strip().lower()
+            if captain not in lobby_flow.CAPTAIN_CHOICES:
+                print("Nothing changed.")
+                return
+        linked = True
+        signed_up = db.get_entrant_team_id(self.conn, tournament["id"], self.user_id) is not None
+        if not signed_up and not db.has_agreed(self.conn, GUILD_ID, self.user_id):
+            print(CONSENT_NOTICE.replace("**", ""))
+            linked = input("Agree? [y/N] ").strip().lower() == "y"
+            if linked:
+                db.record_agreement(self.conn, GUILD_ID, self.user_id)
+            else:
+                db.opt_out(self.conn, GUILD_ID, self.user_id)
+        print(lobby_flow.sign_up(self.conn, tournament, self.user_name, self.user_id, linked, captain).replace("**", ""))
+
+    def _close_lobbies(self, tournament, lobby_count: str | None, spread: str | None) -> None:
+        proposed, options = tournament_builder.lobby_split_options(self.conn, tournament["id"])
+        if proposed is None:
+            print(f"'{tournament['name']}' can't be drawn yet: each lobby needs {lobbies.MIN_LOBBY} players, two of "
+                  f"whom can captain (with a linked account).")
+            return
+        split = proposed
+        if lobby_count is not None:
+            split = next((option for option in options if str(len(option.lobby_sizes)) == lobby_count), None)
+            if split is None:
+                print("Possible splits: " + "; ".join(f"--lobbies {len(o.lobby_sizes)}: {lobby_flow.split_label(o)}"
+                                                      for o in options))
+                return
+        if spread is not None and spread not in lobbies.SPREADS:
+            print(f"--spread must be one of {', '.join(lobbies.SPREADS)}")
+            return
+        try:
+            tournament_builder.close_lobby_registration(self.conn, tournament["id"], split, spread)
+        except lobbies.LobbyError as e:
+            print(f"Couldn't create the lobbies: {e}")
+            return
+        print(f"Created the lobbies: {lobby_flow.split_label(split)}. The posts follow; start check-in with "
+              f"'lobby_startcheckin {tournament['name']}' when it's nearly time to play.")
+        self._tend_matches()
+
+    def _require_event(self, name: str):
+        return self._require_tournament(name, needs_bracket=False, formats=("lobbies",))
+
+    def _lobby_and_role(self, args: list[str]):
+        """(event, lobby, role) for `<name> [lobby number]`, the current user's own lobby
+        if no number is given, or None after saying why not. The event's creator counts
+        as an organizer, since the CLI has no server permissions."""
+        if not args:
+            print("Tournament name required.")
+            return None
+        tournament = self._require_event(args[0])
+        if tournament is None:
+            return None
+        drawn = lobby_db.get_lobbies(self.conn, tournament["id"])
+        team_id = db.get_entrant_team_id(self.conn, tournament["id"], self.user_id)
+        if len(args) > 1:
+            lobby = next((lobby for lobby in drawn if str(lobby.number) == args[1]), None)
+        else:
+            lobby = next((lobby for lobby in drawn if team_id in lobby.players), None)
+        if lobby is None:
+            print("No such lobby. Give the lobby's number if you aren't playing in one.")
+            return None
+        organizer = tournament["created_by"] == self.user_id
+        return tournament, lobby, lobby_flow.role_in(self.conn, lobby, self.user_id, organizer)
+
+    def _say(self, text: str) -> None:
+        print(text.replace("**", ""))
+        self._tend_matches()
+
+    def do_lobby_startcheckin(self, arg: str) -> None:
+        "Open check-in for a 5v5 event (organizers): lobby_startcheckin <name> [minutes]"
+        parts = shlex.split(arg)
+        tournament = self._require_event(parts[0] if parts else "")
+        if tournament is None:
+            return
+        minutes = parts[1] if len(parts) > 1 else str(lobby_flow.DEFAULT_CHECKIN_MINUTES)
+        if not minutes.isdigit() or not 1 <= int(minutes) <= lobby_flow.MAX_CHECKIN_MINUTES:
+            print(f"minutes must be a whole number from 1 to {lobby_flow.MAX_CHECKIN_MINUTES}")
+            return
+        self._say(lobby_flow.start_checkin(self.conn, tournament, int(minutes), datetime.now(timezone.utc)))
+
+    def do_checkin(self, arg: str) -> None:
+        "Check in for a 5v5 event: checkin <name>"
+        tournament = self._require_event(arg.strip())
+        if tournament is not None:
+            self._say(lobby_flow.check_in(self.conn, tournament, self.user_id))
+
+    def do_lobby_roomcode(self, arg: str) -> None:
+        "Give the bot your lobby's drafter room code (captains and organizers): lobby_roomcode <name> <code> [lobby]"
+        parts = shlex.split(arg)
+        if len(parts) < 2:
+            print("usage: lobby_roomcode <name> <code> [lobby]")
+            return
+        found = self._lobby_and_role([parts[0]] + parts[2:])
+        if found is not None:
+            tournament, lobby, role = found
+            self._say(lobby_flow.submit_room_code(self.conn, tournament, lobby, role, self.user_id, parts[1]))
+
+    def do_lobby_code(self, arg: str) -> None:
+        "Get your lobby's room code: lobby_code <name> [lobby]"
+        found = self._lobby_and_role(shlex.split(arg))
+        if found is not None:
+            tournament, lobby, role = found
+            print(lobby_flow.get_room_code(self.conn, tournament, lobby, role).replace("**", ""))
+
+    def do_lobby_report(self, arg: str) -> None:
+        "Report everyone's points in a lobby (captains and organizers), asked player by player: lobby_report <name> [lobby]"
+        found = self._lobby_and_role(shlex.split(arg))
+        if found is None:
+            return
+        tournament, lobby, role = found
+        problem = lobby_flow.report_problem(self.conn, tournament, lobby, role)
+        if problem is not None:
+            print(problem.replace("**", ""))
+            return
+        names = lobby_posts.Names(self.conn, tournament["id"], user_label)
+        entered = {player: input(f"{names.plain(player)}'s points: ") for player in lobby.players}
+        points = lobby_flow.parse_points(lobby, entered)
+        if isinstance(points, str):
+            print(points)
+            return
+        self._say(lobby_flow.submit_report(self.conn, tournament, lobby, role, self.user_id, points))
+
+    def do_lobby_confirm(self, arg: str) -> None:
+        "Confirm the other captain's report: lobby_confirm <name> [lobby]"
+        found = self._lobby_and_role(shlex.split(arg))
+        if found is not None:
+            _, lobby, role = found
+            self._say(lobby_flow.confirm_report(self.conn, lobby, role, self.user_id))
+
+    def do_lobby_dispute(self, arg: str) -> None:
+        "Dispute the other captain's report: lobby_dispute <name> [lobby]"
+        found = self._lobby_and_role(shlex.split(arg))
+        if found is not None:
+            _, lobby, role = found
+            self._say(lobby_flow.dispute_report(self.conn, lobby, role))
+
+    def do_admin_setcaptain(self, arg: str) -> None:
+        "Make an entrant captain of their 5v5 team: admin_setcaptain <name> <entrant>"
+        parts = shlex.split(arg)
+        if len(parts) != 2:
+            print("usage: admin_setcaptain <name> <entrant>")
+            return
+        found = self._require_entrant(*parts, ("in_progress",), ("lobbies",))
+        if found is None:
+            return
+        tournament, team = found
+        lobby = lobby_db.find_lobby_of(self.conn, tournament["id"], team["id"])
+        if lobby is None:
+            print(f"{team['name']} isn't playing in a lobby.")
+        elif not db.team_member_ids(self.conn, team["id"]):
+            print(f"{team['name']} has no linked account, so they couldn't give the room code or report.")
+        else:
+            lobby_db.set_captain(self.conn, lobby.id, lobby.side_of(team["id"]), team["id"])
+            self._say(f"{team['name']} now captains their team in lobby {lobby.number}.")
+
+    def do_admin_lobbyswap(self, arg: str) -> None:
+        "Bring a waitlisted player into someone's 5v5 spot: admin_lobbyswap <name> <leaving> <joining>"
+        parts = shlex.split(arg)
+        if len(parts) != 3:
+            print("usage: admin_lobbyswap <name> <leaving> <joining>")
+            return
+        found = self._require_entrant(*parts[:2], ("in_progress",), ("lobbies",))
+        if found is None:
+            return
+        tournament, leaving = found
+        joining = db.get_team_by_name(self.conn, tournament["id"], parts[2])
+        if joining is None or not lobby_db.bring_in(self.conn, tournament["id"], leaving["id"], joining["id"]):
+            print(f"{parts[1]} has to be in a lobby and {parts[2]} on the waitlist.")
+            return
+        self._say(f"{parts[2]} takes {parts[1]}'s spot, and {parts[1]} is first on the waitlist.")
+
     def do_features(self, arg: str) -> None:
         "What the bot can be used for, and what's coming."
         print("What it does:")
@@ -1039,9 +1304,9 @@ class WinningTicketCLI(cmd.Cmd):
 
     # -- shared helpers ---------------------------------------------------------
 
-    def _require_next_status(self, name: str, new_status: str):
+    def _require_next_status(self, name: str, new_status: str, formats: tuple[str, ...] = ("single_elim",)):
         """The tournament, if it's at the step just before `new_status`; otherwise None."""
-        tournament = self._require_tournament(name)
+        tournament = self._require_tournament(name, formats=formats)
         if tournament is None:
             return None
         if not db.is_next_status(tournament["status"], new_status):
@@ -1060,7 +1325,7 @@ class WinningTicketCLI(cmd.Cmd):
 
     def _require_registration(self, name: str):
         """The tournament, if it's taking sign-ups; otherwise None."""
-        tournament = self._require_tournament(name, needs_bracket=False)
+        tournament = self._require_tournament(name, needs_bracket=False, formats=db.FORMATS)
         if tournament is None:
             return None
         if tournament["status"] != "registration":
@@ -1068,9 +1333,10 @@ class WinningTicketCLI(cmd.Cmd):
             return None
         return tournament
 
-    def _require_tournament(self, name: str, needs_bracket: bool = True):
+    def _require_tournament(self, name: str, needs_bracket: bool = True, formats: tuple[str, ...] = ("single_elim",)):
         """The tournament, or None after saying why not. One still taking sign-ups has no
-        bracket yet, so it doesn't count unless needs_bracket=False."""
+        bracket yet, so it doesn't count unless needs_bracket=False, and one whose format
+        isn't in `formats` doesn't either (bracket commands are the default)."""
         if not name:
             print("Tournament name required.")
             return None
@@ -1080,6 +1346,9 @@ class WinningTicketCLI(cmd.Cmd):
                 print(f"'{name}' has concluded. 'history_bracket', 'history_seeding' and 'history_leaderboard' show it.")
             else:
                 print(f"No tournament named '{name}'. Use 'tournaments' to list them.")
+            return None
+        if tournament["format"] not in formats:
+            print(wrong_format_message(tournament).replace("**", ""))
             return None
         if needs_bracket and tournament["status"] == "registration":
             print(f"'{name}' is still taking sign-ups, so it has no bracket yet. "
@@ -1097,9 +1366,10 @@ class WinningTicketCLI(cmd.Cmd):
                 print(f"No concluded tournament named '{name}'. Use 'history' to list them.")
         return tournament
 
-    def _require_entrant(self, name: str, entrant: str, allowed_statuses: tuple[str, ...]):
+    def _require_entrant(self, name: str, entrant: str, allowed_statuses: tuple[str, ...],
+                         formats: tuple[str, ...] = ("single_elim",)):
         """(tournament, entrant) if the tournament's status is one of `allowed_statuses`, else None after saying why."""
-        tournament = self._require_tournament(name)
+        tournament = self._require_tournament(name, formats=formats)
         if tournament is None:
             return None
         if tournament["status"] not in allowed_statuses:

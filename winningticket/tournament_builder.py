@@ -1,4 +1,5 @@
-"""Building a tournament's match tree, whether its teams came from a CSV or from sign-ups."""
+"""Building a tournament's match tree, whether its teams came from a CSV or from sign-ups,
+and drawing a 5v5 event's sign-ups into lobbies."""
 
 from __future__ import annotations
 
@@ -7,7 +8,10 @@ import sqlite3
 from typing import Optional
 
 import db
+import lobbies
+import lobby_db
 from bracket import BracketError, generate_tree
+from contribution import contributions, entrant_contributions
 from ratings import compute_ratings
 from seeding import rating_order, seeded_pairs
 
@@ -78,3 +82,46 @@ def close_overdue_registration(conn: sqlite3.Connection, tournament_id: int, see
     except BracketError:
         db.clear_registration_deadline(conn, tournament_id)
         raise
+
+
+def lobby_split_options(conn: sqlite3.Connection, tournament_id: int) -> tuple[Optional[lobbies.Split], list[lobbies.Split]]:
+    """The split a 5v5 event's close would propose for everyone signed up now, and every
+    other split the organizer can choose instead."""
+    signups = lobby_db.get_signups(conn, tournament_id)
+    captains = sum(signup.can_captain for signup in signups)
+    return lobbies.propose_split(len(signups), captains), lobbies.possible_splits(len(signups), captains)
+
+
+def close_lobby_registration(conn: sqlite3.Connection, tournament_id: int, split: lobbies.Split | None = None,
+                             spread: str | None = None, rng: random.Random | None = None) -> lobbies.Split:
+    """Draw a 5v5 event's sign-ups into lobbies and move it to in_progress. `split` and
+    `spread` default to the proposed split and the spread chosen at open. Players are
+    balanced by their contribution in past events (contribution.py). Raises LobbyError if
+    there aren't enough players or captains, and RegistrationClosedError if it was
+    already closed; either way nothing is saved."""
+    rng = rng or random
+    tournament = db.get_tournament(conn, tournament_id)
+    if tournament is None:
+        raise RegistrationClosedError(f"Tournament {tournament_id} no longer exists.")
+    proposed, options = lobby_split_options(conn, tournament_id)
+    split = split or proposed
+    if split is None or split not in options:
+        raise lobbies.LobbyError("There aren't enough players, or enough who can captain, for a lobby: each needs "
+                                 f"{lobbies.MIN_LOBBY} players, two of whom can captain.")
+    spread = spread or tournament["lobby_spread"] or "balanced"
+    signups = lobby_db.get_signups(conn, tournament_id)
+    prefs = lobby_db.captain_prefs(signups)
+    by_user = contributions(lobby_db.load_lobby_history(conn, tournament["guild_id"]))
+    values = entrant_contributions({s.team_id: s.user_id for s in signups}, by_user)
+    placed, waiting = lobbies.choose_waitlist([s.team_id for s in signups], prefs, split)
+    drawn = lobbies.ensure_captains(lobbies.assign_lobbies(placed, values, split, spread, rng), prefs, values)
+    formed = [lobbies.form_teams(players, prefs, lobbies.team_sizes(len(players)), values, rng) for players in drawn]
+    with conn:
+        if not db.claim_registration_close(conn, tournament_id):
+            raise RegistrationClosedError(f"Registration for tournament {tournament_id} has already closed.")
+        conn.execute("UPDATE tournaments SET status = 'in_progress', lobby_spread = ? WHERE id = ?",
+                     (spread, tournament_id))
+        lobby_db.form_lobbies(conn, tournament_id, formed, waiting)
+        if tournament["channel_id"] is not None:
+            lobby_db.add_posts(conn, tournament_id, tournament["channel_id"])
+    return split

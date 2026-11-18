@@ -10,6 +10,7 @@ from discord import app_commands
 from discord.ext import commands, tasks
 
 import db
+import lobby_flow
 from common import (
     load_bracket_embed,
     refuse_taken_name,
@@ -199,10 +200,11 @@ class TournamentCog(commands.Cog):
 
     @staticmethod
     async def _resolve_for_next_status(interaction: discord.Interaction, conn: sqlite3.Connection,
-                                       name: str, new_status: str) -> sqlite3.Row | None:
+                                       name: str, new_status: str,
+                                       formats: tuple[str, ...] = ("single_elim",)) -> sqlite3.Row | None:
         """Fetch a tournament that's at the step just before `new_status`, or reply with an
         error and return None."""
-        tournament = await resolve_tournament(interaction, conn, name)
+        tournament = await resolve_tournament(interaction, conn, name, formats=formats)
         if tournament is None:
             return None
         if not db.is_next_status(tournament["status"], new_status):
@@ -310,24 +312,32 @@ class TournamentCog(commands.Cog):
     async def conclude(self, interaction: discord.Interaction, name: str) -> None:
         conn = db.get_connection()
         try:
-            tournament = await self._resolve_for_next_status(interaction, conn, name, "concluded")
+            tournament = await self._resolve_for_next_status(interaction, conn, name, "concluded", db.FORMATS)
             if tournament is None:
                 return
-            if not db.final_decided(conn, tournament["id"]):
+            if tournament["format"] == "lobbies":
+                # Completed means every lobby has its result.
+                await interaction.response.send_message(
+                    "\n".join([f"🏁 **{name}** is over! How each lobby went:"]
+                              + lobby_flow.lobby_summary_lines(conn, tournament)))
+                db.set_tournament_status(conn, tournament["id"], "concluded")
+            elif not db.final_decided(conn, tournament["id"]):
                 await interaction.response.send_message(
                     f"**{name}**'s final has no result yet, so it can't be concluded. "
                     f"Record it with `/match result` first.",
                     ephemeral=True,
                 )
                 return
-            result, teams_by_id, scores = db.load_final_results(conn, tournament["id"])
-            # Post before archiving: once concluded, nothing can find the tournament to post again.
-            await interaction.response.send_message(embed=render_final_results_embed(name, result, teams_by_id, scores))
-            db.set_tournament_status(conn, tournament["id"], "concluded")
+            else:
+                result, teams_by_id, scores = db.load_final_results(conn, tournament["id"])
+                # Post before archiving: once concluded, nothing can find the tournament to post again.
+                await interaction.response.send_message(embed=render_final_results_embed(name, result, teams_by_id, scores))
+                db.set_tournament_status(conn, tournament["id"], "concluded")
         finally:
             conn.close()
+        counts_toward = "balancing future 5v5 teams" if tournament["format"] == "lobbies" else "ratings"
         await interaction.followup.send(
-            f"**{name}** is concluded. Its results are saved and count toward ratings, and `/history` shows it.",
+            f"**{name}** is concluded. Its results are saved and count toward {counts_toward}, and `/history` shows it.",
             ephemeral=True,
         )
 

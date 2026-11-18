@@ -5,7 +5,9 @@ from discord import app_commands
 from discord.ext import commands
 
 import db
-from labels import rating_lines
+import lobby_db
+from contribution import contributions
+from labels import contribution_line, rating_lines
 from ratings import compute_ratings
 
 
@@ -13,7 +15,7 @@ class RatingCog(commands.Cog):
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
 
-    @app_commands.command(name="rating", description="See your Elo rating, which decides your seed")
+    @app_commands.command(name="rating", description="See your Elo rating, which decides your seed, and your 5v5 contribution")
     @app_commands.describe(user="Organizers only: a member to look up (leave blank for yourself)")
     @app_commands.guild_only()
     async def rating(self, interaction: discord.Interaction, user: discord.Member | None = None) -> None:
@@ -27,9 +29,11 @@ class RatingCog(commands.Cog):
         conn = db.get_connection()
         try:
             ratings = compute_ratings(db.load_match_history(conn, interaction.guild_id))
+            by_user = contributions(lobby_db.load_lobby_history(conn, interaction.guild_id))
         finally:
             conn.close()
-        embed = discord.Embed(title=f"Elo rating: {member.display_name}", description="\n".join(rating_lines(member.id, ratings)))
+        lines = rating_lines(member.id, ratings) + [contribution_line(member.id, by_user)]
+        embed = discord.Embed(title=f"Elo rating: {member.display_name}", description="\n".join(lines))
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
 

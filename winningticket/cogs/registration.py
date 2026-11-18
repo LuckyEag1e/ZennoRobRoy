@@ -10,6 +10,9 @@ from discord import app_commands
 from discord.ext import commands, tasks
 
 import db
+import lobbies
+import lobby_db
+import lobby_flow
 from bracket import BracketError
 from common import (
     BotView,
@@ -26,13 +29,17 @@ from common import (
 )
 from embeds import EMBED_DESCRIPTION_LIMIT, mention
 from labels import CONSENT_NOTICE, OPTED_OUT_NOTE, draw_description, entrant_lines, join_within, name_held_message
+from lobby_flow import split_label
+from lobby_posting import event_view, leave_event, refresh_signups, start_signup, sync_posts
 from posting import MATCH_SLOTS_HELP, match_slots_problem
 from tournament_builder import (
     MAX_CLOSES_IN_HOURS,
     MIN_CLOSES_IN_HOURS,
     RegistrationClosedError,
+    close_lobby_registration,
     close_overdue_registration,
     close_registration,
+    lobby_split_options,
 )
 
 log = logging.getLogger("winningticket")
@@ -41,6 +48,96 @@ log = logging.getLogger("winningticket")
 # explains them.
 SEEDING_CHOICES = [app_commands.Choice(name=mode, value=mode) for mode in db.SEEDING_MODES]
 SEEDING_OPTION_HELP = "standard (default): top seeds play the lowest. slide: top seeds play mid-ranked. random: no seeds"
+FORMAT_CHOICES = [app_commands.Choice(name="bracket", value="single_elim"),
+                  app_commands.Choice(name="5v5 lobbies", value="lobbies")]
+SPREAD_NAMES = {"tier": "by skill tier", "balanced": "balanced", "random": "random"}
+SPREAD_CHOICES = [app_commands.Choice(name=name, value=value) for value, name in SPREAD_NAMES.items()]
+SPREAD_OPTION_HELP = ("5v5: tier puts the strongest together, balanced (default) mixes every lobby, random draws them; "
+                      "each lobby's teams are balanced either way")
+CAPTAIN_CHOICES = [app_commands.Choice(name=name, value=value) for value, name in lobby_flow.CAPTAIN_CHOICES.items()]
+# Discord's limit on options in one select menu.
+MAX_SPLIT_OPTIONS = 25
+
+
+class LobbyClosePreview(BotView):
+    """What closing a 5v5 event's sign-ups would draw, shown privately to the organizer,
+    who can choose another split or spread before creating the lobbies."""
+
+    def __init__(self, cog: RegistrationCog, tournament: sqlite3.Row, proposed: lobbies.Split,
+                 options: list[lobbies.Split]) -> None:
+        super().__init__(timeout=900)
+        self.cog = cog
+        self.tournament_id = tournament["id"]
+        self.options = options[:MAX_SPLIT_OPTIONS]
+        self.split = proposed
+        self.spread = tournament["lobby_spread"] or "balanced"
+        split_menu = discord.ui.Select(placeholder="Lobbies", options=[
+            discord.SelectOption(label=split_label(option), value=str(index), default=option == proposed)
+            for index, option in enumerate(self.options)])
+        split_menu.callback = self._pick_split
+        spread_menu = discord.ui.Select(placeholder="Spread", options=[
+            discord.SelectOption(label=f"Spread {name}", value=value, default=value == self.spread)
+            for value, name in SPREAD_NAMES.items()])
+        spread_menu.callback = self._pick_spread
+        create = discord.ui.Button(label="Create Lobbies", style=discord.ButtonStyle.success)
+        create.callback = self._create
+        for item in (split_menu, spread_menu, create):
+            self.add_item(item)
+        self.split_menu, self.spread_menu = split_menu, spread_menu
+
+    def describe(self, tournament: sqlite3.Row) -> str:
+        text = (f"Closing sign-ups for **{tournament['name']}** draws **{split_label(self.split)}**, spread "
+                f"{SPREAD_NAMES[self.spread]}. Pick another split or spread below, then press **Create Lobbies**. "
+                f"Teams are balanced and captains picked automatically, and everyone is pinged with their lobby or "
+                f"their place on the waitlist.")
+        starts = tournament["starts_at"]
+        if starts is not None and db.from_db_time(starts) - datetime.now(timezone.utc) < timedelta(days=1):
+            text += ("\nThe event is less than a day away. Closing earlier lets the waitlist know where they stand "
+                     "and plan ahead.")
+        return text
+
+    async def _pick_split(self, interaction: discord.Interaction) -> None:
+        self.split = self.options[int(interaction.data["values"][0])]
+        await self._redraw(interaction)
+
+    async def _pick_spread(self, interaction: discord.Interaction) -> None:
+        self.spread = interaction.data["values"][0]
+        await self._redraw(interaction)
+
+    async def _redraw(self, interaction: discord.Interaction) -> None:
+        for option in self.split_menu.options:
+            option.default = self.options[int(option.value)] == self.split
+        for option in self.spread_menu.options:
+            option.default = option.value == self.spread
+        conn = db.get_connection()
+        try:
+            tournament = db.get_tournament(conn, self.tournament_id)
+        finally:
+            conn.close()
+        await interaction.response.edit_message(content=self.describe(tournament), view=self)
+
+    async def _create(self, interaction: discord.Interaction) -> None:
+        conn = db.get_connection()
+        try:
+            try:
+                close_lobby_registration(conn, self.tournament_id, self.split, self.spread)
+            except RegistrationClosedError:
+                await interaction.response.edit_message(content="Sign-ups for that event have already closed.", view=None)
+                return
+            except lobbies.LobbyError as e:
+                # Sign-ups may have changed since the preview was opened.
+                await interaction.response.edit_message(content=f"Couldn't create the lobbies: {e} Close again to "
+                                                                f"see the splits that fit now.", view=None)
+                return
+            tournament = db.get_tournament(conn, self.tournament_id)
+            await interaction.response.edit_message(
+                content=(f"✅ Created the lobbies for **{tournament['name']}**. Their posts are going up in the "
+                         f"channel. When it's nearly time to play, press **Start Check-In** on the event post (or "
+                         f"run `/lobby startcheckin`)."), view=None)
+            await refresh_signups(interaction.client, conn, self.tournament_id)
+            await sync_posts(interaction.client, conn, self.tournament_id)
+        finally:
+            conn.close()
 
 
 def _close_and_describe(conn: sqlite3.Connection, tournament: sqlite3.Row, seeding_mode: Optional[str] = None,
@@ -161,6 +258,9 @@ class RegistrationCog(commands.Cog):
             log.exception("Couldn't check for registrations to close")
 
     async def _close_when_due(self, conn: sqlite3.Connection, tournament: sqlite3.Row) -> None:
+        if tournament["format"] == "lobbies":
+            await self._close_lobbies_when_due(conn, tournament)
+            return
         try:
             closed, content, embed = _close_and_describe(conn, tournament, close=close_overdue_registration)
         except RegistrationClosedError:
@@ -169,6 +269,21 @@ class RegistrationCog(commands.Cog):
             content += " Sign-ups stay open until an organizer closes them."
         await self._refresh_signups_message(conn, tournament["id"])
         await self._announce(tournament["channel_id"], content, embed)
+
+    async def _close_lobbies_when_due(self, conn: sqlite3.Connection, tournament: sqlite3.Row) -> None:
+        """Draw a 5v5 event's lobbies at its sign-up deadline with the proposed split. If
+        there aren't enough players, the deadline is dropped and sign-ups stay open."""
+        try:
+            close_lobby_registration(conn, tournament["id"])
+        except RegistrationClosedError:
+            return
+        except lobbies.LobbyError as e:
+            db.clear_registration_deadline(conn, tournament["id"])
+            await self._announce(tournament["channel_id"], f"Sign-ups for **{tournament['name']}** couldn't close: {e} "
+                                                           f"Sign-ups stay open until an organizer closes them.", None)
+            return
+        await refresh_signups(self.bot, conn, tournament["id"])
+        await sync_posts(self.bot, conn, tournament["id"])
 
     async def _refresh_signups_message(self, conn: sqlite3.Connection, tournament_id: int) -> None:
         tournament = db.get_tournament(conn, tournament_id)
@@ -194,15 +309,36 @@ class RegistrationCog(commands.Cog):
         closes_in_hours="Close sign-ups automatically after this many hours (leave blank to close by hand)",
         seeding=SEEDING_OPTION_HELP,
         match_slots=MATCH_SLOTS_HELP,
+        format="bracket (default), or 5v5 lobbies played on the drafter site",
+        starts_in_hours="5v5: when play starts, in hours from now (shown to players; needed for 5v5)",
+        spread=SPREAD_OPTION_HELP,
     )
-    @app_commands.choices(seeding=SEEDING_CHOICES)
+    @app_commands.choices(seeding=SEEDING_CHOICES, format=FORMAT_CHOICES, spread=SPREAD_CHOICES)
     @requires_manage_server
     async def open_signups(self, interaction: discord.Interaction, name: str,
                    closes_in_hours: app_commands.Range[float, MIN_CLOSES_IN_HOURS, MAX_CLOSES_IN_HOURS] | None = None,
-                   seeding: str = "standard", match_slots: app_commands.Range[int, 1] | None = None) -> None:
-        closes_at = None
-        if closes_in_hours is not None:
-            closes_at = datetime.now(timezone.utc) + timedelta(hours=closes_in_hours)
+                   seeding: str = "standard", match_slots: app_commands.Range[int, 1] | None = None,
+                   format: str = "single_elim",
+                   starts_in_hours: app_commands.Range[float, MIN_CLOSES_IN_HOURS, MAX_CLOSES_IN_HOURS] | None = None,
+                   spread: str = "balanced") -> None:
+        now = datetime.now(timezone.utc)
+        closes_at = now + timedelta(hours=closes_in_hours) if closes_in_hours is not None else None
+        five_v_five = format == "lobbies"
+        if five_v_five and starts_in_hours is None:
+            await interaction.response.send_message(
+                "A 5v5 event needs a start time: give `starts_in_hours`, so players know when to play.", ephemeral=True)
+            return
+        if five_v_five and match_slots is not None:
+            await interaction.response.send_message(
+                "5v5 lobbies are played on the drafter site, so the bot doesn't call them into match rooms. Leave "
+                "out `match_slots`.", ephemeral=True)
+            return
+        starts_at = now + timedelta(hours=starts_in_hours) if five_v_five else None
+        if five_v_five and closes_at is not None and closes_at >= starts_at:
+            await interaction.response.send_message(
+                "Sign-ups have to close before play starts, ideally a day before, so the waitlist knows where it "
+                "stands.", ephemeral=True)
+            return
         conn = db.get_connection()
         try:
             if await refuse_taken_name(interaction, conn, name):
@@ -213,12 +349,22 @@ class RegistrationCog(commands.Cog):
                 return
             tournament_id = db.open_registration(
                 conn, interaction.guild_id, name, interaction.user.id, interaction.channel_id,
-                db.to_db_time(closes_at) if closes_at is not None else None, seeding,
+                db.to_db_time(closes_at) if closes_at is not None else None, seeding, format,
+                db.to_db_time(starts_at) if starts_at is not None else None, spread if five_v_five else None,
             )
             db.set_match_slots(conn, tournament_id, match_slots)
-            await interaction.response.send_message(signups_message(db.get_tournament(conn, tournament_id), 0))
+            announcement = signups_message(db.get_tournament(conn, tournament_id), 0)
+            if five_v_five:
+                await interaction.response.send_message(announcement,
+                                                        view=event_view(tournament_id, ["register", "unregister"]))
+            else:
+                await interaction.response.send_message(announcement)
             message = await interaction.original_response()
             db.set_announcement_message(conn, tournament_id, message.id)
+            if five_v_five:
+                await interaction.followup.send(
+                    f"When sign-ups are in, run `/registration close name:{name}` to draw the lobbies, ideally a day "
+                    f"before play starts so the waitlist knows where it stands.", ephemeral=True)
         finally:
             conn.close()
 
@@ -231,8 +377,18 @@ class RegistrationCog(commands.Cog):
     async def close_signups(self, interaction: discord.Interaction, name: str, seeding: str | None = None) -> None:
         conn = db.get_connection()
         try:
-            tournament = await resolve_tournament(interaction, conn, name, needs_bracket=False)
+            tournament = await resolve_tournament(interaction, conn, name, needs_bracket=False, formats=db.FORMATS)
             if tournament is None or not await _require_registration(interaction, tournament):
+                return
+            if tournament["format"] == "lobbies":
+                proposed, options = lobby_split_options(conn, tournament["id"])
+                if proposed is None:
+                    await interaction.response.send_message(
+                        f"**{name}** can't be drawn yet: each lobby needs {lobbies.MIN_LOBBY} players, two of whom "
+                        f"can captain (with a linked account).", ephemeral=True)
+                    return
+                preview = LobbyClosePreview(self, tournament, proposed, options)
+                await interaction.response.send_message(preview.describe(tournament), view=preview, ephemeral=True)
                 return
             try:
                 closed, content, embed = _close_and_describe(conn, tournament, seeding)
@@ -256,17 +412,19 @@ class RegistrationCog(commands.Cog):
     async def entrants(self, interaction: discord.Interaction, name: str) -> None:
         conn = db.get_connection()
         try:
-            tournament = await resolve_tournament(interaction, conn, name, needs_bracket=False)
+            tournament = await resolve_tournament(interaction, conn, name, needs_bracket=False, formats=db.FORMATS)
             if tournament is None:
                 return
             entrants = db.get_entrants(conn, tournament["id"])
+            lines = (lobby_flow.entrant_lines(conn, tournament, mention) if tournament["format"] == "lobbies"
+                     else entrant_lines(entrants, mention))
         finally:
             conn.close()
         embed = discord.Embed(title=f"Entrants: {name}")
         if not entrants:
             embed.description = "Nobody has signed up yet."
         else:
-            embed.description = join_within(entrant_lines(entrants, mention), EMBED_DESCRIPTION_LIMIT)
+            embed.description = join_within(lines, EMBED_DESCRIPTION_LIMIT)
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
     @group.command(name="add", description="Sign up a member, or an entrant with no Discord account")
@@ -274,11 +432,13 @@ class RegistrationCog(commands.Cog):
         tournament="Tournament name",
         user="Member to sign up",
         name="Entrant name (defaults to the member's server name; needed when no member is given)",
+        captain="5v5 events: whether they'll captain (only members with a linked account can)",
     )
     @app_commands.autocomplete(tournament=registration_name_autocomplete)
+    @app_commands.choices(captain=CAPTAIN_CHOICES)
     @requires_manage_server
     async def add(self, interaction: discord.Interaction, tournament: str,
-                  user: discord.Member | None = None, name: str | None = None) -> None:
+                  user: discord.Member | None = None, name: str | None = None, captain: str = "no") -> None:
         if user is None and name is None:
             await interaction.response.send_message(
                 "Give a member to sign up, or a name for an entrant with no Discord account.", ephemeral=True
@@ -286,7 +446,7 @@ class RegistrationCog(commands.Cog):
             return
         conn = db.get_connection()
         try:
-            tournament_row = await resolve_tournament(interaction, conn, tournament, needs_bracket=False)
+            tournament_row = await resolve_tournament(interaction, conn, tournament, needs_bracket=False, formats=db.FORMATS)
             if tournament_row is None or not await _require_registration(interaction, tournament_row):
                 return
             if user is not None and db.get_entrant_team_id(conn, tournament_row["id"], user.id) is not None:
@@ -308,7 +468,9 @@ class RegistrationCog(commands.Cog):
                     f"Pick another name{link_hint}.", ephemeral=True
                 )
                 return
-            _, entrant_name = entrant
+            team_id, entrant_name = entrant
+            if tournament_row["format"] == "lobbies":
+                lobby_db.set_captain_pref(conn, tournament_row["id"], team_id, captain)
             who = f"{entrant_name} ({user.mention})" if linked else entrant_name
             note = (f" They haven't agreed to link their data to their account, so they're entered by name only."
                     if user is not None and not linked else "")
@@ -327,7 +489,7 @@ class RegistrationCog(commands.Cog):
     async def remove(self, interaction: discord.Interaction, tournament: str, entrant: str) -> None:
         conn = db.get_connection()
         try:
-            tournament_row = await resolve_tournament(interaction, conn, tournament, needs_bracket=False)
+            tournament_row = await resolve_tournament(interaction, conn, tournament, needs_bracket=False, formats=db.FORMATS)
             if tournament_row is None or not await _require_registration(interaction, tournament_row):
                 return
             team = db.get_team_by_name(conn, tournament_row["id"], entrant)
@@ -343,14 +505,21 @@ class RegistrationCog(commands.Cog):
             conn.close()
 
     @app_commands.command(name="register", description="Sign up for a tournament")
-    @app_commands.describe(tournament="Tournament name")
+    @app_commands.describe(tournament="Tournament name",
+                           captain="5v5 events: whether you'll captain (asked if you leave it out)")
     @app_commands.autocomplete(tournament=registration_name_autocomplete)
+    @app_commands.choices(captain=CAPTAIN_CHOICES)
     @app_commands.guild_only()
-    async def register(self, interaction: discord.Interaction, tournament: str) -> None:
+    async def register(self, interaction: discord.Interaction, tournament: str, captain: str | None = None) -> None:
         conn = db.get_connection()
         try:
-            tournament_row = await resolve_tournament(interaction, conn, tournament, needs_bracket=False)
-            if tournament_row is None or not await _require_registration(interaction, tournament_row):
+            tournament_row = await resolve_tournament(interaction, conn, tournament, needs_bracket=False, formats=db.FORMATS)
+            if tournament_row is None:
+                return
+            if tournament_row["format"] == "lobbies":
+                await start_signup(interaction, conn, tournament_row, captain)
+                return
+            if not await _require_registration(interaction, tournament_row):
                 return
             if db.get_entrant_team_id(conn, tournament_row["id"], interaction.user.id) is not None:
                 await interaction.response.send_message(
@@ -382,8 +551,13 @@ class RegistrationCog(commands.Cog):
     async def unregister(self, interaction: discord.Interaction, tournament: str) -> None:
         conn = db.get_connection()
         try:
-            tournament_row = await resolve_tournament(interaction, conn, tournament, needs_bracket=False)
-            if tournament_row is None or not await _require_registration(interaction, tournament_row):
+            tournament_row = await resolve_tournament(interaction, conn, tournament, needs_bracket=False, formats=db.FORMATS)
+            if tournament_row is None:
+                return
+            if tournament_row["format"] == "lobbies" and tournament_row["status"] != "registration":
+                await leave_event(interaction, conn, tournament_row)
+                return
+            if not await _require_registration(interaction, tournament_row):
                 return
             if not db.unregister_entrant(conn, tournament_row["id"], interaction.user.id):
                 await interaction.response.send_message(

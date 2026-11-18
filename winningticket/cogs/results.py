@@ -10,6 +10,7 @@ from discord.ext import commands, tasks
 
 import coordination
 import db
+import lobby_flow
 import reports
 from bracket import Match, matches_with_both_teams, pick_distribution, resolvable_matches, resolve_all_slots
 from bracket_changes import WITHDRAWABLE_STATUSES, set_result_and_describe, withdraw_and_describe
@@ -26,6 +27,7 @@ from common import (
 )
 from embeds import mention, render_match_stats_embed
 from labels import team_label
+from lobby_posting import sync_posts
 from posting import (
     ReadyUpButton,
     ReportResultButton,
@@ -224,10 +226,16 @@ class ResultsCog(commands.Cog):
             return
         conn = db.get_connection()
         try:
-            tournament_row = await resolve_tournament(interaction, conn, tournament)
+            tournament_row = await resolve_tournament(interaction, conn, tournament, formats=db.FORMATS)
             if tournament_row is None:
                 return
             team_id = db.get_entrant_team_id(conn, tournament_row["id"], interaction.user.id)
+            if tournament_row["format"] == "lobbies" and team_id is not None:
+                # A 5v5 event's posts show the change, so the reply is all that's needed.
+                reply = lobby_flow.dropout(conn, tournament_row, team_id, "dropped", interaction.user.id)
+                await interaction.response.send_message(reply, ephemeral=True)
+                await sync_posts(self.bot, conn, tournament_row["id"])
+                return
             team = db.get_teams(conn, tournament_row["id"]).get(team_id)
             if team is None:
                 refusal = f"You aren't an entrant in **{tournament}**."

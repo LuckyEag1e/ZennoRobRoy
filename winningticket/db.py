@@ -45,7 +45,9 @@ _STATUS_SQL_LIST = ", ".join(f"'{status}'" for status in STATUSES)
 # at random. seeding.seeded_pairs shows the difference.
 SEEDING_MODES = ("standard", "slide", "random")
 _SEEDING_SQL_LIST = ", ".join(f"'{mode}'" for mode in SEEDING_MODES)
-FORMATS = ("single_elim",)
+# A 5v5 event ("lobbies") has no bracket: its players are drawn into lobbies of two teams
+# instead (lobbies.py, lobby_db.py).
+FORMATS = ("single_elim", "lobbies")
 # Why an entrant stopped playing: they dropped out themselves, or an organizer withdrew or
 # disqualified them. Each has its own value, so it's always clear who decided.
 WITHDRAWAL_REASONS = ("dropped", "withdrawn", "disqualified")
@@ -86,7 +88,13 @@ CREATE TABLE IF NOT EXISTS {table_name} (
     seeding_mode TEXT NOT NULL CHECK (seeding_mode IN ({_SEEDING_SQL_LIST})) DEFAULT 'random',
     format      TEXT NOT NULL CHECK (format IN ({_FORMAT_SQL_LIST})) DEFAULT 'single_elim',
     -- How many matches the bot calls at once, or NULL if it doesn't coordinate them.
-    match_slots INTEGER CHECK (match_slots >= 1)
+    match_slots INTEGER CHECK (match_slots >= 1),
+    -- For 5v5 events: when play starts, how players are shared between lobbies, and when
+    -- check-in ends once an organizer starts it.
+    starts_at   TEXT,
+    lobby_spread TEXT CHECK (lobby_spread IN ('tier', 'balanced', 'random')),
+    checkin_ends_at TEXT,
+    checkin_finished INTEGER NOT NULL DEFAULT 0
 );
 """
 
@@ -252,6 +260,81 @@ CREATE TABLE IF NOT EXISTS live_posts (
     PRIMARY KEY (tournament_id, kind)
 );
 
+-- 5v5 events. Each sign-up says whether they'll captain, and checks in once an organizer
+-- starts check-in. Entrants with no account count as checked in, since they can't press
+-- anything.
+CREATE TABLE IF NOT EXISTS lobby_signups (
+    team_id         INTEGER PRIMARY KEY REFERENCES teams(id) ON DELETE CASCADE,
+    tournament_id   INTEGER NOT NULL REFERENCES tournaments(id) ON DELETE CASCADE,
+    captain_pref    TEXT NOT NULL CHECK (captain_pref IN ('want', 'can', 'no')),
+    checked_in_at   TEXT
+);
+CREATE TABLE IF NOT EXISTS lobbies (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    tournament_id   INTEGER NOT NULL REFERENCES tournaments(id) ON DELETE CASCADE,
+    number          INTEGER NOT NULL,
+    -- The drafter room the lobby plays in, and who gave it to the bot.
+    room_code       TEXT,
+    host_user_id    INTEGER,
+    UNIQUE (tournament_id, number)
+);
+-- A lobby's two teams. The captain is NULL when nobody left on the team can captain.
+CREATE TABLE IF NOT EXISTS lobby_sides (
+    lobby_id        INTEGER NOT NULL REFERENCES lobbies(id) ON DELETE CASCADE,
+    side            TEXT NOT NULL CHECK (side IN ('A', 'B')),
+    captain_team_id INTEGER REFERENCES teams(id),
+    PRIMARY KEY (lobby_id, side)
+);
+-- Who plays where. A replacement takes over the spot of the player they replace, so
+-- teams never change once they're announced except one player for another.
+CREATE TABLE IF NOT EXISTS lobby_players (
+    lobby_id        INTEGER NOT NULL REFERENCES lobbies(id) ON DELETE CASCADE,
+    side            TEXT NOT NULL,
+    spot            INTEGER NOT NULL,
+    team_id         INTEGER NOT NULL UNIQUE REFERENCES teams(id) ON DELETE CASCADE,
+    PRIMARY KEY (lobby_id, side, spot)
+);
+CREATE TABLE IF NOT EXISTS lobby_waitlist (
+    team_id         INTEGER PRIMARY KEY REFERENCES teams(id) ON DELETE CASCADE,
+    tournament_id   INTEGER NOT NULL REFERENCES tournaments(id) ON DELETE CASCADE,
+    position        INTEGER NOT NULL
+);
+-- A captain's report of everyone's points, waiting for the other captain. `points` is
+-- JSON, entrant id to points.
+CREATE TABLE IF NOT EXISTS lobby_reports (
+    lobby_id        INTEGER PRIMARY KEY REFERENCES lobbies(id) ON DELETE CASCADE,
+    reported_by     INTEGER NOT NULL,
+    reporting_side  TEXT NOT NULL,
+    points          TEXT NOT NULL,
+    changed_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    disputed_at     TEXT
+);
+CREATE TABLE IF NOT EXISTS lobby_results (
+    lobby_id        INTEGER PRIMARY KEY REFERENCES lobbies(id) ON DELETE CASCADE,
+    winning_side    TEXT NOT NULL,
+    recorded_by     INTEGER,  -- NULL when a report was accepted for want of an answer
+    recorded_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+CREATE TABLE IF NOT EXISTS lobby_points (
+    lobby_id        INTEGER NOT NULL REFERENCES lobby_results(lobby_id) ON DELETE CASCADE,
+    team_id         INTEGER NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+    points          INTEGER NOT NULL,
+    PRIMARY KEY (lobby_id, team_id)
+);
+-- A 5v5 event's public posts: the event post (`post_key` 'event', with the waitlist and
+-- check-in) and one per lobby ('lobby:<id>'). Each is edited as things change, and sent
+-- afresh when someone needs notifying, like match_posts.
+CREATE TABLE IF NOT EXISTS lobby_posts (
+    tournament_id   INTEGER NOT NULL REFERENCES tournaments(id) ON DELETE CASCADE,
+    post_key        TEXT NOT NULL,
+    channel_id      INTEGER NOT NULL,
+    message_id      INTEGER,
+    shown           TEXT,
+    pinged          TEXT,
+    sending_at      TEXT,
+    PRIMARY KEY (tournament_id, post_key)
+);
+
 -- Members who agreed to have their entries, results and rating tied to their Discord
 -- account. Only agreement is kept: someone who opts out is asked again at their next
 -- sign-up, and entered by name only meanwhile.
@@ -292,7 +375,7 @@ def get_connection(path: Path | None = None) -> sqlite3.Connection:
 
 
 # Bump when an older database needs migrating, and add the migration to init_db().
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 
 def init_db(conn: sqlite3.Connection) -> None:
@@ -410,14 +493,17 @@ def create_tournament(conn: sqlite3.Connection, guild_id: int, name: str, create
 
 
 def open_registration(conn: sqlite3.Connection, guild_id: int, name: str, created_by: int,
-                      channel_id: int | None, closes_at: str | None, seeding_mode: str = "standard") -> int:
+                      channel_id: int | None, closes_at: str | None, seeding_mode: str = "standard",
+                      format: str = "single_elim", starts_at: str | None = None,
+                      lobby_spread: str | None = None) -> int:
     """Create a tournament that takes sign-ups. `closes_at` is a UTC time in the same
-    format as created_at, or None to close it by hand."""
+    format as created_at, or None to close it by hand. A 5v5 event (format "lobbies")
+    also has a start time and a way of spreading players between lobbies."""
     cur = conn.execute(
         """INSERT INTO tournaments (guild_id, name, created_by, status, channel_id, registration_closes_at,
-                                    seeding_mode)
-           VALUES (?, ?, ?, 'registration', ?, ?, ?)""",
-        (guild_id, name, created_by, channel_id, closes_at, seeding_mode),
+                                    seeding_mode, format, starts_at, lobby_spread)
+           VALUES (?, ?, ?, 'registration', ?, ?, ?, ?, ?, ?)""",
+        (guild_id, name, created_by, channel_id, closes_at, seeding_mode, format, starts_at, lobby_spread),
     )
     conn.commit()
     return cur.lastrowid
@@ -446,7 +532,7 @@ class ConcludedSummary(NamedTuple):
     entrants: int
     format: str
     has_teams: bool  # any entrant with more than one Discord user behind it
-    finished_at: Optional[str]  # when its final was recorded
+    finished_at: Optional[str]  # when its final (or a 5v5 event's last lobby) was recorded
 
 
 def get_concluded_summaries(conn: sqlite3.Connection, guild_id: int) -> list[ConcludedSummary]:
@@ -457,8 +543,10 @@ def get_concluded_summaries(conn: sqlite3.Connection, guild_id: int) -> list[Con
                    (SELECT w.name FROM matches m JOIN match_results r ON r.match_id = m.id
                     JOIN teams w ON w.id = r.winner_team_id
                     WHERE m.tournament_id = t.id AND m.feeds_into_match_id IS NULL) AS champion,
-                   (SELECT r.recorded_at FROM matches m JOIN match_results r ON r.match_id = m.id
-                    WHERE m.tournament_id = t.id AND m.feeds_into_match_id IS NULL) AS finished_at,
+                   COALESCE((SELECT r.recorded_at FROM matches m JOIN match_results r ON r.match_id = m.id
+                             WHERE m.tournament_id = t.id AND m.feeds_into_match_id IS NULL),
+                            (SELECT MAX(r.recorded_at) FROM lobbies l JOIN lobby_results r ON r.lobby_id = l.id
+                             WHERE l.tournament_id = t.id)) AS finished_at,
                    (SELECT COUNT(*) FROM teams WHERE tournament_id = t.id) AS entrants,
                    EXISTS (SELECT 1 FROM team_members WHERE tournament_id = t.id
                            GROUP BY team_id HAVING COUNT(*) > 1) AS has_teams

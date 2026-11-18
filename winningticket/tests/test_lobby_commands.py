@@ -1,0 +1,174 @@
+"""5v5 events through the real cogs: sign-up buttons with the captain question, the close
+preview, check-in, room codes and the captains' report."""
+
+import asyncio
+import os
+import sys
+from datetime import datetime, timedelta, timezone
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+import db
+import lobby_db
+from sim.harness import GUILD_ID, Simulation
+
+
+def _public(sim):
+    return [m for m in sim.channel.messages if m.public and not m.deleted]
+
+
+def _post_with(sim, text):
+    return next(m for m in reversed(_public(sim)) if text in (m.content or ""))
+
+
+def _buttons(message):
+    """The labels of a message's buttons, including the bot's lasting (dynamic) ones."""
+    if message.view is None:
+        return []
+    return [getattr(item, "item", item).label for item in message.view.children]
+
+
+def _loop(sim):
+    cog = sim.cogs["LobbiesCog"]
+    asyncio.run(sim.run_background("lobby check", lambda: cog.tend_lobbies.coro(cog)))
+
+
+async def _sign_up_by_button(sim, user, announcement, pref, agree=True):
+    reply = (await sim.click(user, announcement, "Register")).sent
+    if agree is not None and "Agree" in [getattr(item, "label", None) for item in reply.view.children]:
+        await sim.click(user, reply, "Agree" if agree else "Opt Out")
+    await sim.choose(user, reply, pref)
+    return reply
+
+
+def _event(tmp_path, players=12, captains=4):
+    async def build():
+        sim = await Simulation.create(tmp_path / "test.db")
+        organizer = sim.add_user(1, "Organizer", organizer=True)
+        users = [sim.add_user(100 + n, f"Player{n}") for n in range(1, players + 1)]
+        await sim.run(organizer, "registration open", name="Duel", format="lobbies", starts_in_hours=24.0)
+        announcement = _post_with(sim, "Sign-ups are open")
+        for n, user in enumerate(users, start=1):
+            await _sign_up_by_button(sim, user, announcement, "want" if n <= captains else "no")
+        return sim, organizer, users, announcement
+    return asyncio.run(build())
+
+
+def test_register_button_asks_consent_then_captain_choice(tmp_path):
+    sim, organizer, users, announcement = _event(tmp_path, players=1, captains=1)
+    try:
+        conn = db.get_connection()
+        tournament = db.get_tournament_by_name(conn, GUILD_ID, "Duel")
+        signups = lobby_db.get_signups(conn, tournament["id"])
+        conn.close()
+        assert [(s.user_id, s.captain_pref) for s in signups] == [(101, "want")]
+        assert "1** signed up" in announcement.content
+    finally:
+        asyncio.run(sim.close())
+
+
+def test_register_command_without_captain_choice_asks_for_it(tmp_path):
+    sim, organizer, users, announcement = _event(tmp_path, players=1, captains=0)
+    try:
+        newcomer = sim.add_user(500, "Late")
+        conn = db.get_connection()
+        db.record_agreement(conn, GUILD_ID, 500)
+        conn.close()
+        reply = asyncio.run(sim.run(newcomer, "register", tournament="Duel")).sent
+        assert "Will you captain?" in reply.content
+        asyncio.run(sim.choose(newcomer, reply, "can"))
+        assert "Can captain if needed" in reply.content
+    finally:
+        asyncio.run(sim.close())
+
+
+def test_whole_event_from_close_to_result(tmp_path):
+    sim, organizer, users, announcement = _event(tmp_path)
+    try:
+        preview = asyncio.run(sim.run(organizer, "registration close", name="Duel")).sent
+        assert "5v5, 2 waitlisted" in preview.content
+        asyncio.run(sim.click(organizer, preview, "Create Lobbies"))
+        assert "Created the lobbies" in preview.content
+        event_post = _post_with(sim, "Waitlist")
+        lobby_post = _post_with(sim, "lobby 1")
+        waiting = [u.id for u in users[10:]]
+        assert {u.id for u in event_post.allowed_mentions.users} == set(waiting)
+        assert len(lobby_post.allowed_mentions.users) == 10
+        assert "Register" in _buttons(announcement)  # late sign-ups join the waitlist
+
+        # Only organizers can start check-in.
+        refused = asyncio.run(sim.click(users[0], event_post, "Start Check-In")).sent
+        assert "Only organizers" in refused.content
+        click = asyncio.run(sim.click(organizer, event_post, "Start Check-In"))
+        asyncio.run(sim.submit_fields(organizer, click.response.modal, ["15"]))
+        _loop(sim)
+        lobby_post = _post_with(sim, "Check in now")
+        conn = db.get_connection()
+        tournament = db.get_tournament_by_name(conn, GUILD_ID, "Duel")
+        lobby = lobby_db.get_lobbies(conn, tournament["id"])[0]
+        user_of = {team_id: members[0] for team_id, members in db.get_members_by_team(conn, tournament["id"]).items()}
+        conn.close()
+        by_id = {u.id: u for u in users}
+        no_show = next(p for p in lobby.players if p not in lobby.captains)
+        for player in lobby.players:
+            if player != no_show:
+                asyncio.run(sim.click(by_id[user_of[player]], lobby_post, "Check In"))
+        asyncio.run(sim.click(by_id[waiting[0]], event_post if not event_post.deleted else _post_with(sim, "Waitlist"),
+                              "Check In"))
+
+        # Check-in runs out: the no-show is replaced by the waiter who checked in.
+        conn = db.get_connection()
+        conn.execute("UPDATE tournaments SET checkin_ends_at = ? WHERE id = ?",
+                     (db.to_db_time(datetime.now(timezone.utc) - timedelta(seconds=1)), tournament["id"]))
+        conn.commit()
+        conn.close()
+        _loop(sim)
+        ready = _post_with(sim, "drafter.uma.guide/host")
+        conn = db.get_connection()
+        lobby = lobby_db.get_lobby(conn, lobby.id)
+        conn.close()
+        assert user_of[no_show] not in [user_of[p] for p in lobby.players]
+        assert by_id[waiting[0]].id in [user_of[p] for p in lobby.players]
+        assert "Register" not in _buttons(announcement)
+
+        captain_a, captain_b = (by_id[user_of[lobby.teams[side].captain]] for side in "AB")
+        outsider = by_id[waiting[1]]
+        assert "only for players" in asyncio.run(sim.click(outsider, ready, "Get Room Code")).sent.content
+        form = asyncio.run(sim.click(captain_a, ready, "Submit Room Code")).response.modal
+        asyncio.run(sim.submit_fields(captain_a, form, ["ABC123"]))
+        player = by_id[user_of[next(p for p in lobby.players if p not in lobby.captains)]]
+        assert "ABC123" in asyncio.run(sim.click(player, _post_with(sim, "Hosted by"), "Get Room Code")).sent.content
+
+        # Captain A reports, in two forms, and captain B confirms.
+        post = _post_with(sim, "Hosted by")
+        first = asyncio.run(sim.click(captain_a, post, "Report Result")).response.modal
+        between = asyncio.run(sim.submit_fields(captain_a, first, ["9"] * 5)).sent
+        second = asyncio.run(sim.click(captain_a, between, _buttons(between)[0])).response.modal
+        sent = asyncio.run(sim.submit_fields(captain_a, second, ["2"] * 5)).sent
+        assert "other captain has been asked" in sent.content
+        report_post = _post_with(sim, "reported the points")
+        assert [u.id for u in report_post.allowed_mentions.users] == [captain_b.id]
+        assert "Only the other" in asyncio.run(sim.click(captain_a, report_post, "Confirm")).sent.content
+        asyncio.run(sim.click(captain_b, report_post, "Confirm"))
+        _loop(sim)
+        assert "wins lobby 1" in _post_with(sim, "wins lobby 1").content
+
+        conn = db.get_connection()
+        assert db.get_tournament(conn, tournament["id"])["status"] == "completed"
+        conn.close()
+        asyncio.run(sim.run(organizer, "tournament conclude", name="Duel"))
+        assert "How each lobby went" in _post_with(sim, "How each lobby went").content
+        assert not [issue for issue in sim.issues]
+    finally:
+        asyncio.run(sim.close())
+
+
+def test_bracket_commands_refuse_a_5v5_event(tmp_path):
+    sim, organizer, users, announcement = _event(tmp_path, players=10, captains=2)
+    try:
+        preview = asyncio.run(sim.run(organizer, "registration close", name="Duel")).sent
+        asyncio.run(sim.click(organizer, preview, "Create Lobbies"))
+        reply = asyncio.run(sim.run(users[0], "tournament bracket", name="Duel")).sent
+        assert "5v5 event" in reply.content
+    finally:
+        asyncio.run(sim.close())

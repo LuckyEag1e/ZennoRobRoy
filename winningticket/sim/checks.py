@@ -10,6 +10,8 @@ import discord
 
 import coordination
 import db
+import lobbies
+import lobby_db
 from bracket import final_match, resolve_all_slots
 from sim.discord_fakes import FakeMessage
 
@@ -125,10 +127,49 @@ def _room_problems(conn: sqlite3.Connection, guild_id: int) -> list[str]:
             for room in sorted(set(held)) if held.count(room) > 1]
 
 
+def _lobby_problems(conn: sqlite3.Connection, tournament: sqlite3.Row) -> list[str]:
+    """What should always hold for a 5v5 event: captains are on their own team and have an
+    account, nobody is in two places or still placed after leaving, and the event is
+    completed exactly when every lobby has its result."""
+    name = tournament["name"]
+    problems = []
+    drawn = lobby_db.get_lobbies(conn, tournament["id"])
+    if tournament["status"] == "registration":
+        return [f"'{name}' is still in registration but has lobbies"] if drawn else []
+    signups = {s.team_id: s for s in lobby_db.get_signups(conn, tournament["id"])}
+    waitlist = lobby_db.get_waitlist(conn, tournament["id"])
+    placed = [player for lobby in drawn for player in lobby.players]
+    for player in set(placed) & set(waitlist):
+        problems.append(f"'{name}': {signups[player].name} is both in a lobby and on the waitlist")
+    for player in placed + waitlist:
+        if signups[player].withdrawn:
+            problems.append(f"'{name}': {signups[player].name} left but still holds a place")
+    for lobby in drawn:
+        for side in lobby_db.SIDES:
+            team = lobby.teams[side]
+            if len(team.players) > lobbies.MAX_LOBBY // 2:
+                problems.append(f"'{name}' lobby {lobby.number} team {side} has {len(team.players)} players")
+            if team.captain is not None and team.captain not in team.players:
+                problems.append(f"'{name}' lobby {lobby.number} team {side}'s captain isn't on the team")
+            elif team.captain is not None and signups[team.captain].user_id is None:
+                problems.append(f"'{name}' lobby {lobby.number} team {side}'s captain has no account")
+        if lobby_db.get_result(conn, lobby.id) is not None and lobby_db.get_report(conn, lobby.id) is not None:
+            problems.append(f"'{name}' lobby {lobby.number} still has a report waiting after its result")
+    finished = bool(drawn) and all(lobby_db.get_result(conn, lobby.id) is not None for lobby in drawn)
+    if tournament["status"] == "in_progress" and finished:
+        problems.append(f"'{name}' has every lobby's result but is still in_progress")
+    if tournament["status"] in ("completed", "concluded") and not finished:
+        problems.append(f"'{name}' is {tournament['status']} but a lobby has no result")
+    return problems
+
+
 def database_problems(conn: sqlite3.Connection, guild_id: int) -> list[str]:
     problems = []
     for tournament in conn.execute("SELECT * FROM tournaments WHERE guild_id = ?", (guild_id,)):
         name, status = tournament["name"], tournament["status"]
+        if tournament["format"] == "lobbies":
+            problems += _lobby_problems(conn, tournament)
+            continue
         matches_by_id, _, _ = db.load_bracket(conn, tournament["id"])
         if status == "registration":
             if matches_by_id:

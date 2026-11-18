@@ -29,6 +29,7 @@ INITIAL_COGS = (
     "cogs.consent",
     "cogs.predictions",
     "cogs.results",
+    "cogs.lobbies",
     "cogs.admin",
     "cogs.feedback",
     "cogs.help",

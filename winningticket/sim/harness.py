@@ -294,6 +294,18 @@ class Simulation:
         await self._dispatch(interaction, lambda: self._submit(modal, interaction))
         return interaction
 
+    async def submit_fields(self, user: FakeUser, modal: discord.ui.Modal, texts: list[str]) -> Optional[FakeInteraction]:
+        """Fill a form's fields in order with `texts` and send it."""
+        await self._turn()
+        inputs = [item for item in modal.children if isinstance(item, discord.ui.TextInput)]
+        self._begin(user, f"sends form {texts!r}")
+        for text_input, text in zip(inputs, texts):
+            text_input._value = text[:text_input.max_length] if text_input.max_length else text
+        interaction = FakeInteraction(bot=self.bot, user=user, channel=self.channel, guild_id=GUILD_ID,
+                                      kind=discord.InteractionType.modal_submit)
+        await self._dispatch(interaction, lambda: self._submit(modal, interaction))
+        return interaction
+
     async def chat(self, user: FakeUser, text: str) -> None:
         """Have a member type an ordinary message in the channel, which pushes older posts up."""
         await self._turn()

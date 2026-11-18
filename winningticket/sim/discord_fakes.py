@@ -59,6 +59,7 @@ class FakeMessage:
     author_id: Optional[int] = None  # None for the bot; a member's id for something they typed
     deleted: bool = False
     edits: int = 0
+    allowed_mentions: Optional[discord.AllowedMentions] = None
 
     @property
     def public(self) -> bool:
@@ -134,7 +135,9 @@ class FakeChannel:
                    view: Optional[discord.ui.View] = None,
                    allowed_mentions: Optional[discord.AllowedMentions] = None) -> FakeMessage:
         await self.network()
-        return self.post(content, [embed] if embed else [], view, None)
+        message = self.post(content, [embed] if embed else [], view, None)
+        message.allowed_mentions = allowed_mentions  # who the message was allowed to notify
+        return message
 
     async def history(self, limit: int):
         """The channel's newest messages first, as everyone sees them (private replies aren't in it)."""
