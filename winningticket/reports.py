@@ -4,9 +4,10 @@ Shared by the bot's background loop and the CLI."""
 
 from __future__ import annotations
 
+import math
 import sqlite3
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from itertools import groupby
 from typing import Callable, Optional
 
@@ -47,15 +48,22 @@ def due_steps(conn: sqlite3.Connection, now: datetime) -> list[DueStep]:
             continue
         vote = votes[0]
         post = db.get_report_post(conn, match_id)
-        if post is not None:
-            if post["message_id"] is not None and now >= answer_deadline(post):
-                steps.append(DueStep("give", vote))
-        elif vote["winner_team_id"] != vote["team_id"]:
-            if now >= db.from_db_time(vote["reported_at"]) + CONCESSION_AFTER:
-                steps.append(DueStep("give", vote))
-        elif now >= db.from_db_time(vote["reported_at"]) + WARNING_AFTER:
-            steps.append(DueStep("warn", vote))
+        if post is None and vote["winner_team_id"] == vote["team_id"]:
+            if now >= db.from_db_time(vote["reported_at"]) + WARNING_AFTER:
+                steps.append(DueStep("warn", vote))
+        elif (post is None or post["message_id"] is not None) and now >= win_due_at(vote, post):
+            steps.append(DueStep("give", vote))
     return steps
+
+
+def win_due_at(vote: sqlite3.Row, post: Optional[sqlite3.Row]) -> datetime:
+    """When the win an unanswered `vote` names is given, as things stand. Once the match
+    has a report post, the other side has a set time from its last change. Before then,
+    a claim waits to be warned about first."""
+    if post is not None:
+        return answer_deadline(post)
+    wait = CONCESSION_AFTER if vote["winner_team_id"] != vote["team_id"] else WARNING_AFTER + ANSWER_WITHIN
+    return db.from_db_time(vote["reported_at"]) + wait
 
 
 def answer_deadline(post: sqlite3.Row) -> datetime:
@@ -156,15 +164,19 @@ def find_reportable_match(conn: sqlite3.Connection, tournament: sqlite3.Row, use
     return ReportableMatch(match, team_id, slots[match.id], vote)
 
 
-def vote_reply(outcome: str, found: ReportableMatch, winner_id: int, teams_by_id: dict) -> str:
+def vote_reply(conn: sqlite3.Connection, outcome: str, found: ReportableMatch, winner_id: int,
+               teams_by_id: dict) -> str:
     """What the voter is told privately, given what db.submit_report returned."""
     other = team_label(teams_by_id, opponent(found.teams, found.team_id))
-    wait = int(CONCESSION_AFTER.total_seconds() // 60)
     if outcome == "waiting":
+        [vote] = db.get_reports(conn, found.match.id)
+        left = win_due_at(vote, db.get_report_post(conn, found.match.id)) - datetime.now(timezone.utc)
+        minutes = max(1, math.ceil(left.total_seconds() / 60))
+        wait = f"{minutes} minute{'' if minutes == 1 else 's'}"
         if winner_id == found.team_id:
-            reply = f"Saved. If **{other}** doesn't report within {wait} minutes, the win is yours."
+            reply = f"Saved. If **{other}** doesn't report within {wait}, the win is yours."
         else:
-            reply = f"Saved. It's recorded once **{other}** agrees, or in {wait} minutes."
+            reply = f"Saved. It's recorded once **{other}** agrees, or in {wait}."
         return reply + " Until then, you can change it or take it back with `/match report`."
     if outcome == "agreed":
         return f"✅ Both sides agree: **{team_label(teams_by_id, winner_id)}** won. It's recorded."

@@ -588,7 +588,7 @@ class WinningTicketCLI(cmd.Cmd):
         before = db.get_outcomes(self.conn, tournament["id"])
         outcome = db.submit_report(self.conn, tournament["id"], found.match.id, found.team_id, winner_id,
                                    self.user_id, 0)
-        print(reports.vote_reply(outcome, found, winner_id, teams_by_id))
+        print(reports.vote_reply(self.conn, outcome, found, winner_id, teams_by_id))
         if outcome in ("agreed", "skipped"):
             # The bot edits any report post into this announcement, so the CLI forgets it.
             db.delete_report_post(self.conn, found.match.id)

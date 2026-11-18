@@ -269,7 +269,7 @@ class ResultsCog(commands.Cog):
             outcome = db.submit_report(conn, tournament_id, found.match.id, found.team_id, winner_id,
                                        interaction.user.id, interaction.channel_id)
             teams_by_id = db.get_teams(conn, tournament_id)
-            private = reports.vote_reply(outcome, found, winner_id, teams_by_id)
+            private = reports.vote_reply(conn, outcome, found, winner_id, teams_by_id)
             await interaction.response.edit_message(content=private, view=None)
 
             if outcome in ("agreed", "skipped"):

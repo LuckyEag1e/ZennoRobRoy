@@ -327,3 +327,13 @@ def _second_match(tournament_id):
         return sorted(db.get_matches(conn, tournament_id).values(), key=bracket_order)[1].id
     finally:
         conn.close()
+
+
+def test_the_vote_reply_says_how_long_is_really_left(world):
+    sim, organizer, players, tid, teams, match_id = world
+    first = _vote(sim, players["Ace"], "Ace")
+    assert "within 10 minutes" in first.content
+    _age(match_id, 6)
+    _run_loop(sim)
+    changed = _vote(sim, players["Ace"], "Blaze")  # the warning is up, so its clock restarts
+    assert "or in 5 minutes" in changed.content
