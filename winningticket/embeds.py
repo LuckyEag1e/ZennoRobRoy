@@ -27,17 +27,18 @@ def render_bracket_embed(
     slots: dict[int, tuple[int | None, int | None]],
     results_by_match: dict[int, int],
     teams_by_id: dict[int, sqlite3.Row],
+    notes: list[str] = (),
     title: str = "Bracket",
 ) -> discord.Embed:
+    """`notes` are labels.bracket_notes, for what the drawing itself can't show."""
     tree = render_tree(
         matches_by_id, feeders_by_target, teams_by_id, slots,
         results_by_match.get, real_result_marker(results_by_match),
     )
-    embed = discord.Embed(
-        title=f"{title}: {tournament_name}",
-        description=f"Status: {status}\n\n{tree}",
-    )
-    return embed
+    description = f"Status: {status}\n\n{tree}"
+    if notes:
+        description += "\n" + join_within(list(notes), EMBED_DESCRIPTION_LIMIT - len(description) - 1)
+    return discord.Embed(title=f"{title}: {tournament_name}", description=description)
 
 
 def render_leaderboard_embed(tournament_name: str, scores: list[UserScore]) -> discord.Embed:

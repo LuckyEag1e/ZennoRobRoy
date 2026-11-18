@@ -10,16 +10,19 @@ from typing import NamedTuple, Optional
 from bracket import (
     Match,
     MatchSpec,
+    Outcomes,
     Podium,
     UserScore,
     assign_played_rounds,
     build_feeder_index,
     compute_leaderboard,
-    decided_matches,
     final_match,
+    later_matches,
+    played_games,
     podium,
+    resolve_all_slots,
     resolve_slot,
-    stale_results,
+    settle,
 )
 from ratings import PlayedMatch
 
@@ -43,6 +46,11 @@ _STATUS_SQL_LIST = ", ".join(f"'{status}'" for status in STATUSES)
 SEEDING_MODES = ("standard", "slide", "random")
 _SEEDING_SQL_LIST = ", ".join(f"'{mode}'" for mode in SEEDING_MODES)
 FORMATS = ("single_elim",)
+# Why an entrant stopped playing: they dropped out themselves, or an organizer withdrew or
+# disqualified them. Each has its own value, so it's always clear who decided.
+WITHDRAWAL_REASONS = ("dropped", "withdrawn", "disqualified")
+_WITHDRAWAL_SQL_LIST = ", ".join(f"'{reason}'" for reason in WITHDRAWAL_REASONS)
+_WITHDRAWN_DEFINITION = f"TEXT CHECK (withdrawn IN ({_WITHDRAWAL_SQL_LIST}))"
 _FORMAT_SQL_LIST = ", ".join(f"'{format}'" for format in FORMATS)
 
 
@@ -95,7 +103,11 @@ CREATE TABLE IF NOT EXISTS teams (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     tournament_id   INTEGER NOT NULL REFERENCES tournaments(id) ON DELETE CASCADE,
     name            TEXT NOT NULL,
-    seed            INTEGER
+    seed            INTEGER,
+    -- Set once the entrant stops playing, which hands their remaining matches to their opponents.
+    withdrawn       {_WITHDRAWN_DEFINITION},
+    withdrawn_by    INTEGER,
+    withdrawn_at    TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_teams_tournament ON teams(tournament_id);
 
@@ -127,6 +139,51 @@ CREATE TABLE IF NOT EXISTS match_results (
     winner_team_id  INTEGER NOT NULL REFERENCES teams(id),
     recorded_by     INTEGER NOT NULL,
     recorded_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+
+-- Matches called off with no winner. The matchup is kept so the skip can be dropped if an
+-- earlier result changes who's in the match. Walkovers, and matches nobody is left to
+-- play, are never stored: bracket.settle works them out from these and withdrawals.
+CREATE TABLE IF NOT EXISTS skipped_matches (
+    match_id        INTEGER PRIMARY KEY REFERENCES matches(id) ON DELETE CASCADE,
+    team_a_id       INTEGER REFERENCES teams(id),
+    team_b_id       INTEGER REFERENCES teams(id),
+    skipped_by      INTEGER NOT NULL,
+    skipped_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+
+-- Players' votes on who won their match, one per side. Any member of a side can cast,
+-- change or take back its vote, and it's dropped once the match is decided.
+CREATE TABLE IF NOT EXISTS result_reports (
+    match_id        INTEGER NOT NULL REFERENCES matches(id) ON DELETE CASCADE,
+    team_id         INTEGER NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+    winner_team_id  INTEGER NOT NULL REFERENCES teams(id),
+    reported_by     INTEGER NOT NULL,
+    reported_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    -- Where it was reported, so a warning about it is posted there.
+    channel_id      INTEGER NOT NULL,
+    PRIMARY KEY (match_id, team_id)
+);
+
+-- The one public message about a match's votes: a warning that a side hasn't reported,
+-- or a dispute. It's edited as things change, and its row goes once it shows the end. The
+-- matchup is kept so the message still names the right players if an earlier result changes.
+CREATE TABLE IF NOT EXISTS report_posts (
+    match_id    INTEGER PRIMARY KEY REFERENCES matches(id) ON DELETE CASCADE,
+    channel_id  INTEGER NOT NULL,
+    team_a_id   INTEGER NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+    team_b_id   INTEGER NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+    message_id  INTEGER,  -- NULL until the message is sent
+    -- When the votes last changed, which restarts the time the other side has to answer.
+    updated_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    shown       TEXT
+);
+
+-- Report posts that couldn't be edited when their match was announced, so the announcement
+-- went out as a new message. Each is deleted from Discord once it can be.
+CREATE TABLE IF NOT EXISTS replaced_report_posts (
+    message_id  INTEGER PRIMARY KEY,
+    channel_id  INTEGER NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS predictions (
@@ -206,6 +263,9 @@ def init_db(conn: sqlite3.Connection) -> None:
     else:
         _rebuild_tournaments_table(conn)
         _add_column_if_missing(conn, "live_posts", "shown", "TEXT")
+        _add_column_if_missing(conn, "teams", "withdrawn", _WITHDRAWN_DEFINITION)
+        _add_column_if_missing(conn, "teams", "withdrawn_by", "INTEGER")
+        _add_column_if_missing(conn, "teams", "withdrawn_at", "TEXT")
     conn.commit()
 
 
@@ -377,9 +437,16 @@ def get_tournament_names(conn: sqlite3.Connection, guild_id: int, status: str | 
     return [r["name"] for r in rows]
 
 
-def set_tournament_status(conn: sqlite3.Connection, tournament_id: int, status: str) -> None:
-    conn.execute("UPDATE tournaments SET status = ? WHERE id = ?", (status, tournament_id))
-    conn.commit()
+def set_tournament_status(conn: sqlite3.Connection, tournament_id: int, status: str) -> str:
+    """Returns the status stored, which is completed instead of in_progress when
+    walkovers already decided the final."""
+    with conn:
+        conn.execute("UPDATE tournaments SET status = ? WHERE id = ?", (status, tournament_id))
+        matches_by_id, _ = _load_matches(conn, tournament_id)
+        if status == "in_progress" and matches_by_id:
+            _keep_completion_in_step(conn, tournament_id,
+                                     final_match(matches_by_id).id in get_outcomes(conn, tournament_id).decided)
+        return get_tournament(conn, tournament_id)["status"]
 
 
 def set_announcement_message(conn: sqlite3.Connection, tournament_id: int, message_id: int) -> None:
@@ -625,20 +692,21 @@ def load_bracket(conn: sqlite3.Connection, tournament_id: int) -> tuple[dict[int
 def load_scores(conn: sqlite3.Connection, tournament_id: int) -> list[UserScore]:
     """Every predicting player's score so far, best first."""
     return compute_leaderboard(
-        get_matches(conn, tournament_id), get_results(conn, tournament_id), get_all_predictions(conn, tournament_id)
+        get_matches(conn, tournament_id), get_outcomes(conn, tournament_id).played,
+        get_all_predictions(conn, tournament_id),
     )
 
 
 def load_final_results(conn: sqlite3.Connection, tournament_id: int) -> tuple[Podium, dict[int, sqlite3.Row], list[UserScore]]:
     """What a finished tournament's results post needs: (podium, teams_by_id, scores)."""
     matches_by_id, feeders_by_target, teams_by_id = load_bracket(conn, tournament_id)
-    results_by_match = get_results(conn, tournament_id)
-    scores = compute_leaderboard(matches_by_id, results_by_match, get_all_predictions(conn, tournament_id))
-    return podium(matches_by_id, feeders_by_target, results_by_match), teams_by_id, scores
+    outcomes = get_outcomes(conn, tournament_id)
+    scores = compute_leaderboard(matches_by_id, outcomes.played, get_all_predictions(conn, tournament_id))
+    return podium(matches_by_id, feeders_by_target, outcomes), teams_by_id, scores
 
 
 def load_match_history(conn: sqlite3.Connection, guild_id: int) -> list[PlayedMatch]:
-    """Every decided game in the server's concluded tournaments, as the Discord users on
+    """Every game played in the server's concluded tournaments, as the Discord users on
     each side, in the order they were played: oldest tournament first, then round by
     round. Ratings are worked out from this. The order comes from the bracket rather than
     when results were recorded, because correcting a result re-records it."""
@@ -646,8 +714,8 @@ def load_match_history(conn: sqlite3.Connection, guild_id: int) -> list[PlayedMa
     for tournament in reversed(get_concluded_tournaments(conn, guild_id)):
         matches_by_id, feeders = _load_matches(conn, tournament["id"])
         members = get_members_by_team(conn, tournament["id"])
-        decided = decided_matches(matches_by_id, feeders, get_results(conn, tournament["id"]))
-        for match, winner, loser in sorted(decided, key=lambda game: game[0].played_round):
+        played = played_games(matches_by_id, feeders, get_outcomes(conn, tournament["id"]))
+        for match, winner, loser in sorted(played, key=lambda game: game[0].played_round):
             games.append(PlayedMatch(tuple(members.get(winner, [])), tuple(members.get(loser, []))))
     return games
 
@@ -658,10 +726,12 @@ class MatchNow(NamedTuple):
     status: str  # the tournament's
     teams: tuple[Optional[int], Optional[int]]
     winner: Optional[int]
+    skipped: bool
+    unplayed: bool  # see Outcomes.unplayed
 
 
 def match_now(conn: sqlite3.Connection, tournament_id: int, match_id: int) -> MatchNow | None:
-    """A match's teams and recorded winner as they stand now, with its tournament's status,
+    """A match's teams and how it ended, as they stand now, with its tournament's status,
     or None if the tournament is gone. A menu can sit open while others change the
     bracket, so menus check this before saving what was picked from them."""
     tournament = get_tournament(conn, tournament_id)
@@ -670,61 +740,295 @@ def match_now(conn: sqlite3.Connection, tournament_id: int, match_id: int) -> Ma
     matches_by_id, feeders, _ = load_bracket(conn, tournament_id)
     if match_id not in matches_by_id:
         return None
-    results = get_results(conn, tournament_id)
-    teams = resolve_slot(matches_by_id[match_id], matches_by_id, results.get, feeders)
-    return MatchNow(tournament["status"], teams, results.get(match_id))
+    outcomes = get_outcomes(conn, tournament_id)
+    teams = resolve_slot(matches_by_id[match_id], matches_by_id, outcomes.winners.get, feeders)
+    return MatchNow(tournament["status"], teams, outcomes.winners.get(match_id), match_id in outcomes.skipped,
+                    match_id in outcomes.unplayed)
+
+
+def get_outcomes(conn: sqlite3.Connection, tournament_id: int) -> Outcomes:
+    """How every decided match ended, including the walkovers and skips that follow from
+    withdrawals and other skips."""
+    matches_by_id, feeders = _load_matches(conn, tournament_id)
+    recorded = {
+        r["match_id"]: r["winner_team_id"] for r in conn.execute(
+            """SELECT mr.match_id, mr.winner_team_id FROM match_results mr
+               JOIN matches m ON m.id = mr.match_id WHERE m.tournament_id = ?""",
+            (tournament_id,),
+        )
+    }
+    skips = {
+        r["match_id"]: (r["team_a_id"], r["team_b_id"]) for r in conn.execute(
+            """SELECT sm.match_id, sm.team_a_id, sm.team_b_id FROM skipped_matches sm
+               JOIN matches m ON m.id = sm.match_id WHERE m.tournament_id = ?""",
+            (tournament_id,),
+        )
+    }
+    withdrawn = {
+        r["id"] for r in conn.execute(
+            "SELECT id FROM teams WHERE tournament_id = ? AND withdrawn IS NOT NULL", (tournament_id,)
+        )
+    }
+    return settle(matches_by_id, feeders, recorded, skips, withdrawn)
+
+
+def final_decided(conn: sqlite3.Connection, tournament_id: int) -> bool:
+    """Whether the final has a winner, or was called off."""
+    return final_match(get_matches(conn, tournament_id)).id in get_outcomes(conn, tournament_id).decided
 
 
 def get_results(conn: sqlite3.Connection, tournament_id: int) -> dict[int, int]:
-    rows = conn.execute(
-        """SELECT mr.match_id, mr.winner_team_id FROM match_results mr
-           JOIN matches m ON m.id = mr.match_id WHERE m.tournament_id = ?""",
-        (tournament_id,),
-    ).fetchall()
-    return {r["match_id"]: r["winner_team_id"] for r in rows}
+    """Each decided match's winner, whether the game was played or won by walkover."""
+    return get_outcomes(conn, tournament_id).winners
 
 
 def record_result(conn: sqlite3.Connection, tournament_id: int, match_id: int,
                   winner_team_id: int, recorded_by: int) -> list[int]:
-    """Save (or overwrite) a match's real winner. Returns the ids of later results that
-    were dropped because their winner is no longer in that match."""
+    """Save (or overwrite) a match's real winner, replacing any skip. Returns the ids of
+    later results that were dropped because they no longer fit the bracket."""
+    with conn:
+        return _record_result(conn, tournament_id, match_id, winner_team_id, recorded_by)
+
+
+def _record_result(conn: sqlite3.Connection, tournament_id: int, match_id: int,
+                   winner_team_id: int, recorded_by: int) -> list[int]:
+    if match_id in get_outcomes(conn, tournament_id).unplayed:
+        # Withdrawals settled it with no game, so a played result would be made up.
+        # Reinstating the entrant reopens the match.
+        raise ValueError(f"match {match_id} was settled by withdrawals, so it has no game to record")
+    conn.execute("DELETE FROM skipped_matches WHERE match_id = ?", (match_id,))
+    conn.execute(
+        """INSERT INTO match_results (match_id, winner_team_id, recorded_by)
+           VALUES (?, ?, ?)
+           ON CONFLICT(match_id) DO UPDATE SET
+               winner_team_id = excluded.winner_team_id,
+               recorded_by = excluded.recorded_by,
+               recorded_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')""",
+        (match_id, winner_team_id, recorded_by),
+    )
+    return _settle_results(conn, tournament_id)
+
+
+def skip_match(conn: sqlite3.Connection, tournament_id: int, match_id: int,
+               teams: tuple[int, int], skipped_by: int) -> list[int]:
+    """Call a match between `teams` off with no winner, replacing any result. Returns the
+    ids of later results dropped with it."""
+    with conn:
+        return _skip_match(conn, tournament_id, match_id, teams, skipped_by)
+
+
+def _skip_match(conn: sqlite3.Connection, tournament_id: int, match_id: int,
+                teams: tuple[int, int], skipped_by: int) -> list[int]:
+    conn.execute("DELETE FROM match_results WHERE match_id = ?", (match_id,))
+    conn.execute(
+        """INSERT INTO skipped_matches (match_id, team_a_id, team_b_id, skipped_by) VALUES (?, ?, ?, ?)
+           ON CONFLICT(match_id) DO UPDATE SET
+               team_a_id = excluded.team_a_id, team_b_id = excluded.team_b_id,
+               skipped_by = excluded.skipped_by, skipped_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')""",
+        (match_id, *teams, skipped_by),
+    )
+    return _settle_results(conn, tournament_id)
+
+
+def clear_result(conn: sqlite3.Connection, tournament_id: int, match_id: int) -> list[int]:
+    """Delete a match's recorded result or skip. Returns the ids of later results dropped with it."""
+    with conn:
+        conn.execute("DELETE FROM match_results WHERE match_id = ?", (match_id,))
+        conn.execute("DELETE FROM skipped_matches WHERE match_id = ?", (match_id,))
+        return _settle_results(conn, tournament_id)
+
+
+def withdraw_entrant(conn: sqlite3.Connection, tournament_id: int, team_id: int, reason: str,
+                     withdrawn_by: int) -> list[int]:
+    """Take an entrant out of their remaining matches, which their opponents then win by
+    walkover. Results they've already played stand. Returns the ids of results dropped."""
     with conn:
         conn.execute(
-            """INSERT INTO match_results (match_id, winner_team_id, recorded_by)
-               VALUES (?, ?, ?)
-               ON CONFLICT(match_id) DO UPDATE SET
-                   winner_team_id = excluded.winner_team_id,
-                   recorded_by = excluded.recorded_by,
-                   recorded_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')""",
-            (match_id, winner_team_id, recorded_by),
+            """UPDATE teams SET withdrawn = ?, withdrawn_by = ?, withdrawn_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+               WHERE id = ?""",
+            (reason, withdrawn_by, team_id),
         )
         return _settle_results(conn, tournament_id)
 
 
-def clear_result(conn: sqlite3.Connection, tournament_id: int, match_id: int) -> list[int]:
-    """Delete a match's real result. Returns the ids of later results dropped with it."""
+def stored_later_results(conn: sqlite3.Connection, tournament_id: int, match_id: int) -> list[int]:
+    """The later matches on `match_id`'s path that have a recorded result or were called
+    off, nearest first. Changing `match_id` would change who played them."""
+    matches_by_id, _ = _load_matches(conn, tournament_id)
+    stored = {row[0] for row in conn.execute(
+        """SELECT r.match_id FROM match_results r JOIN matches m ON m.id = r.match_id WHERE m.tournament_id = ?
+           UNION SELECT s.match_id FROM skipped_matches s JOIN matches m ON m.id = s.match_id
+           WHERE m.tournament_id = ?""", (tournament_id, tournament_id))}
+    return [m.id for m in later_matches(matches_by_id[match_id], matches_by_id) if m.id in stored]
+
+
+def reinstate_entrant(conn: sqlite3.Connection, tournament_id: int, team_id: int) -> list[int]:
+    """Undo a withdrawal. The walkovers it gave go away, along with any later results that
+    followed from them, whose ids are returned."""
     with conn:
-        conn.execute("DELETE FROM match_results WHERE match_id = ?", (match_id,))
+        conn.execute("UPDATE teams SET withdrawn = NULL, withdrawn_by = NULL, withdrawn_at = NULL WHERE id = ?",
+                     (team_id,))
         return _settle_results(conn, tournament_id)
 
 
 def _settle_results(conn: sqlite3.Connection, tournament_id: int) -> list[int]:
-    """After a result changes, drop results it invalidated and keep the status in step:
-    a decided final means completed, and an undecided one can't stay completed."""
-    matches_by_id, feeders, _ = load_bracket(conn, tournament_id)
-    results_by_match = get_results(conn, tournament_id)
-    stale = stale_results(matches_by_id, feeders, results_by_match)
-    conn.executemany("DELETE FROM match_results WHERE match_id = ?", [(match_id,) for match_id in stale])
+    """After a result, skip or withdrawal changes, drop recorded results and skips it
+    invalidated, and votes on matches that are now decided or whose matchup changed. Keep
+    the status in step: a decided final means completed, and an undecided one can't stay
+    completed."""
+    matches_by_id, feeders = _load_matches(conn, tournament_id)
+    stale = get_outcomes(conn, tournament_id).stale
+    for table in ("match_results", "skipped_matches"):
+        conn.executemany(f"DELETE FROM {table} WHERE match_id = ?", [(match_id,) for match_id in stale])
+    outcomes = get_outcomes(conn, tournament_id)
+    slots = resolve_all_slots(matches_by_id, outcomes.winners.get, feeders)
+    for vote in conn.execute(
+        """SELECT r.match_id, r.team_id, r.winner_team_id FROM result_reports r
+           JOIN matches m ON m.id = r.match_id WHERE m.tournament_id = ?""", (tournament_id,)
+    ).fetchall():
+        teams = slots[vote["match_id"]]
+        if vote["match_id"] in outcomes.decided or vote["team_id"] not in teams or vote["winner_team_id"] not in teams:
+            conn.execute("DELETE FROM result_reports WHERE match_id = ? AND team_id = ?",
+                         (vote["match_id"], vote["team_id"]))
 
-    final_id = final_match(matches_by_id).id
-    final_decided = final_id in results_by_match and final_id not in stale
-    status = get_tournament(conn, tournament_id)["status"]
-    if final_decided:
-        status = "completed"
-    elif status == "completed":
-        status = "in_progress"
-    conn.execute("UPDATE tournaments SET status = ? WHERE id = ?", (status, tournament_id))
+    _keep_completion_in_step(conn, tournament_id, final_match(matches_by_id).id in outcomes.decided)
     return stale
+
+
+def _keep_completion_in_step(conn: sqlite3.Connection, tournament_id: int, final_decided: bool) -> None:
+    """Once play has started, a decided final means completed and an undecided one means
+    in progress. Before that, a final settled early by walkovers waits for the lock."""
+    status = get_tournament(conn, tournament_id)["status"]
+    if status in ("in_progress", "completed"):
+        status = "completed" if final_decided else "in_progress"
+        conn.execute("UPDATE tournaments SET status = ? WHERE id = ?", (status, tournament_id))
+
+
+# -- result reports -------------------------------------------------------------
+
+def get_reports(conn: sqlite3.Connection, match_id: int) -> list[sqlite3.Row]:
+    return conn.execute("SELECT * FROM result_reports WHERE match_id = ? ORDER BY reported_at", (match_id,)).fetchall()
+
+
+def submit_report(conn: sqlite3.Connection, tournament_id: int, match_id: int, team_id: int, winner_team_id: int,
+                  reported_by: int, channel_id: int) -> str:
+    """Save one side's vote on who won, replacing any earlier vote of theirs. The caller
+    checks the match is waiting for a result and the side is in it. Returns what the
+    votes now say:
+    - 'waiting' while only this side has voted;
+    - 'agreed' when both name the same winner, which is recorded;
+    - 'skipped' when each names the other, which calls the match off;
+    - 'disputed' when each names itself."""
+    with conn:
+        conn.execute(
+            """INSERT INTO result_reports (match_id, team_id, winner_team_id, reported_by, channel_id)
+               VALUES (?, ?, ?, ?, ?)
+               ON CONFLICT(match_id, team_id) DO UPDATE SET
+                   winner_team_id = excluded.winner_team_id, reported_by = excluded.reported_by,
+                   channel_id = excluded.channel_id, reported_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')""",
+            (match_id, team_id, winner_team_id, reported_by, channel_id),
+        )
+        _restart_answer_time(conn, match_id)
+        votes = get_reports(conn, match_id)
+        if len(votes) < 2:
+            return "waiting"
+        first, second = votes
+        if first["winner_team_id"] == second["winner_team_id"]:
+            _record_result(conn, tournament_id, match_id, winner_team_id, reported_by)
+            return "agreed"
+        if first["winner_team_id"] == second["team_id"]:
+            _skip_match(conn, tournament_id, match_id, match_now(conn, tournament_id, match_id).teams, reported_by)
+            return "skipped"
+        return "disputed"
+
+
+def take_back_report(conn: sqlite3.Connection, match_id: int, team_id: int) -> bool:
+    """Returns False if the side had no vote to take back."""
+    with conn:
+        _restart_answer_time(conn, match_id)
+        return conn.execute("DELETE FROM result_reports WHERE match_id = ? AND team_id = ?",
+                            (match_id, team_id)).rowcount > 0
+
+
+def _restart_answer_time(conn: sqlite3.Connection, match_id: int) -> None:
+    conn.execute("UPDATE report_posts SET updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE match_id = ?",
+                 (match_id,))
+
+
+def get_open_reports(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    """Every vote on a match in a tournament that's in progress, with its tournament_id."""
+    return conn.execute(
+        """SELECT r.*, m.tournament_id FROM result_reports r
+           JOIN matches m ON m.id = r.match_id JOIN tournaments t ON t.id = m.tournament_id
+           WHERE t.status = 'in_progress' ORDER BY r.match_id, r.reported_at"""
+    ).fetchall()
+
+
+def give_reported_win(conn: sqlite3.Connection, tournament_id: int, vote: sqlite3.Row) -> bool:
+    """Record the win `vote` names, because the other side didn't answer it in time.
+    False, with nothing recorded, if anything about the votes has changed since `vote`
+    was read, so a late answer is never overruled."""
+    with conn:
+        votes = get_reports(conn, vote["match_id"])
+        unchanged = len(votes) == 1 and all(
+            votes[0][key] == vote[key] for key in ("team_id", "winner_team_id", "reported_at"))
+        if unchanged:
+            _record_result(conn, tournament_id, vote["match_id"], vote["winner_team_id"], vote["reported_by"])
+        return unchanged
+
+
+def get_report_post(conn: sqlite3.Connection, match_id: int) -> sqlite3.Row | None:
+    return conn.execute(
+        """SELECT p.*, m.tournament_id FROM report_posts p JOIN matches m ON m.id = p.match_id
+           WHERE p.match_id = ?""", (match_id,)
+    ).fetchone()
+
+
+def get_report_posts(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    return conn.execute(
+        "SELECT p.*, m.tournament_id FROM report_posts p JOIN matches m ON m.id = p.match_id"
+    ).fetchall()
+
+
+def claim_report_post(conn: sqlite3.Connection, match_id: int, channel_id: int, teams: tuple[int, int]) -> bool:
+    """Reserve the match's one public post before sending it. False if it already has one."""
+    with conn:
+        return conn.execute(
+            "INSERT OR IGNORE INTO report_posts (match_id, channel_id, team_a_id, team_b_id) VALUES (?, ?, ?, ?)",
+            (match_id, channel_id, *teams),
+        ).rowcount > 0
+
+
+def set_report_post(conn: sqlite3.Connection, match_id: int, message_id: int, shown: str) -> None:
+    with conn:
+        conn.execute("UPDATE report_posts SET message_id = ?, shown = ? WHERE match_id = ?",
+                     (message_id, shown, match_id))
+
+
+def delete_report_post(conn: sqlite3.Connection, match_id: int) -> None:
+    with conn:
+        conn.execute("DELETE FROM report_posts WHERE match_id = ?", (match_id,))
+
+
+def replace_report_post(conn: sqlite3.Connection, match_id: int) -> None:
+    """Forget a match's report post because a new message took its place, keeping it
+    to be deleted from Discord later."""
+    with conn:
+        conn.execute(
+            """INSERT OR IGNORE INTO replaced_report_posts (message_id, channel_id)
+               SELECT message_id, channel_id FROM report_posts WHERE match_id = ? AND message_id IS NOT NULL""",
+            (match_id,),
+        )
+        conn.execute("DELETE FROM report_posts WHERE match_id = ?", (match_id,))
+
+
+def get_replaced_report_posts(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    return conn.execute("SELECT * FROM replaced_report_posts").fetchall()
+
+
+def forget_replaced_report_post(conn: sqlite3.Connection, message_id: int) -> None:
+    with conn:
+        conn.execute("DELETE FROM replaced_report_posts WHERE message_id = ?", (message_id,))
 
 
 # -- predictions ----------------------------------------------------------------

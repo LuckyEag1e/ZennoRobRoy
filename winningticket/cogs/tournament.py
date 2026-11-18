@@ -20,6 +20,7 @@ from common import (
 )
 from csv_import import CsvValidationError, import_tournament, parse_csv
 from embeds import render_final_results_embed, render_leaderboard_embed
+from labels import SETTLED_BEFORE_LOCK
 
 
 # A live post further up the channel than this many messages has scrolled out of view,
@@ -212,16 +213,16 @@ class TournamentCog(commands.Cog):
             return None
         return tournament
 
-    async def _advance_status(self, interaction: discord.Interaction, name: str, new_status: str) -> bool:
-        """Move a tournament one step along its lifecycle. Replies with an error and
-        returns False if it isn't at the step just before `new_status`."""
+    async def _advance_status(self, interaction: discord.Interaction, name: str, new_status: str) -> str | None:
+        """Move a tournament one step along its lifecycle, returning the status stored (see
+        db.set_tournament_status). Replies with an error and returns None if it isn't at the
+        step just before `new_status`."""
         conn = db.get_connection()
         try:
             tournament = await self._resolve_for_next_status(interaction, conn, name, new_status)
             if tournament is None:
-                return False
-            db.set_tournament_status(conn, tournament["id"], new_status)
-            return True
+                return None
+            return db.set_tournament_status(conn, tournament["id"], new_status)
         finally:
             conn.close()
 
@@ -273,10 +274,12 @@ class TournamentCog(commands.Cog):
     @app_commands.autocomplete(name=tournament_name_autocomplete)
     @requires_manage_server
     async def lock(self, interaction: discord.Interaction, name: str) -> None:
-        if not await self._advance_status(interaction, name, "in_progress"):
+        status = await self._advance_status(interaction, name, "in_progress")
+        if status is None:
             return
         await interaction.response.send_message(f"🔒 Predictions are locked for **{name}**.")
-        await interaction.followup.send("Use `/match result` to record real outcomes.", ephemeral=True)
+        tip = SETTLED_BEFORE_LOCK if status == "completed" else "Use `/match result` to record real outcomes."
+        await interaction.followup.send(tip, ephemeral=True)
 
     @group.command(name="conclude", description="Archive a finished tournament, keeping its results")
     @app_commands.describe(name="Tournament name")
@@ -288,14 +291,14 @@ class TournamentCog(commands.Cog):
             tournament = await self._resolve_for_next_status(interaction, conn, name, "concluded")
             if tournament is None:
                 return
-            result, teams_by_id, scores = db.load_final_results(conn, tournament["id"])
-            if result.champion is None:
+            if not db.final_decided(conn, tournament["id"]):
                 await interaction.response.send_message(
                     f"**{name}**'s final has no result yet, so it can't be concluded. "
                     f"Record it with `/match result` first.",
                     ephemeral=True,
                 )
                 return
+            result, teams_by_id, scores = db.load_final_results(conn, tournament["id"])
             # Post before archiving: once concluded, nothing can find the tournament to post again.
             await interaction.response.send_message(embed=render_final_results_embed(name, result, teams_by_id, scores))
             db.set_tournament_status(conn, tournament["id"], "concluded")

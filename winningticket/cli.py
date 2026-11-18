@@ -16,16 +16,17 @@ from pathlib import Path
 
 import csv_import
 import db
+import reports
 import tournament_builder
 from ascii_bracket import prediction_marker, real_result_marker, render_tree
 from bracket import (
     BracketError,
+    Match,
     bracket_order,
     compute_leaderboard,
     is_bye,
     matches_in_round,
     matches_with_both_teams,
-    next_opponent,
     pick_distribution,
     ranked_places,
     resolvable_matches,
@@ -33,13 +34,26 @@ from bracket import (
     resolve_slot,
     rounds,
 )
+from bracket_changes import (
+    REINSTATABLE_STATUSES,
+    WITHDRAWABLE_STATUSES,
+    clear_result_and_describe,
+    later_results_problem,
+    new_walkovers,
+    reinstate_problem,
+    set_result_and_describe,
+    skip_and_describe,
+    withdraw_and_describe,
+)
 from labels import (
     CONSENT_NOTICE,
     CURRENT_FEATURES,
     OPT_OUT_CONFIRMATION,
     OPTED_OUT_NOTE,
     PLANNED_FEATURES,
+    SETTLED_BEFORE_LOCK,
     ban_lines,
+    bracket_notes,
     crowd_verdict,
     draw_description,
     dropped_results_note,
@@ -55,6 +69,7 @@ from labels import (
     pickem_podium_lines,
     podium_lines,
     rating_lines,
+    reinstated_line,
     seeding_lines,
     score_label,
     team_label,
@@ -106,6 +121,7 @@ class WinningTicketCLI(cmd.Cmd):
 
     def onecmd(self, line: str) -> bool:
         self._close_due_registrations()
+        self._settle_due_reports()
         command = self.parseline(line)[0]
         if command and command not in ALLOWED_WHEN_BANNED and db.is_banned(self.conn, GUILD_ID, self.user_id):
             print("An admin has blocked you from using WinningTicket. Use 'as' to switch user.")
@@ -129,6 +145,41 @@ class WinningTicketCLI(cmd.Cmd):
                 print(f"Registration for '{name}' couldn't close automatically: {e!r}")
                 continue
             print(f"Registration for '{name}' closed automatically; {count} entrants {draw_description(tournament['seeding_mode'])}.")
+
+    def _settle_due_reports(self) -> None:
+        """The bot warns about and gives unanswered votes, and updates each match's report
+        post, from a background loop. The CLI has none, so it does the same before each
+        command, printing what the bot would post or edit."""
+        for step in reports.due_steps(self.conn, datetime.now(timezone.utc)):
+            vote = step.vote
+            if step.kind == "warn":
+                teams = db.match_now(self.conn, vote["tournament_id"], vote["match_id"]).teams
+                self._open_report_post(vote["match_id"], teams)
+            else:
+                text = reports.give_win(self.conn, vote)
+                if text is not None:
+                    db.delete_report_post(self.conn, vote["match_id"])
+                    print(text)
+        for post in db.get_report_posts(self.conn):
+            self._refresh_report_post(post)
+
+    def _open_report_post(self, match_id: int, teams: tuple[int, int]) -> None:
+        # The CLI has no messages, so every post gets message id 0.
+        if db.claim_report_post(self.conn, match_id, 0, teams):
+            text, _ = reports.post_text(self.conn, db.get_report_post(self.conn, match_id), user_label)
+            db.set_report_post(self.conn, match_id, 0, text)
+            print(text)
+        else:
+            self._refresh_report_post(db.get_report_post(self.conn, match_id))
+
+    def _refresh_report_post(self, post) -> None:
+        text, final = reports.post_text(self.conn, post, user_label)
+        if text != post["shown"]:
+            print(f"(report post edited) {text}")
+        if final:
+            db.delete_report_post(self.conn, post["match_id"])
+        else:
+            db.set_report_post(self.conn, post["match_id"], post["message_id"], text)
 
     def _update_prompt(self) -> None:
         self.prompt = f"(tourney:{self.user_name}) "
@@ -195,7 +246,10 @@ class WinningTicketCLI(cmd.Cmd):
 
     def do_lock(self, arg: str) -> None:
         "Lock a tournament and start recording real results: lock <name>"
-        if self._advance_status(arg.strip(), "in_progress"):
+        status = self._advance_status(arg.strip(), "in_progress")
+        if status == "completed":
+            print(f"'{arg.strip()}' locked. {SETTLED_BEFORE_LOCK}")
+        elif status is not None:
             print(f"'{arg.strip()}' locked. Use 'matchresult' to record real outcomes.")
 
     def do_conclude(self, arg: str) -> None:
@@ -204,10 +258,10 @@ class WinningTicketCLI(cmd.Cmd):
         tournament = self._require_next_status(name, "concluded")
         if tournament is None:
             return
-        result, teams_by_id, scores = db.load_final_results(self.conn, tournament["id"])
-        if result.champion is None:
+        if not db.final_decided(self.conn, tournament["id"]):
             print(f"'{name}' has no result for its final yet, so it can't be concluded.")
             return
+        result, teams_by_id, scores = db.load_final_results(self.conn, tournament["id"])
         print(f"Final results: {name}\n")
         print("\n".join(podium_lines(result, teams_by_id)))
         print("\nPick'em leaders")
@@ -223,12 +277,14 @@ class WinningTicketCLI(cmd.Cmd):
 
     def _print_bracket(self, tournament) -> None:
         matches_by_id, feeders, teams_by_id = db.load_bracket(self.conn, tournament["id"])
-        results_by_match = db.get_results(self.conn, tournament["id"])
-        slots = resolve_all_slots(matches_by_id, results_by_match.get, feeders)
+        outcomes = db.get_outcomes(self.conn, tournament["id"])
+        slots = resolve_all_slots(matches_by_id, outcomes.winners.get, feeders)
         print(render_tree(
             matches_by_id, feeders, teams_by_id, slots,
-            results_by_match.get, real_result_marker(results_by_match),
+            outcomes.winners.get, real_result_marker(outcomes.winners),
         ))
+        for note in bracket_notes(matches_by_id, slots, outcomes, teams_by_id):
+            print(note)
 
     def do_leaderboard(self, arg: str) -> None:
         "Show the current standings: leaderboard <name>"
@@ -481,7 +537,7 @@ class WinningTicketCLI(cmd.Cmd):
             print("You have no saved predictions for this tournament.")
             return
         matches_by_id, feeders, teams_by_id = db.load_bracket(self.conn, tournament["id"])
-        results_by_match = db.get_results(self.conn, tournament["id"])
+        results_by_match = db.get_outcomes(self.conn, tournament["id"]).played
         score = compute_leaderboard(matches_by_id, results_by_match, {self.user_id: picks})[0]
 
         slots = resolve_all_slots(matches_by_id, picks.get, feeders)
@@ -502,6 +558,69 @@ class WinningTicketCLI(cmd.Cmd):
             print(f"'{tournament['name']}' must be locked first (use 'lock'). Current status: {tournament['status']}.")
             return
         self._pick_and_record_result(tournament, allow_overwrite=False)
+
+    def do_matchreport(self, arg: str) -> None:
+        "Report who won your match, as the current user: matchreport <name>"
+        tournament = self._require_tournament(arg.strip())
+        if tournament is None:
+            return
+        found = reports.find_reportable_match(self.conn, tournament, self.user_id)
+        if isinstance(found, str):
+            print(found)
+            return
+        teams_by_id = db.get_teams(self.conn, tournament["id"])
+        team_a, team_b = found.teams
+        prompt = f"Round {found.match.played_round}: [1] {team_label(teams_by_id, team_a)}  [2] {team_label(teams_by_id, team_b)}"
+        if found.vote is not None:
+            prompt += f"  [t] take back your side's vote for {team_label(teams_by_id, found.vote['winner_team_id'])}"
+        choice = input(prompt + "  > ").strip().lower()
+        if choice == "t" and found.vote is not None:
+            db.take_back_report(self.conn, found.match.id, found.team_id)
+            print("Your vote is taken back.")
+            post = db.get_report_post(self.conn, found.match.id)
+            if post is not None:
+                self._refresh_report_post(post)
+            return
+        if choice not in ("1", "2"):
+            print("Invalid choice.")
+            return
+        winner_id = team_a if choice == "1" else team_b
+        before = db.get_outcomes(self.conn, tournament["id"])
+        outcome = db.submit_report(self.conn, tournament["id"], found.match.id, found.team_id, winner_id,
+                                   self.user_id, 0)
+        print(reports.vote_reply(self.conn, outcome, found, winner_id, teams_by_id))
+        if outcome in ("agreed", "skipped"):
+            # The bot edits any report post into this announcement, so the CLI forgets it.
+            db.delete_report_post(self.conn, found.match.id)
+            print(reports.ending_text(self.conn, tournament, found.match))
+            if outcome == "skipped":
+                for line in new_walkovers(self.conn, tournament, before):
+                    print(line)
+            return
+        post = db.get_report_post(self.conn, found.match.id)
+        if post is not None:
+            self._refresh_report_post(post)
+        elif outcome == "disputed":
+            self._open_report_post(found.match.id, found.teams)
+
+    def do_dropout(self, arg: str) -> None:
+        "Drop the current user out, giving their remaining matches to their opponents: dropout <name>"
+        tournament = self._require_tournament(arg.strip())
+        if tournament is None:
+            return
+        team = db.get_teams(self.conn, tournament["id"]).get(
+            db.get_entrant_team_id(self.conn, tournament["id"], self.user_id))
+        if team is None:
+            print("You aren't an entrant in that tournament.")
+        elif team["withdrawn"]:
+            print("You've already left that tournament.")
+        elif tournament["status"] not in WITHDRAWABLE_STATUSES:
+            print("That tournament has finished, so there's nothing left to drop out of.")
+        elif input(f"Retype '{tournament['name']}' to confirm: ").strip() != tournament["name"]:
+            print("Confirmation didn't match. You're still in.")
+        else:
+            lines, _ = withdraw_and_describe(self.conn, tournament, team, "dropped", self.user_id, user_label)
+            print("\n".join(lines))
 
     def do_matchstats(self, arg: str) -> None:
         "See the pool's pick breakdown for a matchup: matchstats <name>"
@@ -541,8 +660,7 @@ class WinningTicketCLI(cmd.Cmd):
         tournament = self._require_tournament(name)
         if tournament is None:
             return
-        db.set_tournament_status(self.conn, tournament["id"], status)
-        print(f"Status set to {status}.")
+        print(f"Status set to {db.set_tournament_status(self.conn, tournament['id'], status)}.")
 
     def do_admin_delete(self, arg: str) -> None:
         "Permanently delete a tournament (asks you to retype the name): admin_delete <name>"
@@ -657,25 +775,85 @@ class WinningTicketCLI(cmd.Cmd):
         self._pick_and_record_result(tournament, allow_overwrite=True)
 
     def do_admin_clearresult(self, arg: str) -> None:
-        "Delete a recorded match result: admin_clearresult <name>"
+        "Delete a recorded match result or skip: admin_clearresult <name>"
         tournament = self._require_tournament(arg.strip())
         if tournament is None:
             return
         matches_by_id, feeders, teams_by_id = db.load_bracket(self.conn, tournament["id"])
-        results_by_match = db.get_results(self.conn, tournament["id"])
-        slots = resolve_all_slots(matches_by_id, results_by_match.get, feeders)
-        decided = sorted((m for m in matches_by_id.values() if m.id in results_by_match), key=bracket_order)
+        outcomes = db.get_outcomes(self.conn, tournament["id"])
+        slots = resolve_all_slots(matches_by_id, outcomes.winners.get, feeders)
+        # Walkovers follow from withdrawals, so they're undone with admin_reinstate instead.
+        clearable = set(outcomes.played) | outcomes.skipped
+        decided = sorted((m for m in matches_by_id.values() if m.id in clearable), key=bracket_order)
         if not decided:
             print("No recorded results to clear.")
             return
         match = self._choose_match(decided, slots, teams_by_id)
-        if match is None:
+        if match is None or self._said_later_results_problem(tournament, match):
             return
         if input("Clear this result? [y/N] ").strip().lower() == "y":
-            dropped = db.clear_result(self.conn, tournament["id"], match.id)
-            print("Cleared." + dropped_results_note(dropped))
+            line, dropped = clear_result_and_describe(self.conn, tournament, match, slots[match.id], self.user_id,
+                                                      user_label)
+            print(line + dropped_results_note(dropped))
         else:
             print("Cancelled.")
+
+    def do_admin_withdraw(self, arg: str) -> None:
+        "Withdraw or disqualify an entrant: admin_withdraw <name> <entrant> withdrawn|disqualified"
+        parts = shlex.split(arg)
+        if len(parts) != 3 or parts[2] not in ("withdrawn", "disqualified"):
+            print("usage: admin_withdraw <name> <entrant> withdrawn|disqualified")
+            return
+        found = self._require_entrant(*parts[:2], WITHDRAWABLE_STATUSES)
+        if found is None:
+            return
+        tournament, team = found
+        if team["withdrawn"]:
+            print(f"{team['name']} has already left.")
+            return
+        lines, dropped = withdraw_and_describe(self.conn, tournament, team, parts[2], self.user_id, user_label)
+        print("\n".join(lines) + dropped_results_note(dropped))
+
+    def do_admin_reinstate(self, arg: str) -> None:
+        "Undo a dropout, withdrawal or disqualification: admin_reinstate <name> <entrant>"
+        parts = shlex.split(arg)
+        if len(parts) != 2:
+            print("usage: admin_reinstate <name> <entrant>")
+            return
+        found = self._require_entrant(*parts, REINSTATABLE_STATUSES)
+        if found is None:
+            return
+        tournament, team = found
+        if not team["withdrawn"]:
+            print(f"{team['name']} is still playing.")
+            return
+        refusal = reinstate_problem(self.conn, tournament, team["id"])
+        if refusal is not None:
+            print(refusal)
+            return
+        dropped = db.reinstate_entrant(self.conn, tournament["id"], team["id"])
+        print(reinstated_line(team["name"], tournament["name"], user_label(self.user_id)) + dropped_results_note(dropped))
+
+    def do_admin_skipmatch(self, arg: str) -> None:
+        "Call a match off with no winner: admin_skipmatch <name>"
+        tournament = self._require_tournament(arg.strip())
+        if tournament is None:
+            return
+        matches_by_id, feeders, teams_by_id = db.load_bracket(self.conn, tournament["id"])
+        outcomes = db.get_outcomes(self.conn, tournament["id"])
+        slots = resolve_all_slots(matches_by_id, outcomes.winners.get, feeders)
+        skippable = [m for m in matches_with_both_teams(matches_by_id, slots) if m.id not in outcomes.skipped]
+        if not skippable:
+            print("No matches have both teams known yet.")
+            return
+        match = self._choose_match(skippable, slots, teams_by_id, outcomes.decided)
+        if match is None or self._said_later_results_problem(tournament, match):
+            return
+        if input("Call this match off with no winner? [y/N] ").strip().lower() != "y":
+            print("Cancelled.")
+            return
+        lines, dropped = skip_and_describe(self.conn, tournament, match.id, slots[match.id], self.user_id, user_label)
+        print("\n".join(lines) + dropped_results_note(dropped))
 
     def do_admin_clearpredictions(self, arg: str) -> None:
         "Wipe a user's saved predictions: admin_clearpredictions <name> <user_id>"
@@ -788,13 +966,13 @@ class WinningTicketCLI(cmd.Cmd):
             return None
         return tournament
 
-    def _advance_status(self, name: str, new_status: str) -> bool:
-        """Move a tournament one step along its lifecycle, refusing to skip or go back."""
+    def _advance_status(self, name: str, new_status: str) -> str | None:
+        """Move a tournament one step along its lifecycle, refusing to skip or go back.
+        Returns the status stored (see db.set_tournament_status)."""
         tournament = self._require_next_status(name, new_status)
         if tournament is None:
-            return False
-        db.set_tournament_status(self.conn, tournament["id"], new_status)
-        return True
+            return None
+        return db.set_tournament_status(self.conn, tournament["id"], new_status)
 
     def _require_registration(self, name: str):
         """The tournament, if it's taking sign-ups; otherwise None."""
@@ -835,6 +1013,20 @@ class WinningTicketCLI(cmd.Cmd):
                 print(f"No concluded tournament named '{name}'. Use 'history' to list them.")
         return tournament
 
+    def _require_entrant(self, name: str, entrant: str, allowed_statuses: tuple[str, ...]):
+        """(tournament, entrant) if the tournament's status is one of `allowed_statuses`, else None after saying why."""
+        tournament = self._require_tournament(name)
+        if tournament is None:
+            return None
+        if tournament["status"] not in allowed_statuses:
+            print(f"'{name}' has finished.")
+            return None
+        team = db.get_team_by_name(self.conn, tournament["id"], entrant)
+        if team is None:
+            print(f"No entrant named '{entrant}' in '{name}'.")
+            return None
+        return tournament, team
+
     def _name_taken(self, name: str) -> bool:
         """True, after saying why, if a tournament already has `name`."""
         existing = db.get_tournament_by_name_any_status(self.conn, GUILD_ID, name)
@@ -842,10 +1034,10 @@ class WinningTicketCLI(cmd.Cmd):
             print(name_taken_message(existing))
         return existing is not None
 
-    def _choose_match(self, matches: list, slots: dict, teams_by_id: dict, results_by_match: dict | None = None):
+    def _choose_match(self, matches: list, slots: dict, teams_by_id: dict, decided: set[int] = frozenset()):
         """Print a numbered list of matches and return the one the user picks, or None."""
         for i, match in enumerate(matches, start=1):
-            tag = " (has result)" if results_by_match and match.id in results_by_match else ""
+            tag = " (has result)" if match.id in decided else ""
             print(f"[{i}] {matchup_label(match, slots, teams_by_id)}{tag}")
         choice = input("Pick a match number: ").strip()
         try:
@@ -857,15 +1049,24 @@ class WinningTicketCLI(cmd.Cmd):
             print("Invalid choice.")
             return None
 
+    def _said_later_results_problem(self, tournament, match: Match) -> bool:
+        """Whether later results stop `match`'s result from changing, after saying so."""
+        refusal = later_results_problem(self.conn, tournament, [match.id])
+        if refusal is not None:
+            print(refusal)
+        return refusal is not None
+
     def _pick_and_record_result(self, tournament, allow_overwrite: bool):
         matches_by_id, feeders, teams_by_id = db.load_bracket(self.conn, tournament["id"])
-        results_by_match = db.get_results(self.conn, tournament["id"])
-        slots = resolve_all_slots(matches_by_id, results_by_match.get, feeders)
+        outcomes = db.get_outcomes(self.conn, tournament["id"])
+        slots = resolve_all_slots(matches_by_id, outcomes.winners.get, feeders)
 
         if allow_overwrite:
-            candidates = matches_with_both_teams(matches_by_id, slots)
+            # Walkovers are undone with admin_reinstate, not overwritten.
+            candidates = [m for m in matches_with_both_teams(matches_by_id, slots)
+                          if m.id not in outcomes.unplayed]
         else:
-            candidates = resolvable_matches(matches_by_id, feeders, results_by_match.get, set(results_by_match))
+            candidates = resolvable_matches(matches_by_id, feeders, outcomes.winners.get, outcomes.decided)
 
         if not candidates:
             print(
@@ -875,7 +1076,7 @@ class WinningTicketCLI(cmd.Cmd):
                 "or earlier rounds aren't finished yet)."
             )
             return
-        match = self._choose_match(candidates, slots, teams_by_id, results_by_match)
+        match = self._choose_match(candidates, slots, teams_by_id, outcomes.decided)
         if match is None:
             return
         team_a, team_b = slots[match.id]
@@ -888,26 +1089,18 @@ class WinningTicketCLI(cmd.Cmd):
             return
         winner_id = team_a if winner_choice == "1" else team_b
         loser_id = team_b if winner_choice == "1" else team_a
-        if results_by_match.get(match.id) == winner_id:
+        if outcomes.winners.get(match.id) == winner_id:
             print(f"{team_label(teams_by_id, winner_id)} already won this match, so there's nothing to change.")
             return
-        if match.id in results_by_match:
+        if match.id in outcomes.decided:
+            if self._said_later_results_problem(tournament, match):
+                return
             if input("This match already has a different result. Overwrite? [y/N] ").strip().lower() != "y":
                 print("Cancelled.")
                 return
-        dropped = db.record_result(self.conn, tournament["id"], match.id, winner_id, self.user_id)
-
-        winner_label = team_label(teams_by_id, winner_id)
-        loser_label = team_label(teams_by_id, loser_id)
-        if match.feeds_into_match_id is None:
-            print(f"Recorded: {winner_label} defeats {loser_label}. CHAMPION: {winner_label}!{dropped_results_note(dropped)}")
-            return
-        opponent = next_opponent(match, feeders, db.get_results(self.conn, tournament["id"]).get)
-        print(
-            f"Recorded: {winner_label} defeats {loser_label}. "
-            f"Advances to Round {matches_by_id[match.feeds_into_match_id].played_round} vs {team_label(teams_by_id, opponent)}."
-            f"{dropped_results_note(dropped)}"
-        )
+        line, dropped = set_result_and_describe(self.conn, tournament, match, winner_id, loser_id, self.user_id,
+                                                user_label)
+        print(line + dropped_results_note(dropped))
 
     # -- exit ---------------------------------------------------------------
 

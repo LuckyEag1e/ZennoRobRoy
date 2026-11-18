@@ -30,6 +30,8 @@ class HelpCog(commands.Cog):
             ("/rating", "See your Elo rating from past tournaments, which decides your seed. Only you see it."),
             ("/predict tournament:<name>", "Fill out your bracket prediction, round by round."),
             ("/mypicks tournament:<name>", "See your saved picks and current score."),
+            ("/match report tournament:<name>", "Report who won your match. It's recorded once your opponent agrees, or after 10 minutes with no answer from them (they're reminded in the channel halfway through). Until then you can change your vote or take it back."),
+            ("/match dropout tournament:<name> confirm_name:<name>", "Drop out of a tournament you're playing in. Your remaining matches go to your opponents."),
             ("/tournament bracket name:<name>", "See the real tournament bracket's progress."),
             ("/tournament leaderboard name:<name>", "See the standings."),
             ("/match stats tournament:<name>", "See what % of the pool picked each side of a matchup."),
@@ -73,12 +75,16 @@ class HelpCog(commands.Cog):
             ("4. Lock it",
              "`/tournament lock name:<name>`\n"
              "Do this once the real tournament is about to start. It stops new or changed "
-             "predictions, and from then on `/match result` records what actually happens."),
+             "predictions, and from then on results are reported and recorded."),
             ("5. Record results",
+             "Players report their own matches with `/match report`. When both sides agree, or "
+             "one side doesn't answer within 10 minutes, the result is recorded and announced. "
+             "When they disagree, the bot posts it in the channel for you to settle:\n"
              "`/match result tournament:<name>`\n"
-             "As real games finish, pick a ready match from the list, then pick the winner. "
-             "Repeat for each match, in any order, until a champion is decided. The bot "
-             "announces each result and who advances in the channel."),
+             "Pick a ready match, then the winner. Use it too for matches against an entrant "
+             "with no Discord account, who can't report. If someone can't play on, withdraw "
+             "them or call the match off (`/help admin`): their opponents advance by walkover, "
+             "and games that weren't played score no picks."),
             ("6. Check progress anytime",
              "`/tournament bracket name:<name>`: the live bracket\n"
              "`/tournament leaderboard name:<name>`: standings\n"
@@ -99,8 +105,10 @@ class HelpCog(commands.Cog):
     async def admin(self, interaction: discord.Interaction) -> None:
         embed = _command_list_embed("Admin / troubleshooting commands", [
             ("/admin setstatus tournament:<name> status:<status>", "Force a tournament's status directly, bypassing the normal open/lock flow."),
-            ("/admin setresult tournament:<name>", "Force or overwrite any known matchup's result (e.g. for testing)."),
-            ("/admin clearresult tournament:<name>", "Delete a recorded match result."),
+            ("/admin setresult tournament:<name>", "Force or overwrite any known matchup's result. A result later ones depend on has to wait until those are cleared, latest first."),
+            ("/admin clearresult tournament:<name>", "Delete a recorded match result, or undo a match being called off. Clear later results that depend on it first."),
+            ("/admin withdraw tournament:<name> entrant:<name> reason:<withdrawn|disqualified>", "Take an entrant out. Their remaining matches go to their opponents by walkover, and the post says an organizer did it. `/admin reinstate` brings them back."),
+            ("/admin skipmatch tournament:<name>", "Call a match off with no winner, such as when neither side turns up. Whoever would have played the winner next advances by walkover."),
             ("/admin editteam tournament:<name> team:<name>", "Fix an entrant's name or seed after import."),
             ("/admin clearpredictions tournament:<name> user:<member>", "Wipe one user's saved predictions."),
             ("/admin deletetournament tournament:<name> confirm_name:<name>", "Permanently delete a tournament and all its data."),

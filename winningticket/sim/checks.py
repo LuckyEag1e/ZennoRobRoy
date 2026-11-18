@@ -9,7 +9,7 @@ import sqlite3
 import discord
 
 import db
-from bracket import final_match, stale_results
+from bracket import final_match
 from sim.discord_fakes import FakeMessage
 
 # Discord's limits, past which it rejects a message outright.
@@ -95,7 +95,7 @@ def database_problems(conn: sqlite3.Connection, guild_id: int) -> list[str]:
     problems = []
     for tournament in conn.execute("SELECT * FROM tournaments WHERE guild_id = ?", (guild_id,)):
         name, status = tournament["name"], tournament["status"]
-        matches_by_id, feeders, _ = db.load_bracket(conn, tournament["id"])
+        matches_by_id, _, _ = db.load_bracket(conn, tournament["id"])
         if status == "registration":
             if matches_by_id:
                 problems.append(f"'{name}' is still in registration but has {len(matches_by_id)} matches")
@@ -107,15 +107,19 @@ def database_problems(conn: sqlite3.Connection, guild_id: int) -> list[str]:
         if len(finals) != 1:
             problems.append(f"'{name}' has {len(finals)} matches with nothing after them (expected one final)")
             continue
-        results = db.get_results(conn, tournament["id"])
-        stale = stale_results(matches_by_id, feeders, results)
-        if stale:
-            problems.append(f"'{name}' has results whose winner isn't in that match: {stale}")
-        final_decided = final_match(matches_by_id).id in results
-        if status in ("setup", "predictions_open") and results:
-            problems.append(f"'{name}' is {status} but already has {len(results)} results")
+        outcomes = db.get_outcomes(conn, tournament["id"])
+        if outcomes.stale:
+            problems.append(f"'{name}' has results or skips that no longer fit the bracket: {outcomes.stale}")
+        final_decided = final_match(matches_by_id).id in outcomes.decided
+        if status in ("setup", "predictions_open") and outcomes.played:
+            problems.append(f"'{name}' is {status} but already has {len(outcomes.played)} results")
         if status in ("completed", "concluded") and not final_decided:
             problems.append(f"'{name}' is {status} but its final has no result")
+        voted = {row["match_id"] for row in conn.execute(
+            "SELECT r.match_id FROM result_reports r JOIN matches m ON m.id = r.match_id WHERE m.tournament_id = ?",
+            (tournament["id"],))}
+        if voted & outcomes.decided:
+            problems.append(f"'{name}' still has players' votes on decided matches: {sorted(voted & outcomes.decided)}")
         if status == "in_progress" and final_decided:
             problems.append(f"'{name}' has a decided final but is still in_progress")
     for row in conn.execute("SELECT id FROM feedback WHERE trim(message) = ''"):

@@ -28,6 +28,7 @@ class Competence:
     feedback: float         # sends feedback (and sometimes a blank form)
     guess_noise: float      # how far off their read of who'll win is, in rating points
     spam: float = 0.0       # fires a burst of public-posting commands as fast as they can
+    reports: float = 0.5    # reports their own match once it's waiting for a result
     chat: float = 0.3       # says something in the channel, pushing older posts up
 
 
@@ -38,7 +39,7 @@ CASUAL = Competence("casual", typo=0.05, off_script=0.1, double_click=0.05, aban
 CHAOTIC = Competence("chaotic", typo=0.3, off_script=0.4, double_click=0.3, abandon=0.3, curiosity=0.8,
                      skips_predicting=0.1, pokes_admin=0.25, feedback=0.3, guess_noise=600)
 SPAMMER = Competence("spammer", typo=0.0, off_script=0.0, double_click=0.0, abandon=0.0, curiosity=0.2,
-                     skips_predicting=0.0, pokes_admin=0.0, feedback=0.0, guess_noise=300, spam=1.0)
+                     skips_predicting=0.0, pokes_admin=0.0, feedback=0.0, guess_noise=300, spam=1.0, reports=0.0)
 
 
 @dataclass(frozen=True)
@@ -74,6 +75,8 @@ class Player:
             await run.resume_bracket(self)
         elif status == "predictions_open" and not run.has_predicted(self) and rng.random() >= c.skips_predicting:
             await run.predict(self)
+        elif status == "in_progress" and rng.random() < c.reports:
+            await run.report_result(self)
         if rng.random() < c.curiosity:
             await self._look_around(run)
         if rng.random() < c.off_script:

@@ -14,7 +14,7 @@ from discord import app_commands
 import db
 from bracket import Match, resolve_all_slots
 from embeds import render_bracket_embed
-from labels import matchup_label, name_taken_message, team_label
+from labels import bracket_notes, matchup_label, name_taken_message, team_label
 
 log = logging.getLogger("winningticket")
 
@@ -100,9 +100,10 @@ async def registration_name_autocomplete(
 
 def _entrant_choices(interaction: discord.Interaction, current: str,
                      find_tournament: Callable[[sqlite3.Connection, int, str], sqlite3.Row | None],
+                     offer: Callable[[sqlite3.Row], bool] = lambda team: True,
                      ) -> list[app_commands.Choice[str]]:
     """Entrants in the tournament picked in the same command's `tournament` option, which
-    `find_tournament` looks up by name."""
+    `find_tournament` looks up by name, limited to those `offer` accepts."""
     tournament_name = getattr(interaction.namespace, "tournament", None)
     if not tournament_name:
         return []
@@ -112,11 +113,21 @@ def _entrant_choices(interaction: discord.Interaction, current: str,
         teams_by_id = db.get_teams(conn, tournament_row["id"]) if tournament_row is not None else {}
     finally:
         conn.close()
-    return _matching_choices((team["name"] for team in teams_by_id.values()), current)
+    return _matching_choices((team["name"] for team in teams_by_id.values() if offer(team)), current)
 
 
 async def team_name_autocomplete(interaction: discord.Interaction, current: str) -> list[app_commands.Choice[str]]:
     return _entrant_choices(interaction, current, db.get_tournament_by_name)
+
+
+async def playing_entrant_autocomplete(interaction: discord.Interaction, current: str) -> list[app_commands.Choice[str]]:
+    """Entrants who haven't left, for withdrawing."""
+    return _entrant_choices(interaction, current, db.get_tournament_by_name, lambda team: not team["withdrawn"])
+
+
+async def withdrawn_entrant_autocomplete(interaction: discord.Interaction, current: str) -> list[app_commands.Choice[str]]:
+    """Entrants who dropped out, were withdrawn or were disqualified, for reinstating."""
+    return _entrant_choices(interaction, current, db.get_tournament_by_name, lambda team: bool(team["withdrawn"]))
 
 
 async def concluded_tournament_autocomplete(
@@ -200,11 +211,33 @@ async def edit_signups_message(client: discord.Client, tournament: sqlite3.Row, 
 def load_bracket_embed(conn: sqlite3.Connection, tournament: sqlite3.Row) -> discord.Embed:
     """The tournament's real bracket as it stands, with every result recorded so far."""
     matches_by_id, feeders, teams_by_id = db.load_bracket(conn, tournament["id"])
-    results_by_match = db.get_results(conn, tournament["id"])
-    slots = resolve_all_slots(matches_by_id, results_by_match.get, feeders)
+    outcomes = db.get_outcomes(conn, tournament["id"])
+    slots = resolve_all_slots(matches_by_id, outcomes.winners.get, feeders)
     return render_bracket_embed(
-        tournament["name"], tournament["status"], matches_by_id, feeders, slots, results_by_match, teams_by_id
+        tournament["name"], tournament["status"], matches_by_id, feeders, slots, outcomes.winners, teams_by_id,
+        bracket_notes(matches_by_id, slots, outcomes, teams_by_id),
     )
+
+
+async def announce(interaction: discord.Interaction, public: str, private: str, ping: bool = True) -> None:
+    """Reply `private` to whoever ran the command, and post `public` in the channel. If the
+    post fails, they're told what it would have said. Without `ping`, users mentioned in
+    `public` show by name but aren't notified."""
+    await interaction.response.send_message(private, ephemeral=True)
+    if await send_public(interaction.channel, public, ping) is None:
+        await interaction.followup.send(f"This couldn't be posted in the channel:\n{public}", ephemeral=True)
+
+
+async def send_public(channel: discord.abc.Messageable | None, text: str, ping: bool = True) -> discord.Message | None:
+    """Post `text` in `channel`, or return None if there's no channel or Discord refused.
+    Without `ping`, users mentioned in `text` show by name but aren't notified."""
+    if channel is None:
+        return None
+    try:
+        return await channel.send(text, allowed_mentions=None if ping else discord.AllowedMentions.none())
+    except discord.HTTPException:
+        log.exception("Couldn't post in channel %s", getattr(channel, "id", channel))
+        return None
 
 
 class MemberCooldown:
@@ -281,13 +314,13 @@ class MatchPicker(BotView):
     options and a large bracket has more matches than that."""
 
     def __init__(self, matches: list[Match], slots: dict, teams_by_id: dict, on_pick: MatchCallback,
-                 results_by_match: dict[int, int] | None = None, timeout: int = 300) -> None:
+                 decided: set[int] = frozenset(), timeout: int = 300) -> None:
         super().__init__(timeout=timeout)
         self.matches = matches
         self.slots = slots
         self.teams_by_id = teams_by_id
         self.on_pick = on_pick
-        self.results_by_match = results_by_match or {}
+        self.decided = decided
         self.page = 0
         self.page_count = (len(matches) + MAX_SELECT_OPTIONS - 1) // MAX_SELECT_OPTIONS
         self._show_page()
@@ -298,7 +331,7 @@ class MatchPicker(BotView):
         options = []
         for match in self.matches[start:start + MAX_SELECT_OPTIONS]:
             label = matchup_label(match, self.slots, self.teams_by_id)
-            if match.id in self.results_by_match:
+            if match.id in self.decided:
                 label += " (has result)"
             options.append(discord.SelectOption(label=label[:100], value=str(match.id)))
         placeholder = "Select a match..."

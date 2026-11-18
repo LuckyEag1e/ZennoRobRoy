@@ -226,7 +226,7 @@ class PredictionsCog(commands.Cog):
                 return
             matches_by_id, feeders, teams_by_id = db.load_bracket(conn, tournament_row["id"])
             slots = resolve_all_slots(matches_by_id, picks.get, feeders)
-            results_by_match = db.get_results(conn, tournament_row["id"])
+            results_by_match = db.get_outcomes(conn, tournament_row["id"]).played
             score = compute_leaderboard(matches_by_id, results_by_match, {interaction.user.id: picks})[0]
         finally:
             conn.close()

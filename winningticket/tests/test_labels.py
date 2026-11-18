@@ -4,15 +4,16 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from bracket import Podium, UserScore
-from labels import join_within, pickem_podium_lines, podium_lines, team_label
+from labels import join_within, pickem_podium_lines, podium_lines, seeded_team_label, team_label
 
 TEAMS = {1: {"name": "Alpha", "seed": 1}, 2: {"name": "Bravo", "seed": 4}, 3: {"name": "Charlie", "seed": None}}
 
 
-def test_team_label_shows_a_seed_when_there_is_one():
-    assert team_label(TEAMS, 1) == "(1) Alpha"
-    assert team_label(TEAMS, 3) == "Charlie"
-    assert team_label(TEAMS, None) == "TBD"
+def test_only_the_seeded_label_shows_a_seed():
+    assert team_label(TEAMS, 1) == "Alpha"
+    assert seeded_team_label(TEAMS, 1) == "(1) Alpha"
+    assert seeded_team_label(TEAMS, 3) == "Charlie"
+    assert team_label(TEAMS, None) == seeded_team_label(TEAMS, None) == "TBD"
 
 
 def test_podium_lines_leave_out_seeds():
