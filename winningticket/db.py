@@ -845,7 +845,9 @@ def stored_later_results(conn: sqlite3.Connection, tournament_id: int, match_id:
     off, nearest first. Changing `match_id` would change who played them."""
     matches_by_id, _ = _load_matches(conn, tournament_id)
     stored = {row[0] for row in conn.execute(
-        """SELECT match_id FROM match_results UNION SELECT match_id FROM skipped_matches""")}
+        """SELECT r.match_id FROM match_results r JOIN matches m ON m.id = r.match_id WHERE m.tournament_id = ?
+           UNION SELECT s.match_id FROM skipped_matches s JOIN matches m ON m.id = s.match_id
+           WHERE m.tournament_id = ?""", (tournament_id, tournament_id))}
     return [m.id for m in later_matches(matches_by_id[match_id], matches_by_id) if m.id in stored]
 
 
