@@ -227,3 +227,28 @@ def test_withdraw_and_reinstate_only_offer_entrants_they_apply_to(world):
     assert sorted(playing) == ["Ace", "Blaze", "Cyan"]
     assert withdrawn == ["Dune"]
     assert not sim.issues
+
+
+def test_a_withdrawal_that_completes_the_tournament_can_be_reinstated(world):
+    sim, organizer, ace, tournament_id, teams = world
+
+    async def withdraw_all_but_ace_then_reinstate():
+        for entrant in ("Blaze", "Cyan", "Dune"):
+            await sim.run(organizer, "admin withdraw", tournament="Cup", entrant=entrant, reason="withdrawn")
+        completed = _status(tournament_id)
+        reply = await sim.run(organizer, "admin reinstate", tournament="Cup", entrant="Dune")
+        return completed, reply.sent
+
+    completed, reply = asyncio.run(withdraw_all_but_ace_then_reinstate())
+    assert completed == "completed"
+    assert reply.content.startswith("Reinstated **Dune**")
+    assert _status(tournament_id) == "in_progress"
+    assert not sim.issues
+
+
+def _status(tournament_id):
+    conn = db.get_connection()
+    try:
+        return db.get_tournament(conn, tournament_id)["status"]
+    finally:
+        conn.close()

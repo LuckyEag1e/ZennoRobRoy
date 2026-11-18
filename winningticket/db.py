@@ -430,9 +430,16 @@ def get_tournament_names(conn: sqlite3.Connection, guild_id: int, status: str | 
     return [r["name"] for r in rows]
 
 
-def set_tournament_status(conn: sqlite3.Connection, tournament_id: int, status: str) -> None:
-    conn.execute("UPDATE tournaments SET status = ? WHERE id = ?", (status, tournament_id))
-    conn.commit()
+def set_tournament_status(conn: sqlite3.Connection, tournament_id: int, status: str) -> str:
+    """Returns the status stored, which is completed instead of in_progress when
+    walkovers already decided the final."""
+    with conn:
+        conn.execute("UPDATE tournaments SET status = ? WHERE id = ?", (status, tournament_id))
+        matches_by_id, _ = _load_matches(conn, tournament_id)
+        if status == "in_progress" and matches_by_id:
+            _keep_completion_in_step(conn, tournament_id,
+                                     final_match(matches_by_id).id in get_outcomes(conn, tournament_id).decided)
+        return get_tournament(conn, tournament_id)["status"]
 
 
 def set_announcement_message(conn: sqlite3.Connection, tournament_id: int, message_id: int) -> None:
@@ -869,13 +876,17 @@ def _settle_results(conn: sqlite3.Connection, tournament_id: int) -> list[int]:
             conn.execute("DELETE FROM result_reports WHERE match_id = ? AND team_id = ?",
                          (vote["match_id"], vote["team_id"]))
 
-    status = get_tournament(conn, tournament_id)["status"]
-    if final_match(matches_by_id).id in outcomes.decided:
-        status = "completed"
-    elif status == "completed":
-        status = "in_progress"
-    conn.execute("UPDATE tournaments SET status = ? WHERE id = ?", (status, tournament_id))
+    _keep_completion_in_step(conn, tournament_id, final_match(matches_by_id).id in outcomes.decided)
     return stale
+
+
+def _keep_completion_in_step(conn: sqlite3.Connection, tournament_id: int, final_decided: bool) -> None:
+    """Once play has started, a decided final means completed and an undecided one means
+    in progress. Before that, a final settled early by walkovers waits for the lock."""
+    status = get_tournament(conn, tournament_id)["status"]
+    if status in ("in_progress", "completed"):
+        status = "completed" if final_decided else "in_progress"
+        conn.execute("UPDATE tournaments SET status = ? WHERE id = ?", (status, tournament_id))
 
 
 # -- result reports -------------------------------------------------------------

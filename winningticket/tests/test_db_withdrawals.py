@@ -167,3 +167,42 @@ def test_older_databases_get_the_withdrawal_columns(tmp_path):
         conn.execute("UPDATE teams SET withdrawn = 'bored' WHERE id = ?", (team_id,))
     assert conn.execute("SELECT COUNT(*) FROM skipped_matches").fetchone()[0] == 0
     conn.close()
+
+
+@pytest.fixture
+def two_entrants(tmp_path):
+    """A tournament of just A vs B, still in setup."""
+    conn = db.get_connection(tmp_path / "test.db")
+    db.init_db(conn)
+    tournament_id = import_tournament(conn, 1, "Duel", 1, parse_csv("team_a,team_b\nA,B\n"))
+    team = {row["name"]: team_id for team_id, row in db.get_teams(conn, tournament_id).items()}
+    yield conn, tournament_id, team
+    conn.close()
+
+
+def test_a_walkover_final_before_the_lock_waits_for_it(two_entrants):
+    conn, tid, team = two_entrants
+    db.withdraw_entrant(conn, tid, team["B"], "dropped", 2)
+    assert _status(conn, tid) == "setup"
+    db.set_tournament_status(conn, tid, "predictions_open")
+    assert _status(conn, tid) == "predictions_open"
+    assert db.set_tournament_status(conn, tid, "in_progress") == "completed"
+
+
+def test_reinstating_before_the_lock_leaves_the_status_alone(two_entrants):
+    conn, tid, team = two_entrants
+    db.set_tournament_status(conn, tid, "predictions_open")
+    db.withdraw_entrant(conn, tid, team["B"], "dropped", 2)
+    db.reinstate_entrant(conn, tid, team["B"])
+    assert _status(conn, tid) == "predictions_open"
+    assert db.set_tournament_status(conn, tid, "in_progress") == "in_progress"
+
+
+def test_reinstating_the_finalist_who_left_reopens_the_final(tournament):
+    conn, tid, semi_1, semi_2, final, team = tournament
+    db.record_result(conn, tid, semi_1, team["A"], 1)
+    db.record_result(conn, tid, semi_2, team["C"], 1)
+    db.withdraw_entrant(conn, tid, team["C"], "disqualified", 1)
+    db.reinstate_entrant(conn, tid, team["C"])
+    assert _status(conn, tid) == "in_progress"
+    assert final not in db.get_outcomes(conn, tid).decided

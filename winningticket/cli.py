@@ -35,6 +35,7 @@ from bracket import (
     rounds,
 )
 from bracket_changes import (
+    REINSTATABLE_STATUSES,
     WITHDRAWABLE_STATUSES,
     clear_result_and_describe,
     later_results_problem,
@@ -50,6 +51,7 @@ from labels import (
     OPT_OUT_CONFIRMATION,
     OPTED_OUT_NOTE,
     PLANNED_FEATURES,
+    SETTLED_BEFORE_LOCK,
     ban_lines,
     bracket_notes,
     crowd_verdict,
@@ -244,7 +246,10 @@ class WinningTicketCLI(cmd.Cmd):
 
     def do_lock(self, arg: str) -> None:
         "Lock a tournament and start recording real results: lock <name>"
-        if self._advance_status(arg.strip(), "in_progress"):
+        status = self._advance_status(arg.strip(), "in_progress")
+        if status == "completed":
+            print(f"'{arg.strip()}' locked. {SETTLED_BEFORE_LOCK}")
+        elif status is not None:
             print(f"'{arg.strip()}' locked. Use 'matchresult' to record real outcomes.")
 
     def do_conclude(self, arg: str) -> None:
@@ -652,8 +657,7 @@ class WinningTicketCLI(cmd.Cmd):
         tournament = self._require_tournament(name)
         if tournament is None:
             return
-        db.set_tournament_status(self.conn, tournament["id"], status)
-        print(f"Status set to {status}.")
+        print(f"Status set to {db.set_tournament_status(self.conn, tournament['id'], status)}.")
 
     def do_admin_delete(self, arg: str) -> None:
         "Permanently delete a tournament (asks you to retype the name): admin_delete <name>"
@@ -797,7 +801,7 @@ class WinningTicketCLI(cmd.Cmd):
         if len(parts) != 3 or parts[2] not in ("withdrawn", "disqualified"):
             print("usage: admin_withdraw <name> <entrant> withdrawn|disqualified")
             return
-        found = self._require_withdrawable_entrant(*parts[:2])
+        found = self._require_entrant(*parts[:2], WITHDRAWABLE_STATUSES)
         if found is None:
             return
         tournament, team = found
@@ -813,7 +817,7 @@ class WinningTicketCLI(cmd.Cmd):
         if len(parts) != 2:
             print("usage: admin_reinstate <name> <entrant>")
             return
-        found = self._require_withdrawable_entrant(*parts)
+        found = self._require_entrant(*parts, REINSTATABLE_STATUSES)
         if found is None:
             return
         tournament, team = found
@@ -959,13 +963,13 @@ class WinningTicketCLI(cmd.Cmd):
             return None
         return tournament
 
-    def _advance_status(self, name: str, new_status: str) -> bool:
-        """Move a tournament one step along its lifecycle, refusing to skip or go back."""
+    def _advance_status(self, name: str, new_status: str) -> str | None:
+        """Move a tournament one step along its lifecycle, refusing to skip or go back.
+        Returns the status stored (see db.set_tournament_status)."""
         tournament = self._require_next_status(name, new_status)
         if tournament is None:
-            return False
-        db.set_tournament_status(self.conn, tournament["id"], new_status)
-        return True
+            return None
+        return db.set_tournament_status(self.conn, tournament["id"], new_status)
 
     def _require_registration(self, name: str):
         """The tournament, if it's taking sign-ups; otherwise None."""
@@ -1006,12 +1010,12 @@ class WinningTicketCLI(cmd.Cmd):
                 print(f"No concluded tournament named '{name}'. Use 'history' to list them.")
         return tournament
 
-    def _require_withdrawable_entrant(self, name: str, entrant: str):
-        """(tournament, entrant) if entrants there can still be withdrawn or reinstated, else None after saying why."""
+    def _require_entrant(self, name: str, entrant: str, allowed_statuses: tuple[str, ...]):
+        """(tournament, entrant) if the tournament's status is one of `allowed_statuses`, else None after saying why."""
         tournament = self._require_tournament(name)
         if tournament is None:
             return None
-        if tournament["status"] not in WITHDRAWABLE_STATUSES:
+        if tournament["status"] not in allowed_statuses:
             print(f"'{name}' has finished.")
             return None
         team = db.get_team_by_name(self.conn, tournament["id"], entrant)

@@ -9,6 +9,7 @@ from discord.ext import commands
 import db
 from bracket import Match, bracket_order, matches_with_both_teams, resolve_all_slots
 from bracket_changes import (
+    REINSTATABLE_STATUSES,
     WITHDRAWABLE_STATUSES,
     clear_result_and_describe,
     later_results_problem,
@@ -96,7 +97,7 @@ class AdminCog(commands.Cog):
             tournament_row = await resolve_tournament(interaction, conn, tournament)
             if tournament_row is None:
                 return
-            db.set_tournament_status(conn, tournament_row["id"], status)
+            status = db.set_tournament_status(conn, tournament_row["id"], status)
         finally:
             conn.close()
         await interaction.response.send_message(f"Status for **{tournament}** set to `{status}`.", ephemeral=True)
@@ -363,14 +364,14 @@ class AdminCog(commands.Cog):
             ephemeral=True,
         )
 
-    async def _find_entrant(self, interaction: discord.Interaction, conn, tournament: str,
-                            entrant: str) -> tuple[sqlite3.Row, sqlite3.Row] | None:
-        """The tournament and entrant named, if entrants can still be withdrawn or
-        reinstated, or None after saying why not."""
+    async def _find_entrant(self, interaction: discord.Interaction, conn, tournament: str, entrant: str,
+                            allowed_statuses: tuple[str, ...]) -> tuple[sqlite3.Row, sqlite3.Row] | None:
+        """The tournament and entrant named, if the tournament's status is one of
+        `allowed_statuses`, or None after saying why not."""
         tournament_row = await resolve_tournament(interaction, conn, tournament)
         if tournament_row is None:
             return None
-        if tournament_row["status"] not in WITHDRAWABLE_STATUSES:
+        if tournament_row["status"] not in allowed_statuses:
             await interaction.response.send_message(f"**{tournament}** has finished.", ephemeral=True)
             return None
         team = db.get_team_by_name(conn, tournament_row["id"], entrant)
@@ -386,7 +387,7 @@ class AdminCog(commands.Cog):
     async def withdraw(self, interaction: discord.Interaction, tournament: str, entrant: str, reason: str) -> None:
         conn = db.get_connection()
         try:
-            found = await self._find_entrant(interaction, conn, tournament, entrant)
+            found = await self._find_entrant(interaction, conn, tournament, entrant, WITHDRAWABLE_STATUSES)
             if found is None:
                 return
             tournament_row, team = found
@@ -405,7 +406,7 @@ class AdminCog(commands.Cog):
     async def reinstate(self, interaction: discord.Interaction, tournament: str, entrant: str) -> None:
         conn = db.get_connection()
         try:
-            found = await self._find_entrant(interaction, conn, tournament, entrant)
+            found = await self._find_entrant(interaction, conn, tournament, entrant, REINSTATABLE_STATUSES)
             if found is None:
                 return
             tournament_row, team = found

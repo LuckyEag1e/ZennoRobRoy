@@ -62,6 +62,10 @@ def crowd_verdict(counts: dict[int, int], team_a: int, team_b: int, teams_by_id:
     return f"Favorite: {team_label(teams_by_id, favorite)}"
 
 
+# Withdrawals before the lock can leave a single entrant standing, so locking completes it.
+SETTLED_BEFORE_LOCK = "Withdrawals already decided the final, so the tournament is completed."
+
+
 def dropped_results_note(dropped: list[int]) -> str:
     """Suffix telling an admin that changing a result also cleared later ones."""
     if not dropped:

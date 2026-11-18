@@ -21,8 +21,10 @@ from labels import (
     withdrawal_line,
 )
 
-# Withdrawing only makes sense while there are matches left to hand over.
+# Withdrawing only makes sense while there are matches left to hand over. A withdrawal
+# can complete the tournament, so reinstating has to work once it's completed too.
 WITHDRAWABLE_STATUSES = ("setup", "predictions_open", "in_progress")
+REINSTATABLE_STATUSES = WITHDRAWABLE_STATUSES + ("completed",)
 
 
 def withdraw_and_describe(conn: sqlite3.Connection, tournament: sqlite3.Row, team: sqlite3.Row, reason: str,
