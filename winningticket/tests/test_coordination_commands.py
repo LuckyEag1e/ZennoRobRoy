@@ -487,3 +487,33 @@ def test_taking_back_a_warned_vote_doesnt_send_players_to_their_room_again(world
     assert _posts(sim) == [warning]  # edited back, not posted afresh with everyone mentioned
     assert warning.content.startswith("▶️ Round 1: **Ace** vs **Blaze**.")
     assert not sim.issues
+
+
+def test_claiming_again_after_taking_back_a_warned_vote_warns_the_other_side_again(world):
+    sim, organizer, players, tid, teams, matches, category = world
+    _loop(sim)
+    [call] = _posts(sim)
+    _click(sim, players["Ace"], call, "Ready Up")
+    _click(sim, players["Blaze"], call, "Ready Up")
+
+    async def vote(label):
+        [post] = _posts(sim)
+        interaction = await sim.click(players["Ace"], post, "Report Result")
+        await sim.click(players["Ace"], interaction.sent, label)
+    asyncio.run(vote("Ace"))
+    conn = db.get_connection()
+    then = db.to_db_time(datetime.now(timezone.utc) - timedelta(minutes=6))
+    with conn:
+        conn.execute("UPDATE result_reports SET reported_at = ? WHERE match_id = ?", (then, matches[0]))
+    conn.close()
+    _loop(sim)
+    [first_warning] = _posts(sim)
+    asyncio.run(vote("Take Back Vote"))
+    assert _posts(sim) == [first_warning]  # an edit, so nobody is pinged by taking it back
+
+    asyncio.run(vote("Ace"))
+    _loop(sim)
+    [second_warning] = _posts(sim)
+    assert second_warning is not first_warning and first_warning.deleted  # sent afresh, so Blaze is notified
+    assert second_warning.content.startswith("⏳ Round 1: **Ace** reports winning. <@11>")
+    assert not sim.issues

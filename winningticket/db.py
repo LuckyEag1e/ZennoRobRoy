@@ -1021,8 +1021,16 @@ def take_back_report(conn: sqlite3.Connection, match_id: int, team_id: int) -> b
     """Returns False if the side had no vote to take back."""
     with conn:
         _restart_answer_time(conn, match_id)
-        return conn.execute("DELETE FROM result_reports WHERE match_id = ? AND team_id = ?",
-                            (match_id, team_id)).rowcount > 0
+        taken = conn.execute("DELETE FROM result_reports WHERE match_id = ? AND team_id = ?",
+                             (match_id, team_id)).rowcount > 0
+        call = get_call(conn, match_id)
+        if not get_reports(conn, match_id) and call is not None and call["started_at"] is not None:
+            # With no votes left, a called match's post goes back to the match being played.
+            # Recording that as already sent ('start', match_posts' ping for it) makes going
+            # back an edit, and a later claim's warning a new notification.
+            conn.execute("UPDATE match_posts SET pinged = 'start' WHERE match_id = ? AND pinged LIKE 'warning:%'",
+                         (match_id,))
+        return taken
 
 
 def _restart_answer_time(conn: sqlite3.Connection, match_id: int) -> None:
