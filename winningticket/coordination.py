@@ -46,8 +46,10 @@ def tend(conn: sqlite3.Connection, tournament: sqlite3.Row, now: datetime, rooms
         elif call["room_id"] is None:
             db.give_room(conn, tournament["guild_id"], call["match_id"], rooms)
 
-    # Every called match needs a room once it starts, so there's no point calling more than there are rooms.
-    places = min(tournament["match_slots"], len(rooms)) - len(db.get_calls(conn, tournament["id"]))
+    # Every called match needs a room once it starts, and the server's tournaments share the
+    # rooms, so a match is only called while both the tournament and the server have room.
+    places = min(tournament["match_slots"] - len(db.get_calls(conn, tournament["id"])),
+                 len(rooms) - db.count_server_calls(conn, tournament["guild_id"]))
     if places <= 0 or tournament["channel_id"] is None:
         return
     matches_by_id, feeders, _ = db.load_bracket(conn, tournament["id"])

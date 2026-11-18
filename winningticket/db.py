@@ -1134,10 +1134,22 @@ def set_match_slots(conn: sqlite3.Connection, tournament_id: int, match_slots: i
 
 
 def get_coordinated_tournaments(conn: sqlite3.Connection) -> list[sqlite3.Row]:
-    """In-progress tournaments whose matches the bot calls."""
+    """In-progress tournaments whose matches the bot calls, those with the fewest matches
+    called first. A server's tournaments share its rooms, so whichever goes first gets a
+    room that came free."""
     return conn.execute(
-        "SELECT * FROM tournaments WHERE status = 'in_progress' AND match_slots IS NOT NULL"
+        """SELECT t.* FROM tournaments t WHERE t.status = 'in_progress' AND t.match_slots IS NOT NULL
+           ORDER BY (SELECT COUNT(*) FROM match_calls c JOIN matches m ON m.id = c.match_id
+                     WHERE m.tournament_id = t.id), t.id"""
     ).fetchall()
+
+
+def count_server_calls(conn: sqlite3.Connection, guild_id: int) -> int:
+    """Called matches across all of a server's tournaments, which share its rooms."""
+    return conn.execute(
+        """SELECT COUNT(*) FROM match_calls c JOIN matches m ON m.id = c.match_id
+           JOIN tournaments t ON t.id = m.tournament_id WHERE t.guild_id = ?""", (guild_id,)
+    ).fetchone()[0]
 
 
 def get_calls(conn: sqlite3.Connection, tournament_id: int) -> list[sqlite3.Row]:

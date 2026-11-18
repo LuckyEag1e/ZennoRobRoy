@@ -23,6 +23,7 @@ from discord import app_commands
 
 import bot as bot_module
 import db
+from posting import match_rooms
 from sim import checks
 from sim.discord_fakes import FakeBot, FakeChannel, FakeInteraction, FakeMessage, FakePermissions, FakeUser
 
@@ -127,7 +128,7 @@ class Simulation:
     async def create(cls, db_path: Path) -> Simulation:
         """Load the bot's cogs against a new database at `db_path`. This points the db
         module at it, and close() puts everything back."""
-        undo = [(db, "DB_PATH", db.DB_PATH), (db, "record_result", db.record_result)]
+        undo = [(db, "DB_PATH", db.DB_PATH), (db, "record_result", db.record_result), (db, "call_match", db.call_match)]
         db.DB_PATH = db_path
         conn = db.get_connection()
         db.init_db(conn)
@@ -149,6 +150,7 @@ class Simulation:
         sim.channel = FakeChannel(sim._on_message, sim._network)
         fake_bot.channels[sim.channel.id] = sim.channel
         db.record_result = sim._checked_record_result(db.record_result)
+        db.call_match = sim._checked_call_match(db.call_match)
         # The bot logs errors it recovers from (a failed refresh, a bracket that couldn't be
         # drawn) instead of failing the command, so they'd pass unnoticed without this.
         sim._log_watcher = _ErrorsAsProblems(sim)
@@ -431,6 +433,26 @@ class Simulation:
             if already_recorded and not confirmed:
                 self._problem(f"match {match_id} was recorded again without /admin setresult's confirmation")
             return record_result(conn, tournament_id, match_id, winner_team_id, recorded_by)
+
+        return checked
+
+
+    def _checked_call_match(self, call_match):
+        """db.call_match, also checking that a match is only called while its tournament
+        has a place free and the server has a room free. It's checked as the call is made,
+        since lowering a tournament's places afterwards rightly leaves its calls running."""
+
+        def checked(conn, match_id, teams):
+            tournament = db.get_tournament(conn, db.get_match_tournament_id(conn, match_id))
+            called_here = len(db.get_calls(conn, tournament["id"]))
+            called_in_server = db.count_server_calls(conn, tournament["guild_id"])
+            rooms = len(match_rooms(self.bot, tournament["guild_id"], conn))
+            if called_here >= tournament["match_slots"]:
+                self._problem(f"'{tournament['name']}' called match {match_id} with all "
+                              f"{tournament['match_slots']} of its places taken")
+            if called_in_server >= rooms:
+                self._problem(f"match {match_id} was called with all {rooms} of the server's rooms taken")
+            return call_match(conn, match_id, teams)
 
         return checked
 

@@ -141,3 +141,88 @@ def test_older_databases_move_report_posts_into_match_posts(tmp_path):
     tables = {r["name"] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
     assert not {"report_posts", "replaced_report_posts"} & tables
     conn.close()
+
+
+def _eight_entrant_tournament(conn, name, slots, first_user_id):
+    """An in-progress 8-entrant tournament in server 1, every entrant linked, with `slots`
+    matches called at once. Returns its id and round-1 match ids in bracket order."""
+    pairs = "\n".join(f"{name}{n},{name}{n + 1}" for n in range(1, 9, 2))
+    tid = import_tournament(conn, 1, name, 1, parse_csv(f"team_a,team_b\n{pairs}\n"))
+    for user_id, team_id in enumerate(sorted(db.get_teams(conn, tid)), start=first_user_id):
+        db.link_team_member(conn, tid, team_id, user_id)
+    db.set_match_slots(conn, tid, slots)
+    db.set_tournament_status(conn, tid, "in_progress")
+    db.set_tournament_channel_if_missing(conn, tid, CHANNEL)
+    round_1 = [m.id for m in sorted(db.get_matches(conn, tid).values(), key=bracket_order) if m.round == 1]
+    return tid, round_1
+
+
+@pytest.fixture
+def server(tmp_path):
+    conn = db.get_connection(tmp_path / "test.db")
+    db.init_db(conn)
+    yield conn
+    conn.close()
+
+
+def _called(conn, tid):
+    return [call["match_id"] for call in db.get_calls(conn, tid)]
+
+
+def _decide(conn, tid, match_id):
+    teams = db.match_now(conn, tid, match_id).teams
+    db.record_result(conn, tid, match_id, teams[0], 1)
+
+
+def _tend_server(conn, rooms):
+    """One check of the bot's loop: every coordinated tournament, in the order it takes them."""
+    for tournament in db.get_coordinated_tournaments(conn):
+        coordination.tend(conn, tournament, datetime.now(timezone.utc), rooms)
+
+
+def test_only_as_many_matches_as_places_are_called_and_a_free_place_is_refilled(server):
+    tid, round_1 = _eight_entrant_tournament(server, "Cup", slots=2, first_user_id=10)
+    _tend_server(server, rooms=[1, 2, 3])
+    assert _called(server, tid) == round_1[:2]
+    _decide(server, tid, round_1[0])
+    _tend_server(server, rooms=[1, 2, 3])
+    assert _called(server, tid) == [round_1[1], round_1[2]]
+
+
+def test_lowering_the_places_lets_calls_finish_before_calling_more(server):
+    tid, round_1 = _eight_entrant_tournament(server, "Cup", slots=2, first_user_id=10)
+    _tend_server(server, rooms=[1, 2])
+    db.set_match_slots(server, tid, 1)
+    _decide(server, tid, round_1[0])
+    _tend_server(server, rooms=[1, 2])
+    assert _called(server, tid) == [round_1[1]]  # still one called, which is all one place allows
+    _decide(server, tid, round_1[1])
+    _tend_server(server, rooms=[1, 2])
+    assert _called(server, tid) == [round_1[2]]
+
+
+def test_raising_the_places_calls_another_match_on_the_next_check(server):
+    tid, round_1 = _eight_entrant_tournament(server, "Cup", slots=1, first_user_id=10)
+    _tend_server(server, rooms=[1, 2])
+    db.set_match_slots(server, tid, 2)
+    _tend_server(server, rooms=[1, 2])
+    assert _called(server, tid) == round_1[:2]
+
+
+def test_tournaments_in_one_server_share_its_rooms(server):
+    cup, cup_round_1 = _eight_entrant_tournament(server, "Cup", slots=2, first_user_id=10)
+    shield, shield_round_1 = _eight_entrant_tournament(server, "Shield", slots=2, first_user_id=20)
+    _tend_server(server, rooms=[1, 2, 3])
+    assert len(_called(server, cup)) + len(_called(server, shield)) == 3
+    assert db.count_server_calls(server, 1) == 3
+
+
+def test_a_room_that_comes_free_goes_to_the_tournament_with_fewest_matches_called(server):
+    cup, cup_round_1 = _eight_entrant_tournament(server, "Cup", slots=2, first_user_id=10)
+    shield, shield_round_1 = _eight_entrant_tournament(server, "Shield", slots=2, first_user_id=20)
+    _tend_server(server, rooms=[1, 2])
+    assert _called(server, cup) == cup_round_1[:2] and _called(server, shield) == []
+    _decide(server, cup, cup_round_1[0])
+    _tend_server(server, rooms=[1, 2])
+    assert _called(server, cup) == [cup_round_1[1]]
+    assert _called(server, shield) == [shield_round_1[0]]
