@@ -39,6 +39,11 @@ def seeded_team_label(teams_by_id: dict, team_id: Optional[int]) -> str:
     return f"({team['seed']}) {team['name']}"
 
 
+def matchup_names(teams: tuple[Optional[int], Optional[int]], teams_by_id: dict) -> str:
+    """The two sides in bold, as public posts name a matchup."""
+    return " vs ".join(f"**{team_label(teams_by_id, team)}**" for team in teams)
+
+
 def matchup_label(match: Match, slots: dict, teams_by_id: dict) -> str:
     team_a, team_b = slots[match.id]
     return f"R{match.played_round}: {team_label(teams_by_id, team_a)} vs {team_label(teams_by_id, team_b)}"
@@ -139,7 +144,7 @@ def match_call(match: Match, teams: tuple[int, int], ready: set[int], call_out: 
     players being asked, by mention where it can: everyone at first, then in a reminder
     only those who haven't readied."""
     status = " · ".join(f"{team_label(teams_by_id, team)} {'✅' if team in ready else '⏳'}" for team in teams)
-    names = " vs ".join(f"**{team_label(teams_by_id, team)}**" for team in teams)
+    names = matchup_names(teams, teams_by_id)
     ask = (f"{call_out}, you still need to press **Ready Up**" if reminder
            else f"{call_out}, press **Ready Up** when you're here to play")
     return (f"🎮 Round {match.played_round}: {names} is up! {ask}. A side that isn't ready "
@@ -147,14 +152,14 @@ def match_call(match: Match, teams: tuple[int, int], ready: set[int], call_out: 
 
 
 def match_waiting_for_room(match: Match, teams: tuple[int, int], teams_by_id: dict) -> str:
-    names = " vs ".join(f"**{team_label(teams_by_id, team)}**" for team in teams)
+    names = matchup_names(teams, teams_by_id)
     return f"🎮 Round {match.played_round}: {names} is ready. Waiting for a room to come free."
 
 
 def match_playing(match: Match, teams: tuple[int, int], room: str, call_out: str, needs_organizer: bool,
                   teams_by_id: dict) -> str:
     """Where a started match is played. `call_out` names its players, by mention where it can."""
-    names = " vs ".join(f"**{team_label(teams_by_id, team)}**" for team in teams)
+    names = matchup_names(teams, teams_by_id)
     then = ("An organizer needs to watch it there and record the result." if needs_organizer
             else "When it's over, press **Report Result** below, or use `/match report`.")
     return f"▶️ Round {match.played_round}: {names}. {call_out}, head to {room} and stream your match there. {then}"
@@ -162,7 +167,7 @@ def match_playing(match: Match, teams: tuple[int, int], room: str, call_out: str
 
 def match_off(match: Match, teams: tuple[int, int], teams_by_id: dict) -> str:
     """What a call becomes when an earlier result changed who's in the match."""
-    names = " vs ".join(f"**{team_label(teams_by_id, team)}**" for team in teams)
+    names = matchup_names(teams, teams_by_id)
     return f"Round {match.played_round}: {names} is off, because an earlier result changed."
 
 
@@ -180,8 +185,7 @@ def report_timed_out(match: Match, winner: int, loser: int, teams_by_id: dict, a
 def report_withdrawn(match: Match, teams: tuple[int, int], teams_by_id: dict) -> str:
     """What a warning or dispute becomes once its votes are gone without a result, because
     they were taken back or an earlier result changed who's in the match."""
-    team_a, team_b = (team_label(teams_by_id, team) for team in teams)
-    return f"Round {match.played_round}: the report on **{team_a}** vs **{team_b}** no longer stands."
+    return f"Round {match.played_round}: the report on {matchup_names(teams, teams_by_id)} no longer stands."
 
 
 def walkover_lines(before: Outcomes, after: Outcomes, matches_by_id: dict[int, Match], feeders_by_target: dict,
@@ -214,7 +218,7 @@ def result_changed_line(match: Match, winner: int, loser: int, teams_by_id: dict
 def result_cleared_line(match: Match, teams: tuple[int, int], teams_by_id: dict, organizer: str,
                         was_skipped: bool) -> str:
     """The public line for an organizer clearing a match's result, or taking back calling it off."""
-    names = " vs ".join(f"**{team_label(teams_by_id, team)}**" for team in teams)
+    names = matchup_names(teams, teams_by_id)
     undone = "took back calling off" if was_skipped else "cleared the result of"
     return f"✏️ {organizer} {undone} Round {match.played_round}: {names}, so it's waiting to be played."
 
@@ -227,7 +231,7 @@ def later_results_first(matchups: list[str]) -> str:
 
 def called_off_line(match: Match, teams: tuple[int, int], teams_by_id: dict, organizer: str | None = None) -> str:
     """`organizer` names the organizer who called it off, when it wasn't the players or the bracket."""
-    names = " vs ".join(f"**{team_label(teams_by_id, team)}**" for team in teams)
+    names = matchup_names(teams, teams_by_id)
     by = f" by {organizer}" if organizer is not None else ""
     return f"📣 Round {match.played_round}: {names} was called off{by} with no winner."
 

@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from typing import Callable, Optional
 
 import db
+from bracket import resolve_slot
 from coordination import forfeit_deadline
 from labels import (
     called_off_line,
@@ -46,7 +47,8 @@ def describe(conn: sqlite3.Connection, post: sqlite3.Row, player_label: Callable
     """What `post` should show now. `player_label` and `room_label` name a user and a room,
     by mention in Discord."""
     tournament = db.get_tournament(conn, post["tournament_id"])
-    matches_by_id, _, teams_by_id = db.load_bracket(conn, tournament["id"])
+    matches_by_id, feeders, teams_by_id = db.load_bracket(conn, tournament["id"])
+    outcomes = db.get_outcomes(conn, tournament["id"])
     match = matches_by_id[post["match_id"]]
     teams = (post["team_a_id"], post["team_b_id"])
 
@@ -55,13 +57,13 @@ def describe(conn: sqlite3.Connection, post: sqlite3.Row, player_label: Callable
         return " and ".join(" ".join(player_label(user_id) for user_id in db.team_member_ids(conn, team))
                             or f"**{team_label(teams_by_id, team)}**" for team in sides)
 
-    if set(db.match_now(conn, tournament["id"], match.id).teams) != set(teams):
+    if set(resolve_slot(match, matches_by_id, outcomes.winners.get, feeders)) != set(teams):
         # An earlier result changed who's in the match, so this post is about a matchup
         # that won't be played. A new call gets a post of its own.
         if post["pinged"] in CALL_PINGS:
             return PostState(match_off(match, teams, teams_by_id), True, None, False)
         return PostState(report_withdrawn(match, teams, teams_by_id), True, None, False)
-    if match.id in db.get_outcomes(conn, tournament["id"]).decided:
+    if match.id in outcomes.decided:
         text = ending_text(conn, tournament, match) or called_off_line(match, teams, teams_by_id)
         return PostState(text, True, None, False)
 
