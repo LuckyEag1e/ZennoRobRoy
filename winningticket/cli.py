@@ -1062,7 +1062,9 @@ class WinningTicketCLI(cmd.Cmd):
         slots = resolve_all_slots(matches_by_id, outcomes.winners.get, feeders)
 
         if allow_overwrite:
-            candidates = matches_with_both_teams(matches_by_id, slots)
+            # Walkovers are undone with admin_reinstate, not overwritten.
+            candidates = [m for m in matches_with_both_teams(matches_by_id, slots)
+                          if m.id not in outcomes.unplayed]
         else:
             candidates = resolvable_matches(matches_by_id, feeders, outcomes.winners.get, outcomes.decided)
 

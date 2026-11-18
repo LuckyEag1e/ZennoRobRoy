@@ -720,6 +720,7 @@ class MatchNow(NamedTuple):
     teams: tuple[Optional[int], Optional[int]]
     winner: Optional[int]
     skipped: bool
+    unplayed: bool  # see Outcomes.unplayed
 
 
 def match_now(conn: sqlite3.Connection, tournament_id: int, match_id: int) -> MatchNow | None:
@@ -734,7 +735,8 @@ def match_now(conn: sqlite3.Connection, tournament_id: int, match_id: int) -> Ma
         return None
     outcomes = get_outcomes(conn, tournament_id)
     teams = resolve_slot(matches_by_id[match_id], matches_by_id, outcomes.winners.get, feeders)
-    return MatchNow(tournament["status"], teams, outcomes.winners.get(match_id), match_id in outcomes.skipped)
+    return MatchNow(tournament["status"], teams, outcomes.winners.get(match_id), match_id in outcomes.skipped,
+                    match_id in outcomes.unplayed)
 
 
 def get_outcomes(conn: sqlite3.Connection, tournament_id: int) -> Outcomes:

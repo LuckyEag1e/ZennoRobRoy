@@ -38,6 +38,11 @@ from common import (
 from embeds import EMBED_DESCRIPTION_LIMIT, mention
 from labels import ban_lines, dropped_results_note, feedback_page, join_within, reinstated_line, team_label
 
+# A walkover follows from a withdrawal, so a played result there would mean the game was
+# played after all. Reinstating the entrant reopens the match.
+WALKOVER_NOT_SETTABLE = ("An entrant in this match has left, so it was settled without being played. "
+                         "Use `/admin reinstate` first if it was played after all.")
+
 STATUS_CHOICES = [app_commands.Choice(name=status, value=status) for status in db.FORCEABLE_STATUSES]
 # Dropping out is the player's own call, through /match dropout.
 ORGANIZER_WITHDRAWALS = [app_commands.Choice(name=reason, value=reason) for reason in ("withdrawn", "disqualified")]
@@ -232,7 +237,7 @@ class AdminCog(commands.Cog):
             conn.close()
 
         slots = resolve_all_slots(session.matches_by_id, outcomes.winners.get, session.feeders_by_target)
-        known = matches_with_both_teams(session.matches_by_id, slots)
+        known = [m for m in matches_with_both_teams(session.matches_by_id, slots) if m.id not in outcomes.unplayed]
         if not known:
             await interaction.response.send_message("No matches have both teams known yet.", ephemeral=True)
             return
@@ -255,8 +260,9 @@ class AdminCog(commands.Cog):
                     try:
                         # Checked again here: the confirm button can sit unclicked while others edit results.
                         tournament_row = db.get_tournament(conn, session.tournament_id)
-                        refusal = (outdated_pick_message(db.match_now(conn, session.tournament_id, match.id),
-                                                         (winner_id, loser_id))
+                        now = db.match_now(conn, session.tournament_id, match.id)
+                        refusal = (outdated_pick_message(now, (winner_id, loser_id))
+                                   or (WALKOVER_NOT_SETTABLE if now.unplayed else None)
                                    or later_results_problem(conn, tournament_row, [match.id]))
                         if refusal is None:
                             text, dropped = set_result_and_describe(conn, tournament_row, match, winner_id, loser_id,
@@ -273,7 +279,9 @@ class AdminCog(commands.Cog):
                     await _announce_or_say(confirm_interaction, match.id, text)
 
                 now = current_match()
-                refusal = outdated_pick_message(now, (winner_id, loser_id)) or later_results_now(session, match)
+                refusal = (outdated_pick_message(now, (winner_id, loser_id))
+                           or (WALKOVER_NOT_SETTABLE if now.unplayed else None)
+                           or later_results_now(session, match))
                 if refusal is not None:
                     await winner_interaction.response.edit_message(content=refusal, view=None)
                 elif now.winner == winner_id:

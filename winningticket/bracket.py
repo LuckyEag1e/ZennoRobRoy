@@ -78,6 +78,11 @@ class Outcomes:
     def decided(self) -> set[int]:
         return set(self.winners) | self.skipped | self.empty
 
+    @property
+    def unplayed(self) -> set[int]:
+        """Matches settled with no game: walkovers, and those with nobody left."""
+        return self.walkovers | self.empty
+
 
 WinnerLookup = Callable[[int], Optional[int]]
 

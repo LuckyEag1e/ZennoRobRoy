@@ -6,6 +6,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import discord
 import pytest
 
 import db
@@ -252,3 +253,26 @@ def _status(tournament_id):
         return db.get_tournament(conn, tournament_id)["status"]
     finally:
         conn.close()
+
+
+def test_setresult_leaves_walkovers_to_reinstate(world):
+    sim, organizer, ace, tournament_id, teams = world
+    semi_1, semi_2, _ = _match_ids(tournament_id)
+
+    async def go():
+        early = (await sim.run(organizer, "admin setresult", tournament="Cup")).sent
+        await sim.choose(organizer, early, str(semi_2))
+        await sim.run(organizer, "admin withdraw", tournament="Cup", entrant="Dune", reason="disqualified")
+        await sim.click(organizer, early, "Dune")
+        later = (await sim.run(organizer, "admin setresult", tournament="Cup")).sent
+        return early, later
+
+    early, later = asyncio.run(go())
+    assert early.content.startswith("An entrant in this match has left")
+    assert _menu_values(later) == [str(semi_1)]
+    assert _outcomes(tournament_id).played == {}
+
+
+def _menu_values(message):
+    return [option.value for item in message.view.children if isinstance(item, discord.ui.Select)
+            for option in item.options]

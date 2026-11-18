@@ -100,5 +100,5 @@ def reinstate_problem(conn: sqlite3.Connection, tournament: sqlite3.Row, team_id
     matches_by_id, feeders, _ = db.load_bracket(conn, tournament["id"])
     outcomes = db.get_outcomes(conn, tournament["id"])
     slots = resolve_all_slots(matches_by_id, outcomes.winners.get, feeders)
-    given_away = [match_id for match_id in outcomes.walkovers | outcomes.empty if team_id in slots[match_id]]
+    given_away = [match_id for match_id in outcomes.unplayed if team_id in slots[match_id]]
     return later_results_problem(conn, tournament, given_away)
