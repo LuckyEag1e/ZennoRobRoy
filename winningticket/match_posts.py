@@ -96,7 +96,10 @@ def describe(conn: sqlite3.Connection, post: sqlite3.Row, player_label: Callable
             return PostState(match_waiting_for_room(match, teams, teams_by_id), False, None, False)
         needs_organizer = not all(db.team_member_ids(conn, team) for team in teams)
         text = match_playing(match, teams, room_label(call["room_id"]), call_out(teams), needs_organizer, teams_by_id)
-        return PostState(text, False, "start", False, not needs_organizer)
+        # A post goes back to this after a warning is taken back, but its players were told
+        # where to play before any warning, so that's not sent again.
+        told = (post["pinged"] or "").startswith("warning:")
+        return PostState(text, False, None if told else "start", False, not needs_organizer)
 
     # Nothing about the match is waiting any more, though it isn't decided.
     if post["pinged"] in CALL_PINGS:

@@ -315,12 +315,20 @@ def init_db(conn: sqlite3.Connection) -> None:
 def _move_report_posts(conn: sqlite3.Connection) -> None:
     """Move posts from report_posts and replaced_report_posts, which match_posts and
     replaced_match_posts took over from. Every report post was a warning or a dispute,
-    so its last change is when its warning went up."""
+    so its last change is when its warning went up, and a warning has already notified
+    the side it's waiting for, so moving it mustn't send it again."""
     tables = {row["name"] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
     if "report_posts" in tables:
-        conn.execute(
-            """INSERT OR IGNORE INTO match_posts (match_id, channel_id, team_a_id, team_b_id, message_id, shown, warned_at)
-               SELECT match_id, channel_id, team_a_id, team_b_id, message_id, shown, updated_at FROM report_posts""")
+        for post in conn.execute("SELECT * FROM report_posts").fetchall():
+            votes = conn.execute("SELECT team_id FROM result_reports WHERE match_id = ?", (post["match_id"],)).fetchall()
+            sides = (post["team_a_id"], post["team_b_id"])
+            pinged = f"warning:{next(s for s in sides if s != votes[0]['team_id'])}" if len(votes) == 1 else None
+            conn.execute(
+                """INSERT OR IGNORE INTO match_posts
+                       (match_id, channel_id, team_a_id, team_b_id, message_id, shown, warned_at, pinged)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (post["match_id"], post["channel_id"], *sides, post["message_id"], post["shown"], post["updated_at"],
+                 pinged))
         conn.execute("DROP TABLE report_posts")
     if "replaced_report_posts" in tables:
         conn.execute("INSERT OR IGNORE INTO replaced_match_posts SELECT message_id, channel_id FROM replaced_report_posts")

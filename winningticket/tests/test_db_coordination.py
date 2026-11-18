@@ -144,10 +144,13 @@ def test_older_databases_move_report_posts_into_match_posts(tmp_path):
                                          '2026-01-01T00:00:00.000Z', 'warning');
         CREATE TABLE replaced_report_posts (message_id INTEGER PRIMARY KEY, channel_id INTEGER NOT NULL);
         INSERT INTO replaced_report_posts VALUES (78, 5);
+        INSERT INTO result_reports (match_id, team_id, winner_team_id, reported_by, channel_id)
+            VALUES ({final.id}, {final.team_a_id}, {final.team_a_id}, 1, 5);
     """)
     db.init_db(conn)
     post = db.get_match_post(conn, final.id)
     assert (post["message_id"], post["shown"], post["warned_at"]) == (77, "warning", "2026-01-01T00:00:00.000Z")
+    assert post["pinged"] == f"warning:{final.team_b_id}"  # the warning already went out, so it isn't sent again
     assert [(r["message_id"], r["channel_id"]) for r in db.get_replaced_match_posts(conn)] == [(78, 5)]
     tables = {r["name"] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
     assert not {"report_posts", "replaced_report_posts"} & tables
