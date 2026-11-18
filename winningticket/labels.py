@@ -121,11 +121,16 @@ def report_concession(match: Match, reporter: int, winner: int, deadline: dateti
             f"unless **{team_label(teams_by_id, winner)}** reports otherwise.")
 
 
-def report_waiting(match: Match, reporter: int, winner: int, other: int, teams_by_id: dict) -> str:
-    """A vote shown on a match's post before any warning about it."""
-    claim = "reports winning" if winner == reporter else f"reports that **{team_label(teams_by_id, winner)}** won"
+def report_waiting(match: Match, reporter: int, winner: int, other: int, due: datetime, teams_by_id: dict) -> str:
+    """A vote shown on a match's post before any warning about it, counting down to when
+    it's given if nobody answers."""
+    when = f"<t:{int(due.timestamp())}:R>"
+    if winner == reporter:
+        claim, otherwise = "reports winning", f"the win goes to **{team_label(teams_by_id, winner)}** {when}"
+    else:
+        claim, otherwise = f"reports that **{team_label(teams_by_id, winner)}** won", f"it's recorded {when}"
     return (f"⏳ Round {match.played_round}: **{team_label(teams_by_id, reporter)}** {claim}. Waiting for "
-            f"**{team_label(teams_by_id, other)}** to report.")
+            f"**{team_label(teams_by_id, other)}** to report, or {otherwise}.")
 
 
 def match_call(match: Match, teams: tuple[int, int], ready: set[int], call_out: str, deadline: datetime,

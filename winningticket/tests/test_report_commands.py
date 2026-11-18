@@ -228,7 +228,9 @@ def test_a_post_whose_sending_never_finished_is_sent_on_the_next_check(world):
     conn.close()
     _run_loop(sim)
     [waiting] = _public(sim)
-    assert waiting.content == "⏳ Round 1: **Ace** reports winning. Waiting for **Blaze** to report."
+    assert waiting.content.startswith("⏳ Round 1: **Ace** reports winning. Waiting for **Blaze** to report, "
+                                      "or the win goes to **Ace** <t:")
+    assert _due_in_minutes(waiting) == 10
     _age(match_id, 6)
     _run_loop(sim)
     [warning] = _public(sim)  # the warning takes over from it, to notify Blaze

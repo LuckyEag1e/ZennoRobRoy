@@ -411,3 +411,21 @@ def test_the_bot_never_readies_up_unless_playing_for_testing(world, monkeypatch)
     _loop(sim)
     [call] = _posts(sim)
     assert "Blaze ⏳" in call.content
+
+
+def test_a_vote_on_a_started_match_counts_down_on_its_post(world):
+    sim, organizer, players, tid, teams, matches, category = world
+    _loop(sim)
+    [call] = _posts(sim)
+    _click(sim, players["Ace"], call, "Ready Up")
+    _click(sim, players["Blaze"], call, "Ready Up")
+    [start] = _posts(sim)
+
+    async def concede():
+        interaction = await sim.click(players["Ace"], start, "Report Result")
+        await sim.click(players["Ace"], interaction.sent, "Blaze")
+    asyncio.run(concede())
+    assert start.content.startswith("⏳ Round 1: **Ace** reports that **Blaze** won. Waiting for **Blaze** to report, "
+                                    "or it's recorded <t:")
+    assert [item.item.label for item in start.view.children] == ["Report Result"]
+    assert not sim.issues

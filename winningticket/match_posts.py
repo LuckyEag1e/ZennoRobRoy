@@ -23,7 +23,7 @@ from labels import (
     report_withdrawn,
     team_label,
 )
-from reports import answer_deadline, ending_text, opponent
+from reports import answer_deadline, ending_text, opponent, win_due_at
 
 # The `ping` values of posts that called a match, rather than only reporting on votes.
 CALL_PINGS = ("call", "reminder", "start")
@@ -81,7 +81,8 @@ def describe(conn: sqlite3.Connection, post: sqlite3.Row, player_label: Callable
             text = report_warning(match, vote["team_id"], call_out([silent]), answer_deadline(post), teams_by_id)
             return PostState(text, False, f"warning:{silent}", False, playing)
         if call is None or call["started_at"] is not None:
-            text = report_waiting(match, vote["team_id"], vote["winner_team_id"], silent, teams_by_id)
+            text = report_waiting(match, vote["team_id"], vote["winner_team_id"], silent, win_due_at(vote, post),
+                                  teams_by_id)
             return PostState(text, False, None, False, playing)
 
     if call is not None:
