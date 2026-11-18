@@ -106,14 +106,19 @@ def result_line(match: Match, winner: int, loser: int, teams_by_id: dict, advanc
             f"**{team_label(teams_by_id, loser)}**{by}. {advance}")
 
 
-def report_warning(match: Match, reporter: int, winner: int, silent: str, deadline: datetime,
-                   teams_by_id: dict) -> str:
-    """The public warning that only one side has reported. `silent` names the other side,
-    by mention where it can, since they're the ones who need to answer."""
-    claim = "reports winning" if winner == reporter else f"reports that **{team_label(teams_by_id, winner)}** won"
-    return (f"⏳ Round {match.played_round}: **{team_label(teams_by_id, reporter)}** {claim}. {silent}, if that's "
-            f"wrong, use `/match report` by <t:{int(deadline.timestamp())}:R>. Otherwise the win goes to "
-            f"**{team_label(teams_by_id, winner)}**.")
+def report_warning(match: Match, reporter: int, silent: str, deadline: datetime, teams_by_id: dict) -> str:
+    """The public warning that one side claims a win the other hasn't answered. `silent`
+    names the other side, by mention where it can, since they're the ones who need to answer."""
+    reporter_name = team_label(teams_by_id, reporter)
+    return (f"⏳ Round {match.played_round}: **{reporter_name}** reports winning. {silent}, if that's wrong, "
+            f"use `/match report` by <t:{int(deadline.timestamp())}:R>. Otherwise the win goes to **{reporter_name}**.")
+
+
+def report_concession(match: Match, reporter: int, winner: int, deadline: datetime, teams_by_id: dict) -> str:
+    """What a warning becomes when the side that claimed the win concedes instead."""
+    return (f"⏳ Round {match.played_round}: **{team_label(teams_by_id, reporter)}** reports that "
+            f"**{team_label(teams_by_id, winner)}** won. It's recorded <t:{int(deadline.timestamp())}:R> "
+            f"unless **{team_label(teams_by_id, winner)}** reports otherwise.")
 
 
 def report_dispute(match: Match, teams: tuple[int, int], teams_by_id: dict) -> str:

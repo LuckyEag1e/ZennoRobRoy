@@ -16,6 +16,7 @@ from bracket import Match, resolvable_matches, resolve_all_slots, resolve_slot
 from labels import (
     advance_text,
     called_off_line,
+    report_concession,
     report_dispute,
     report_timed_out,
     report_warning,
@@ -85,10 +86,12 @@ def post_text(conn: sqlite3.Connection, post: sqlite3.Row, player_label: Callabl
     votes = db.get_reports(conn, match.id)
     if len(votes) == 1:
         vote = votes[0]
+        if vote["winner_team_id"] != vote["team_id"]:
+            return report_concession(match, vote["team_id"], vote["winner_team_id"], answer_deadline(post),
+                                     teams_by_id), False
         silent_team = opponent(teams, vote["team_id"])
         silent = " ".join(player_label(user_id) for user_id in db.team_member_ids(conn, silent_team))
-        return report_warning(match, vote["team_id"], vote["winner_team_id"],
-                              silent or f"**{team_label(teams_by_id, silent_team)}**",
+        return report_warning(match, vote["team_id"], silent or f"**{team_label(teams_by_id, silent_team)}**",
                               answer_deadline(post), teams_by_id), False
     if len(votes) == 2:
         return report_dispute(match, teams, teams_by_id), False

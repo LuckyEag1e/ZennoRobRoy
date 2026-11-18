@@ -337,3 +337,16 @@ def test_the_vote_reply_says_how_long_is_really_left(world):
     _run_loop(sim)
     changed = _vote(sim, players["Ace"], "Blaze")  # the warning is up, so its clock restarts
     assert "or in 5 minutes" in changed.content
+
+
+def test_conceding_after_a_warning_rewords_it_without_asking_the_winner(world):
+    sim, organizer, players, tid, teams, match_id = world
+    warning = _warned(sim, players, match_id)
+    _vote(sim, players["Ace"], "Blaze")
+    assert warning.content.startswith("⏳ Round 1: **Ace** reports that **Blaze** won. It's recorded <t:")
+    assert warning.content.endswith(":R> unless **Blaze** reports otherwise.")
+    assert _public(sim) == [warning]
+    _age(match_id, 6)
+    _run_loop(sim)
+    assert warning.content.startswith("📣 Round 1: **Blaze** defeats **Ace**.")
+    assert _outcomes(tid).played == {match_id: teams["Blaze"]}
