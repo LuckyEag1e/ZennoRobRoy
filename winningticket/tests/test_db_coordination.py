@@ -104,11 +104,19 @@ def test_older_databases_get_the_coordination_columns(tmp_path):
     conn.close()
 
 
+def _show_post(conn, match_id, ping):
+    """Stand in for the bot sending the match's post, with what it notified people about."""
+    db.take_over_match_post(conn, match_id, db.claim_post_send(conn, match_id), 1, ping, ping)
+
+
 def _forfeit_semi_1(conn, tid):
     """Call both semis, ready up only A, and let B's time run out."""
     _tend(conn, tid, rooms=[1, 2])
-    coordination.ready_up(conn, db.get_calls(conn, tid)[0]["match_id"], 10, [1, 2])
+    semi_1 = db.get_calls(conn, tid)[0]["match_id"]
+    _show_post(conn, semi_1, "call")
+    coordination.ready_up(conn, semi_1, 10, [1, 2])
     _tend(conn, tid, rooms=[1, 2], minutes=6)  # the reminder
+    _show_post(conn, semi_1, "reminder")
     _tend(conn, tid, rooms=[1, 2], minutes=12)  # the forfeit
 
 
@@ -250,3 +258,15 @@ def test_turning_calls_off_takes_a_tournaments_matches_out_of_the_queue(server):
     _tend_server(server, rooms=[1])
     db.set_match_slots(server, cup, None)
     assert db.get_match_queue(server, 1) == []
+
+
+def test_nobody_is_reminded_or_forfeits_until_the_post_asking_them_has_gone_out(tournament):
+    conn, tid, teams, semi_1, semi_2 = tournament
+    _tend(conn, tid, rooms=[1, 2])
+    _tend(conn, tid, rooms=[1, 2], minutes=30)  # the call was never posted
+    assert db.get_call(conn, semi_1)["reminded_at"] is None
+    _show_post(conn, semi_1, "call")
+    _tend(conn, tid, rooms=[1, 2], minutes=6)
+    assert db.get_call(conn, semi_1)["reminded_at"] is not None
+    _tend(conn, tid, rooms=[1, 2], minutes=30)  # the reminder was never posted
+    assert semi_1 not in db.get_outcomes(conn, tid).decided

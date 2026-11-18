@@ -99,5 +99,15 @@ def test_a_warned_vote_is_given_once_the_warning_has_had_its_time(tournament):
     reports.warn(conn, db.get_open_reports(conn)[0])
     soon = datetime.now(timezone.utc) + timedelta(minutes=6)
     assert reports.due_steps(conn, soon) == []  # the warning hasn't been sent yet
-    db.set_match_post(conn, semi_1, 1, "warning", "warning")
+    db.take_over_match_post(conn, semi_1, db.claim_post_send(conn, semi_1), 1, "warning", "warning:1")
     assert [step.kind for step in reports.due_steps(conn, soon)] == ["give"]
+
+
+def test_a_post_with_a_message_from_before_the_warning_still_waits_for_the_warning(tournament):
+    conn, tid, semi_1, team = tournament
+    db.claim_match_post(conn, semi_1, 5, (team["A"], team["B"]))
+    db.take_over_match_post(conn, semi_1, db.claim_post_send(conn, semi_1), 1, "playing", "start")
+    _vote(conn, tid, semi_1, team["A"], team["A"])
+    reports.warn(conn, db.get_open_reports(conn)[0])
+    soon = datetime.now(timezone.utc) + timedelta(minutes=6)
+    assert reports.due_steps(conn, soon) == []  # the match post is out, but the warning isn't

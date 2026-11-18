@@ -37,11 +37,14 @@ def tend(conn: sqlite3.Connection, tournament: sqlite3.Row, now: datetime, rooms
         # gets a new one if it has none.
         if tournament["channel_id"] is not None:
             db.claim_match_post(conn, call["match_id"], tournament["channel_id"], (call["team_a_id"], call["team_b_id"]))
+        # Nobody is reminded of a call, or forfeits, until the post asking them has gone out.
+        post = db.get_match_post(conn, call["match_id"])
+        shown = post["pinged"] if post is not None and post["message_id"] is not None else None
         if call["started_at"] is None:
             if call["reminded_at"] is None:
-                if now >= db.from_db_time(call["called_at"]) + READY_REMINDER_AFTER:
+                if shown == "call" and now >= db.from_db_time(call["called_at"]) + READY_REMINDER_AFTER:
                     db.mark_reminded(conn, call["match_id"])
-            elif now >= forfeit_deadline(call):
+            elif shown == "reminder" and now >= forfeit_deadline(call):
                 db.forfeit_match(conn, tournament["id"], call)
         elif call["room_id"] is None:
             db.give_room(conn, tournament["guild_id"], call["match_id"], rooms)

@@ -41,7 +41,7 @@ def due_steps(conn: sqlite3.Connection, now: datetime) -> list[DueStep]:
         if not warned and vote["winner_team_id"] == vote["team_id"]:
             if now >= db.from_db_time(vote["reported_at"]) + WARNING_AFTER:
                 steps.append(DueStep("warn", vote))
-        elif (not warned or post["message_id"] is not None) and now >= win_due_at(vote, post):
+        elif (not warned or warning_sent(post)) and now >= win_due_at(vote, post):
             steps.append(DueStep("give", vote))
     return steps
 
@@ -54,6 +54,12 @@ def win_due_at(vote: sqlite3.Row, post: Optional[sqlite3.Row]) -> datetime:
         return answer_deadline(post)
     wait = CONCESSION_AFTER if vote["winner_team_id"] != vote["team_id"] else WARNING_AFTER + ANSWER_WITHIN
     return db.from_db_time(vote["reported_at"]) + wait
+
+
+def warning_sent(post: sqlite3.Row) -> bool:
+    """Whether the post's warning has gone out. A coordinated match's post already had a
+    message before the warning, so having one isn't enough."""
+    return post["message_id"] is not None and (post["pinged"] or "").startswith("warning:")
 
 
 def answer_deadline(post: sqlite3.Row) -> datetime:
