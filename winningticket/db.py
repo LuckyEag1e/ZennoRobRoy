@@ -970,7 +970,8 @@ def get_reports(conn: sqlite3.Connection, match_id: int) -> list[sqlite3.Row]:
 
 def submit_report(conn: sqlite3.Connection, tournament_id: int, match_id: int, team_id: int, winner_team_id: int,
                   reported_by: int, channel_id: int) -> str:
-    """Save one side's vote on who won, replacing any earlier vote of theirs. The caller
+    """Save one side's vote on who won, replacing any earlier vote of theirs. Repeating the
+    same vote changes nothing, so it doesn't restart the other side's time to answer. The caller
     checks the match is waiting for a result and the side is in it. Returns what the
     votes now say:
     - 'waiting' while only this side has voted;
@@ -978,15 +979,17 @@ def submit_report(conn: sqlite3.Connection, tournament_id: int, match_id: int, t
     - 'skipped' when each names the other, which calls the match off;
     - 'disputed' when each names itself."""
     with conn:
-        conn.execute(
+        changed = conn.execute(
             """INSERT INTO result_reports (match_id, team_id, winner_team_id, reported_by, channel_id)
                VALUES (?, ?, ?, ?, ?)
                ON CONFLICT(match_id, team_id) DO UPDATE SET
                    winner_team_id = excluded.winner_team_id, reported_by = excluded.reported_by,
-                   channel_id = excluded.channel_id, reported_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')""",
+                   channel_id = excluded.channel_id, reported_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+               WHERE result_reports.winner_team_id != excluded.winner_team_id""",
             (match_id, team_id, winner_team_id, reported_by, channel_id),
-        )
-        _restart_answer_time(conn, match_id)
+        ).rowcount > 0
+        if changed:
+            _restart_answer_time(conn, match_id)
         votes = get_reports(conn, match_id)
         if len(votes) < 2:
             return "waiting"

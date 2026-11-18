@@ -2,6 +2,7 @@
 unanswered votes, run through the real cogs."""
 
 import asyncio
+import re
 import os
 import sys
 from datetime import datetime, timedelta, timezone
@@ -349,14 +350,32 @@ def _second_match(tournament_id):
         conn.close()
 
 
-def test_the_vote_reply_says_how_long_is_really_left(world):
+def _due_in_minutes(reply):
+    """How far off the countdown in a vote reply is, in whole minutes."""
+    [stamp] = re.findall(r"<t:(\d+):R>", reply.content)
+    return round((int(stamp) - datetime.now(timezone.utc).timestamp()) / 60)
+
+
+def test_the_vote_reply_counts_down_to_when_the_win_is_really_given(world):
     sim, organizer, players, tid, teams, match_id = world
     first = _vote(sim, players["Ace"], "Ace")
-    assert "within 10 minutes" in first.content
+    assert "the win is yours <t:" in first.content and _due_in_minutes(first) == 10
     _age(match_id, 6)
     _run_loop(sim)
     changed = _vote(sim, players["Ace"], "Blaze")  # the warning is up, so its clock restarts
-    assert "or in 5 minutes" in changed.content
+    assert "or <t:" in changed.content and _due_in_minutes(changed) == 5
+
+
+def test_repeating_a_vote_doesnt_restart_the_other_sides_time(world):
+    sim, organizer, players, tid, teams, match_id = world
+    _vote(sim, players["Ace"], "Ace")
+    _age(match_id, 4)
+    again = _vote(sim, players["Ace"], "Ace")
+    assert _due_in_minutes(again) == 6
+    _age(match_id, 6)  # the first vote, unmoved by the repeat, is now past its 5 minutes
+    _run_loop(sim)
+    [warning] = _public(sim)
+    assert warning.content.startswith("⏳ Round 1: **Ace** reports winning.")
 
 
 def test_conceding_after_a_warning_rewords_it_without_asking_the_winner(world):

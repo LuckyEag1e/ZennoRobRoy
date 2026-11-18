@@ -4,10 +4,9 @@ bot's background loop and the CLI."""
 
 from __future__ import annotations
 
-import math
 import sqlite3
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from itertools import groupby
 from typing import Optional
 
@@ -152,13 +151,12 @@ def vote_reply(conn: sqlite3.Connection, outcome: str, found: ReportableMatch, w
     other = team_label(teams_by_id, opponent(found.teams, found.team_id))
     if outcome == "waiting":
         [vote] = db.get_reports(conn, found.match.id)
-        left = win_due_at(vote, db.get_match_post(conn, found.match.id)) - datetime.now(timezone.utc)
-        minutes = max(1, math.ceil(left.total_seconds() / 60))
-        wait = f"{minutes} minute{'' if minutes == 1 else 's'}"
+        # Discord shows this as "in 7 minutes", and keeps counting down.
+        due = f"<t:{int(win_due_at(vote, db.get_match_post(conn, found.match.id)).timestamp())}:R>"
         if winner_id == found.team_id:
-            reply = f"Saved. If **{other}** doesn't report within {wait}, the win is yours."
+            reply = f"Saved. If **{other}** doesn't report, the win is yours {due}."
         else:
-            reply = f"Saved. It's recorded once **{other}** agrees, or in {wait}."
+            reply = f"Saved. It's recorded once **{other}** agrees, or {due}."
         return reply + " Until then, you can change it or take it back with `/match report`."
     if outcome == "agreed":
         return f"✅ Both sides agree: **{team_label(teams_by_id, winner_id)}** won. It's recorded."
