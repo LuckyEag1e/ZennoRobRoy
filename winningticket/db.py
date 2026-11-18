@@ -179,6 +179,13 @@ CREATE TABLE IF NOT EXISTS report_posts (
     shown       TEXT
 );
 
+-- Report posts that couldn't be edited when their match was announced, so the announcement
+-- went out as a new message. Each is deleted from Discord once it can be.
+CREATE TABLE IF NOT EXISTS replaced_report_posts (
+    message_id  INTEGER PRIMARY KEY,
+    channel_id  INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS predictions (
     id                          INTEGER PRIMARY KEY AUTOINCREMENT,
     tournament_id               INTEGER NOT NULL REFERENCES tournaments(id) ON DELETE CASCADE,
@@ -1001,6 +1008,27 @@ def set_report_post(conn: sqlite3.Connection, match_id: int, message_id: int, sh
 def delete_report_post(conn: sqlite3.Connection, match_id: int) -> None:
     with conn:
         conn.execute("DELETE FROM report_posts WHERE match_id = ?", (match_id,))
+
+
+def replace_report_post(conn: sqlite3.Connection, match_id: int) -> None:
+    """Forget a match's report post because a new message took its place, keeping it
+    to be deleted from Discord later."""
+    with conn:
+        conn.execute(
+            """INSERT OR IGNORE INTO replaced_report_posts (message_id, channel_id)
+               SELECT message_id, channel_id FROM report_posts WHERE match_id = ? AND message_id IS NOT NULL""",
+            (match_id,),
+        )
+        conn.execute("DELETE FROM report_posts WHERE match_id = ?", (match_id,))
+
+
+def get_replaced_report_posts(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    return conn.execute("SELECT * FROM replaced_report_posts").fetchall()
+
+
+def forget_replaced_report_post(conn: sqlite3.Connection, message_id: int) -> None:
+    with conn:
+        conn.execute("DELETE FROM replaced_report_posts WHERE message_id = ?", (message_id,))
 
 
 # -- predictions ----------------------------------------------------------------

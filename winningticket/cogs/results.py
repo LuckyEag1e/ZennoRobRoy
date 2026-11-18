@@ -73,6 +73,21 @@ async def edit_report_post(client: discord.Client, conn: sqlite3.Connection, pos
     return PostEdit.EDITED
 
 
+async def delete_replaced_post(client: discord.Client, conn: sqlite3.Connection, replaced: sqlite3.Row) -> None:
+    """Delete a report post a new message took the place of, if Discord can be reached."""
+    channel = client.get_channel(replaced["channel_id"])
+    if channel is None:
+        return
+    try:
+        await channel.get_partial_message(replaced["message_id"]).delete()
+    except discord.NotFound:
+        pass
+    except discord.HTTPException:
+        log.exception("Couldn't delete the replaced report post %s", replaced["message_id"])
+        return
+    db.forget_replaced_report_post(conn, replaced["message_id"])
+
+
 async def open_report_post(client: discord.Client, conn: sqlite3.Connection, match_id: int, channel_id: int,
                            teams: tuple[int, int]) -> None:
     """Post a match's report message, or bring the one it already has up to date."""
@@ -127,19 +142,24 @@ async def announce_match_change(client: discord.Client, channel: discord.abc.Mes
                                 text: str) -> bool:
     """Announce how a match changed or ended. When players' votes put up a report post,
     that post becomes the announcement. Otherwise, or if the post can't be edited right
-    now, `text` is posted in `channel`, and a post that's still there is left for the
-    background check to bring up to date. Nobody `text` mentions is notified. False if it
-    couldn't be posted."""
+    now, `text` is posted in `channel`, and the old post is deleted once it can be.
+    Nobody `text` mentions is notified. False if it couldn't be posted."""
     conn = db.get_connection()
     try:
         post = db.get_report_post(conn, match_id)
+        edit = PostEdit.GONE
         if post is not None and post["message_id"] is not None:
-            if await edit_report_post(client, conn, post, text) is PostEdit.EDITED:
-                db.delete_report_post(conn, match_id)
-                return True
+            edit = await edit_report_post(client, conn, post, text)
+        if edit is PostEdit.EDITED:
+            db.delete_report_post(conn, match_id)
+            return True
+        if await send_public(channel, text, ping=False) is None:
+            return False  # a post that's still there is left for the background check to bring up to date
+        if edit is PostEdit.NOT_NOW:
+            db.replace_report_post(conn, match_id)
+        return True
     finally:
         conn.close()
-    return await send_public(channel, text, ping=False) is not None
 
 
 class ReportPicker(WinnerPicker):
@@ -172,7 +192,7 @@ class ResultsCog(commands.Cog):
     async def settle_reports(self) -> None:
         """Warn about and then give unanswered votes as they fall due, and keep each
         match's report post saying what it should, which also catches results recorded
-        by organizers. An exception escaping a tasks.loop stops it until the bot restarts,
+        by organizers, and delete the posts new messages replaced. An exception escaping a tasks.loop stops it until the bot restarts,
         so every error is logged, one match at a time."""
         try:
             conn = db.get_connection()
@@ -191,6 +211,11 @@ class ResultsCog(commands.Cog):
                             db.delete_report_post(conn, post["match_id"])  # its sending never finished
                     except Exception:
                         log.exception("Couldn't update the report post for match %s", post["match_id"])
+                for replaced in db.get_replaced_report_posts(conn):
+                    try:
+                        await delete_replaced_post(self.bot, conn, replaced)
+                    except Exception:
+                        log.exception("Couldn't delete the replaced report post %s", replaced["message_id"])
             finally:
                 conn.close()
         except Exception:

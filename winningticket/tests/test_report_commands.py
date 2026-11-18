@@ -300,7 +300,24 @@ def test_a_warning_discord_wont_edit_doesnt_lose_the_organizers_result(world):
     [announcement] = _public(sim, before)
     assert announcement.content.startswith(f"📣 Round 1: **Blaze** defeats **Ace** (recorded by <@{organizer.id}>).")
     assert _outcomes(tid).played == {match_id: teams["Blaze"]}
-    assert len(_report_posts()) == 1  # the warning is still to be brought up to date
+    assert _report_posts() == []
+
+    warning.delete = refuse
+    _run_loop(sim)
+    assert len(_replaced_posts()) == 1  # kept to try again
+
+    del warning.delete  # Discord lets the bot in again
+    _run_loop(sim)
+    assert warning.deleted  # so only the announcement is left
+    assert _replaced_posts() == []
+
+
+def _replaced_posts():
+    conn = db.get_connection()
+    try:
+        return db.get_replaced_report_posts(conn)
+    finally:
+        conn.close()
 
 
 def test_calling_off_a_warned_match_announces_its_walkovers_on_the_warning(world):
