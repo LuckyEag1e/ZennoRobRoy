@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import sqlite3
 from datetime import datetime, timedelta, timezone
+from enum import Enum, auto
 from typing import Awaitable, Callable
 
 import discord
@@ -22,6 +23,7 @@ from common import (
     outdated_pick_message,
     requires_manage_server,
     resolve_tournament,
+    send_public,
     tournament_name_autocomplete,
 )
 from embeds import mention, render_match_stats_embed
@@ -35,11 +37,17 @@ log = logging.getLogger("winningticket")
 STUCK_POST_AFTER = timedelta(minutes=1)
 
 
+class PostEdit(Enum):
+    EDITED = auto()
+    GONE = auto()  # deleted in Discord, so the post is forgotten
+    NOT_NOW = auto()  # Discord couldn't be reached, so the post is kept for the next check to retry
+
+
 async def refresh_report_post(client: discord.Client, conn: sqlite3.Connection, post: sqlite3.Row) -> None:
     """Edit a match's report post to say what it should now, and forget it once that's
     how the match ended."""
     text, final = reports.post_text(conn, post, mention)
-    if text != post["shown"] and not await edit_report_post(client, conn, post, text):
+    if text != post["shown"] and await edit_report_post(client, conn, post, text) is not PostEdit.EDITED:
         return
     if final:
         db.delete_report_post(conn, post["match_id"])
@@ -47,19 +55,22 @@ async def refresh_report_post(client: discord.Client, conn: sqlite3.Connection, 
         db.set_report_post(conn, post["match_id"], post["message_id"], text)
 
 
-async def edit_report_post(client: discord.Client, conn: sqlite3.Connection, post: sqlite3.Row, text: str) -> bool:
-    """Change what a report post says. False if it's gone, in which case it's forgotten,
-    since there's nothing left to edit."""
+async def edit_report_post(client: discord.Client, conn: sqlite3.Connection, post: sqlite3.Row,
+                           text: str) -> PostEdit:
+    """Change what a report post says."""
     channel = client.get_channel(post["channel_id"])
     if channel is None:
         log.warning("Can't find channel %s to update a report post", post["channel_id"])
-        return True  # perhaps only for now, so it's tried again
+        return PostEdit.NOT_NOW
     try:
         await channel.get_partial_message(post["message_id"]).edit(content=text)
     except discord.NotFound:
         db.delete_report_post(conn, post["match_id"])
-        return False
-    return True
+        return PostEdit.GONE
+    except discord.HTTPException:
+        log.exception("Couldn't update the report post for match %s", post["match_id"])
+        return PostEdit.NOT_NOW
+    return PostEdit.EDITED
 
 
 async def open_report_post(client: discord.Client, conn: sqlite3.Connection, match_id: int, channel_id: int,
@@ -71,23 +82,11 @@ async def open_report_post(client: discord.Client, conn: sqlite3.Connection, mat
             await refresh_report_post(client, conn, post)
         return
     text, _ = reports.post_text(conn, db.get_report_post(conn, match_id), mention)
-    message = await post_in(client, channel_id, text)
+    message = await send_public(client.get_channel(channel_id), text)
     if message is None:
         db.delete_report_post(conn, match_id)  # so the next check tries again
     else:
         db.set_report_post(conn, match_id, message.id, text)
-
-
-async def post_in(client: discord.Client, channel_id: int, text: str) -> discord.Message | None:
-    channel = client.get_channel(channel_id)
-    if channel is None:
-        log.warning("Can't find channel %s to post: %s", channel_id, text)
-        return None
-    try:
-        return await channel.send(text)
-    except discord.HTTPException:
-        log.exception("Couldn't post to channel %s", channel_id)
-        return None
 
 
 async def _record_and_announce(interaction: discord.Interaction, session: TournamentSession,
@@ -126,25 +125,21 @@ async def _record_and_announce(interaction: discord.Interaction, session: Tourna
 
 async def announce_match_change(client: discord.Client, channel: discord.abc.Messageable | None, match_id: int,
                                 text: str) -> bool:
-    """Post an organizer's change to a match. When players' votes put up a report post,
-    that post becomes the announcement. The organizer it names isn't notified. False if
-    it couldn't be posted."""
+    """Announce how a match changed or ended. When players' votes put up a report post,
+    that post becomes the announcement. Otherwise, or if the post can't be edited right
+    now, `text` is posted in `channel`, and a post that's still there is left for the
+    background check to bring up to date. Nobody `text` mentions is notified. False if it
+    couldn't be posted."""
     conn = db.get_connection()
     try:
         post = db.get_report_post(conn, match_id)
         if post is not None and post["message_id"] is not None:
-            db.delete_report_post(conn, match_id)
-            if await edit_report_post(client, conn, post, text):
+            if await edit_report_post(client, conn, post, text) is PostEdit.EDITED:
+                db.delete_report_post(conn, match_id)
                 return True
     finally:
         conn.close()
-    if channel is None:
-        return False
-    try:
-        await channel.send(text, allowed_mentions=discord.AllowedMentions.none())
-    except discord.HTTPException:
-        return False
-    return True
+    return await send_public(channel, text, ping=False) is not None
 
 
 class ReportPicker(WinnerPicker):
@@ -214,11 +209,7 @@ class ResultsCog(commands.Cog):
         text = reports.give_win(conn, vote)
         if text is None:
             return  # the votes changed since they were checked
-        post = db.get_report_post(conn, vote["match_id"])
-        if post is not None and await edit_report_post(self.bot, conn, post, text):
-            db.delete_report_post(conn, post["match_id"])
-        else:
-            await post_in(self.bot, vote["channel_id"], text)
+        await announce_match_change(self.bot, self.bot.get_channel(vote["channel_id"]), vote["match_id"], text)
 
     @match_group.command(name="report", description="Report who won your match")
     @app_commands.describe(tournament="Tournament name")
@@ -281,16 +272,17 @@ class ResultsCog(commands.Cog):
             private = reports.vote_reply(outcome, found, winner_id, teams_by_id)
             await interaction.response.edit_message(content=private, view=None)
 
+            if outcome in ("agreed", "skipped"):
+                lines = [reports.ending_text(conn, tournament, found.match)]
+                if outcome == "skipped":
+                    lines += new_walkovers(conn, tournament, before)
+                await announce_match_change(self.bot, interaction.channel, found.match.id, "\n".join(lines))
+                return
             post = db.get_report_post(conn, found.match.id)
             if post is not None and post["message_id"] is not None:
                 await refresh_report_post(self.bot, conn, post)
             elif outcome == "disputed":
                 await open_report_post(self.bot, conn, found.match.id, interaction.channel_id, found.teams)
-            elif outcome in ("agreed", "skipped"):
-                lines = [reports.ending_text(conn, tournament, found.match)]
-                if outcome == "skipped":
-                    lines += new_walkovers(conn, tournament, before)
-                await post_in(self.bot, interaction.channel_id, "\n".join(lines))
         finally:
             conn.close()
 

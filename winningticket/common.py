@@ -224,14 +224,20 @@ async def announce(interaction: discord.Interaction, public: str, private: str, 
     post fails, they're told what it would have said. Without `ping`, users mentioned in
     `public` show by name but aren't notified."""
     await interaction.response.send_message(private, ephemeral=True)
-    if interaction.channel is not None:
-        try:
-            await interaction.channel.send(
-                public, allowed_mentions=None if ping else discord.AllowedMentions.none())
-            return
-        except discord.HTTPException:
-            pass
-    await interaction.followup.send(f"This couldn't be posted in the channel:\n{public}", ephemeral=True)
+    if await send_public(interaction.channel, public, ping) is None:
+        await interaction.followup.send(f"This couldn't be posted in the channel:\n{public}", ephemeral=True)
+
+
+async def send_public(channel: discord.abc.Messageable | None, text: str, ping: bool = True) -> discord.Message | None:
+    """Post `text` in `channel`, or return None if there's no channel or Discord refused.
+    Without `ping`, users mentioned in `text` show by name but aren't notified."""
+    if channel is None:
+        return None
+    try:
+        return await channel.send(text, allowed_mentions=None if ping else discord.AllowedMentions.none())
+    except discord.HTTPException:
+        log.exception("Couldn't post in channel %s", getattr(channel, "id", channel))
+        return None
 
 
 class MemberCooldown:

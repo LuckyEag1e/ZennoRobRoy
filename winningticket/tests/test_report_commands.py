@@ -8,6 +8,7 @@ from datetime import datetime, timedelta, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import discord
 import pytest
 
 import db
@@ -246,3 +247,83 @@ def test_a_deleted_warning_is_forgotten_and_the_win_announced_anew(world):
     assert db.get_report_posts(conn) == []
     conn.close()
     assert not sim.issues
+
+
+def _warned(sim, players, match_id):
+    """Ace claims the win and the loop warns about it. Returns the warning."""
+    _vote(sim, players["Ace"], "Ace")
+    _age(match_id, 6)
+    _run_loop(sim)
+    [warning] = _public(sim)
+    return warning
+
+
+def _report_posts():
+    conn = db.get_connection()
+    try:
+        return db.get_report_posts(conn)
+    finally:
+        conn.close()
+
+
+def test_a_warning_in_a_channel_out_of_reach_is_updated_once_its_back(world):
+    sim, organizer, players, tid, teams, match_id = world
+    warning = _warned(sim, players, match_id)
+    channel = sim.bot.channels.pop(sim.channel.id)
+    _age(match_id, 6)
+    _run_loop(sim)
+    assert _outcomes(tid).played == {match_id: teams["Ace"]}
+    assert len(_report_posts()) == 1  # kept, to finish once the channel is back
+
+    sim.bot.channels[channel.id] = channel
+    _run_loop(sim)
+    assert warning.content.startswith("📣 Round 1: **Ace** defeats **Blaze**.")
+    assert _public(sim) == [warning]
+    assert _report_posts() == []
+
+
+def test_a_warning_discord_wont_edit_doesnt_lose_the_organizers_result(world):
+    sim, organizer, players, tid, teams, match_id = world
+    warning = _warned(sim, players, match_id)
+    response = type("FakeHTTPResponse", (), {"status": 403, "reason": "Forbidden"})()
+
+    async def refuse(**kwargs):
+        raise discord.Forbidden(response, "Missing Access")
+    warning.edit = refuse
+
+    async def record():
+        menu = (await sim.run(organizer, "match result", tournament="Cup")).sent
+        await sim.choose(organizer, menu, str(match_id))
+        await sim.click(organizer, menu, "Blaze")
+    before = len(sim.channel.messages)
+    asyncio.run(record())
+    [announcement] = _public(sim, before)
+    assert announcement.content.startswith(f"📣 Round 1: **Blaze** defeats **Ace** (recorded by <@{organizer.id}>).")
+    assert _outcomes(tid).played == {match_id: teams["Blaze"]}
+    assert len(_report_posts()) == 1  # the warning is still to be brought up to date
+
+
+def test_calling_off_a_warned_match_announces_its_walkovers_on_the_warning(world):
+    sim, organizer, players, tid, teams, match_id = world
+
+    async def record_cyan():
+        menu = (await sim.run(organizer, "match result", tournament="Cup")).sent
+        await sim.choose(organizer, menu, str(_second_match(tid)))
+        await sim.click(organizer, menu, "Cyan")
+    asyncio.run(record_cyan())
+    sim.channel.messages.clear()
+
+    warning = _warned(sim, players, match_id)
+    _vote(sim, players["Ace"], "Blaze")
+    _vote(sim, players["Blaze"], "Ace")
+    assert warning.content == ("📣 Round 1: **Ace** vs **Blaze** was called off with no winner.\n"
+                               "Round 2: **Cyan** wins by walkover. 🏆 **Cyan** is the champion of Cup!")
+    assert _public(sim) == [warning]
+
+
+def _second_match(tournament_id):
+    conn = db.get_connection()
+    try:
+        return sorted(db.get_matches(conn, tournament_id).values(), key=bracket_order)[1].id
+    finally:
+        conn.close()

@@ -589,16 +589,19 @@ class WinningTicketCLI(cmd.Cmd):
         outcome = db.submit_report(self.conn, tournament["id"], found.match.id, found.team_id, winner_id,
                                    self.user_id, 0)
         print(reports.vote_reply(outcome, found, winner_id, teams_by_id))
+        if outcome in ("agreed", "skipped"):
+            # The bot edits any report post into this announcement, so the CLI forgets it.
+            db.delete_report_post(self.conn, found.match.id)
+            print(reports.ending_text(self.conn, tournament, found.match))
+            if outcome == "skipped":
+                for line in new_walkovers(self.conn, tournament, before):
+                    print(line)
+            return
         post = db.get_report_post(self.conn, found.match.id)
         if post is not None:
             self._refresh_report_post(post)
         elif outcome == "disputed":
             self._open_report_post(found.match.id, found.teams)
-        elif outcome in ("agreed", "skipped"):
-            print(reports.ending_text(self.conn, tournament, found.match))
-            if outcome == "skipped":
-                for line in new_walkovers(self.conn, tournament, before):
-                    print(line)
 
     def do_dropout(self, arg: str) -> None:
         "Drop the current user out, giving their remaining matches to their opponents: dropout <name>"
