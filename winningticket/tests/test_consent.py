@@ -204,3 +204,15 @@ def test_a_banned_member_can_still_opt_out(world):
     blocked, opted_out = asyncio.run(ban_then_opt_out())
     assert "blocked" in blocked.content
     assert "no longer linked" in opted_out.content and _entry("Ace") == ("Ace", None)
+
+
+def test_the_bot_is_only_linked_to_an_entry_while_it_plays_for_testing(world, monkeypatch):
+    sim, organizer, member = world
+    bot_user = sim.bot.user
+    monkeypatch.delenv("BOT_PLAYS_FOR_TESTING", raising=False)
+    asyncio.run(sim.run(organizer, "registration add", tournament="Cup", user=bot_user))
+    assert _entry(bot_user.display_name) == (bot_user.display_name, None)
+    monkeypatch.setenv("BOT_PLAYS_FOR_TESTING", "1")
+    asyncio.run(sim.run(organizer, "registration add", tournament="Shield", user=bot_user))
+    assert _entry(bot_user.display_name, "Shield") == (bot_user.display_name, bot_user.id)
+    assert not _agreed(bot_user.id)  # nobody agreed to anything, so nothing says they did

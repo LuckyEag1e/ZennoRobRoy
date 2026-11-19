@@ -2,6 +2,7 @@
 unanswered votes, run through the real cogs."""
 
 import asyncio
+import re
 import os
 import sys
 from datetime import datetime, timedelta, timezone
@@ -56,7 +57,7 @@ def _vote(sim, user, label):
 
 def _run_loop(sim):
     cog = sim.cogs["ResultsCog"]
-    asyncio.run(sim.run_background("report check", lambda: cog.settle_reports.coro(cog)))
+    asyncio.run(sim.run_background("match check", lambda: cog.tend_matches.coro(cog)))
 
 
 def _age(match_id, minutes):
@@ -65,7 +66,7 @@ def _age(match_id, minutes):
     conn = db.get_connection()
     with conn:
         conn.execute("UPDATE result_reports SET reported_at = ? WHERE match_id = ?", (then, match_id))
-        conn.execute("UPDATE report_posts SET updated_at = ? WHERE match_id = ?", (then, match_id))
+        conn.execute("UPDATE match_posts SET warned_at = ? WHERE match_id = ? AND warned_at IS NOT NULL", (then, match_id))
     conn.close()
 
 
@@ -78,7 +79,7 @@ def _outcomes(tournament_id):
 
 
 def _public(sim, since=0):
-    return [m for m in sim.channel.messages[since:] if m.public]
+    return [m for m in sim.channel.messages[since:] if m.public and not m.deleted]
 
 
 def test_matching_votes_are_recorded_and_announced_once(world):
@@ -115,7 +116,7 @@ def test_an_unanswered_claim_is_warned_about_then_given(world):
     assert len(_public(sim, before)) == 1
     assert _outcomes(tid).played == {match_id: teams["Ace"]}
     conn = db.get_connection()
-    assert db.get_report_posts(conn) == []
+    assert db.get_match_posts(conn) == []
     conn.close()
     assert not sim.issues
 
@@ -219,17 +220,22 @@ def test_an_organizer_changing_an_earlier_result_drops_later_votes(world):
     conn.close()
 
 
-def test_a_post_whose_sending_never_finished_is_posted_again(world):
+def test_a_post_whose_sending_never_finished_is_sent_on_the_next_check(world):
     sim, organizer, players, tid, teams, match_id = world
     _vote(sim, players["Ace"], "Ace")
     conn = db.get_connection()
-    db.claim_report_post(conn, match_id, sim.channel.id, (teams["Ace"], teams["Blaze"]))
+    db.claim_match_post(conn, match_id, sim.channel.id, (teams["Ace"], teams["Blaze"]))
     conn.close()
+    _run_loop(sim)
+    [waiting] = _public(sim)
+    assert waiting.content.startswith("⏳ Round 1: **Ace** reports winning. Waiting for **Blaze** to report, "
+                                      "or the win goes to **Ace** <t:")
+    assert _due_in_minutes(waiting) == 10
     _age(match_id, 6)
-    _run_loop(sim)  # drops the stuck post
-    _run_loop(sim)  # and warns again
-    [warning] = _public(sim)
-    assert warning.content.startswith("⏳ Round 1: **Ace** reports winning.")
+    _run_loop(sim)
+    [warning] = _public(sim)  # the warning takes over from it, to notify Blaze
+    assert warning.content.startswith("⏳ Round 1: **Ace** reports winning. <@11>")
+    assert waiting.deleted
 
 
 def test_a_deleted_warning_is_forgotten_and_the_win_announced_anew(world):
@@ -244,7 +250,7 @@ def test_a_deleted_warning_is_forgotten_and_the_win_announced_anew(world):
     [announcement] = _public(sim)
     assert announcement.content.startswith("⏰ Round 1: **Blaze** didn't report in time")
     conn = db.get_connection()
-    assert db.get_report_posts(conn) == []
+    assert db.get_match_posts(conn) == []
     conn.close()
     assert not sim.issues
 
@@ -258,10 +264,10 @@ def _warned(sim, players, match_id):
     return warning
 
 
-def _report_posts():
+def _match_posts():
     conn = db.get_connection()
     try:
-        return db.get_report_posts(conn)
+        return db.get_match_posts(conn)
     finally:
         conn.close()
 
@@ -273,13 +279,13 @@ def test_a_warning_in_a_channel_out_of_reach_is_updated_once_its_back(world):
     _age(match_id, 6)
     _run_loop(sim)
     assert _outcomes(tid).played == {match_id: teams["Ace"]}
-    assert len(_report_posts()) == 1  # kept, to finish once the channel is back
+    assert len(_match_posts()) == 1  # kept, to finish once the channel is back
 
     sim.bot.channels[channel.id] = channel
     _run_loop(sim)
     assert warning.content.startswith("📣 Round 1: **Ace** defeats **Blaze**.")
     assert _public(sim) == [warning]
-    assert _report_posts() == []
+    assert _match_posts() == []
 
 
 def test_a_warning_discord_wont_edit_doesnt_lose_the_organizers_result(world):
@@ -300,7 +306,7 @@ def test_a_warning_discord_wont_edit_doesnt_lose_the_organizers_result(world):
     [announcement] = _public(sim, before)
     assert announcement.content.startswith(f"📣 Round 1: **Blaze** defeats **Ace** (recorded by <@{organizer.id}>).")
     assert _outcomes(tid).played == {match_id: teams["Blaze"]}
-    assert _report_posts() == []
+    assert _match_posts() == []
 
     warning.delete = refuse
     _run_loop(sim)
@@ -315,7 +321,7 @@ def test_a_warning_discord_wont_edit_doesnt_lose_the_organizers_result(world):
 def _replaced_posts():
     conn = db.get_connection()
     try:
-        return db.get_replaced_report_posts(conn)
+        return db.get_replaced_match_posts(conn)
     finally:
         conn.close()
 
@@ -346,14 +352,32 @@ def _second_match(tournament_id):
         conn.close()
 
 
-def test_the_vote_reply_says_how_long_is_really_left(world):
+def _due_in_minutes(reply):
+    """How far off the countdown in a vote reply is, in whole minutes."""
+    [stamp] = re.findall(r"<t:(\d+):R>", reply.content)
+    return round((int(stamp) - datetime.now(timezone.utc).timestamp()) / 60)
+
+
+def test_the_vote_reply_counts_down_to_when_the_win_is_really_given(world):
     sim, organizer, players, tid, teams, match_id = world
     first = _vote(sim, players["Ace"], "Ace")
-    assert "within 10 minutes" in first.content
+    assert "the win is yours <t:" in first.content and _due_in_minutes(first) == 10
     _age(match_id, 6)
     _run_loop(sim)
     changed = _vote(sim, players["Ace"], "Blaze")  # the warning is up, so its clock restarts
-    assert "or in 5 minutes" in changed.content
+    assert "or <t:" in changed.content and _due_in_minutes(changed) == 5
+
+
+def test_repeating_a_vote_doesnt_restart_the_other_sides_time(world):
+    sim, organizer, players, tid, teams, match_id = world
+    _vote(sim, players["Ace"], "Ace")
+    _age(match_id, 4)
+    again = _vote(sim, players["Ace"], "Ace")
+    assert _due_in_minutes(again) == 6
+    _age(match_id, 6)  # the first vote, unmoved by the repeat, is now past its 5 minutes
+    _run_loop(sim)
+    [warning] = _public(sim)
+    assert warning.content.startswith("⏳ Round 1: **Ace** reports winning.")
 
 
 def test_conceding_after_a_warning_rewords_it_without_asking_the_winner(world):

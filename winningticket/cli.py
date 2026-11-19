@@ -15,7 +15,9 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import csv_import
+import coordination
 import db
+import match_posts
 import reports
 import tournament_builder
 from ascii_bracket import prediction_marker, real_result_marker, render_tree
@@ -96,6 +98,22 @@ def take_option(arg: str, flag: str) -> tuple[str, str | None]:
     return (arg[:found.start()] + arg[found.end():]).strip(), found.group(1) or ""
 
 
+def room_label(room_id: int) -> str:
+    """How the CLI names a match room, standing in for a voice channel mention."""
+    return f"room {room_id}"
+
+
+def parse_match_slots(value: str | None) -> int | None | bool:
+    """The number given with --match-slots, None when it wasn't given, or False, after
+    saying so, when it isn't a whole number of at least 1."""
+    if value is None:
+        return None
+    if not value.isdigit() or int(value) < 1:
+        print("--match-slots must be a whole number of at least 1")
+        return False
+    return int(value)
+
+
 def check_seeding(seeding: str | None) -> bool:
     """False, after saying so, if a --seeding value was given but isn't a seeding mode."""
     if seeding is not None and seeding not in db.SEEDING_MODES:
@@ -117,11 +135,12 @@ class WinningTicketCLI(cmd.Cmd):
         db.init_db(self.conn)
         self.user_id = 1
         self.user_name = "tester"
+        self.rooms: list[int] = []  # pretend voice channels, set with admin_matchrooms
         self._update_prompt()
 
     def onecmd(self, line: str) -> bool:
         self._close_due_registrations()
-        self._settle_due_reports()
+        self._tend_matches()
         command = self.parseline(line)[0]
         if command and command not in ALLOWED_WHEN_BANNED and db.is_banned(self.conn, GUILD_ID, self.user_id):
             print("An admin has blocked you from using WinningTicket. Use 'as' to switch user.")
@@ -146,40 +165,47 @@ class WinningTicketCLI(cmd.Cmd):
                 continue
             print(f"Registration for '{name}' closed automatically; {count} entrants {draw_description(tournament['seeding_mode'])}.")
 
-    def _settle_due_reports(self) -> None:
-        """The bot warns about and gives unanswered votes, and updates each match's report
-        post, from a background loop. The CLI has none, so it does the same before each
-        command, printing what the bot would post or edit."""
-        for step in reports.due_steps(self.conn, datetime.now(timezone.utc)):
+    def _tend_matches(self) -> None:
+        """The bot calls matches, warns about and gives unanswered votes, and updates each
+        match's post from a background loop. The CLI has none, so it does the same before
+        each command, printing what the bot would post or edit."""
+        now = datetime.now(timezone.utc)
+        for tournament in db.get_tournaments_to_tend(self.conn):
+            coordination.tend(self.conn, tournament, now, self.rooms)
+        coordination.call_queued(self.conn, GUILD_ID, self.rooms)
+        for step in reports.due_steps(self.conn, now):
             vote = step.vote
             if step.kind == "warn":
-                teams = db.match_now(self.conn, vote["tournament_id"], vote["match_id"]).teams
-                self._open_report_post(vote["match_id"], teams)
+                reports.warn(self.conn, vote)
             else:
                 text = reports.give_win(self.conn, vote)
                 if text is not None:
-                    db.delete_report_post(self.conn, vote["match_id"])
+                    db.delete_match_post(self.conn, vote["match_id"])
                     print(text)
-        for post in db.get_report_posts(self.conn):
-            self._refresh_report_post(post)
+        for post in db.get_match_posts(self.conn):
+            self._sync_match_post(post["match_id"])
 
-    def _open_report_post(self, match_id: int, teams: tuple[int, int]) -> None:
-        # The CLI has no messages, so every post gets message id 0.
-        if db.claim_report_post(self.conn, match_id, 0, teams):
-            text, _ = reports.post_text(self.conn, db.get_report_post(self.conn, match_id), user_label)
-            db.set_report_post(self.conn, match_id, 0, text)
-            print(text)
-        else:
-            self._refresh_report_post(db.get_report_post(self.conn, match_id))
-
-    def _refresh_report_post(self, post) -> None:
-        text, final = reports.post_text(self.conn, post, user_label)
-        if text != post["shown"]:
-            print(f"(report post edited) {text}")
-        if final:
-            db.delete_report_post(self.conn, post["match_id"])
-        else:
-            db.set_report_post(self.conn, post["match_id"], post["message_id"], text)
+    def _sync_match_post(self, match_id: int) -> None:
+        """The CLI's version of posting.sync_match_post. It has no messages, so every post
+        gets message id 0, and a post sent afresh is printed the same as an edit."""
+        post = db.get_match_post(self.conn, match_id)
+        if post is None:
+            return
+        state = match_posts.describe(self.conn, post, user_label, room_label)
+        fresh = post["message_id"] is None or (state.ping is not None and state.ping != post["pinged"])
+        if fresh or state.text != post["shown"]:
+            buttons = [name for name, shown in (("Ready Up", state.ready_button), ("Report Result", state.report_button))
+                       if shown]
+            print(f"(match post{'' if fresh else ' edited'}) {state.text}" + "".join(f" [{name}]" for name in buttons))
+            if fresh:
+                db.take_over_match_post(self.conn, match_id, db.claim_post_send(self.conn, match_id), 0, state.text,
+                                        state.ping or post["pinged"])
+                if state.ping is not None and state.ping.startswith("warning:"):
+                    db.warn_on_match_post(self.conn, match_id)
+            else:
+                db.set_match_post(self.conn, match_id, 0, state.text, post["pinged"])
+        if state.final:
+            db.delete_match_post(self.conn, match_id)
 
     def _update_prompt(self) -> None:
         self.prompt = f"(tourney:{self.user_name}) "
@@ -218,13 +244,15 @@ class WinningTicketCLI(cmd.Cmd):
             print(f"- {name} [{tournament['status']}]")
 
     def do_create(self, arg: str) -> None:
-        "Create a tournament from a CSV file: create <name> <csv_path>"
-        parts = shlex.split(arg)
+        "Create a tournament from a CSV file: create <name> <csv_path> [--match-slots N]"
+        rest, slots = take_option(arg, "--match-slots")
+        parts = shlex.split(rest)
         if len(parts) != 2:
-            print("usage: create <name> <csv_path>")
+            print("usage: create <name> <csv_path> [--match-slots N]")
             return
         name, csv_path = parts
-        if self._name_taken(name):
+        match_slots = parse_match_slots(slots)
+        if match_slots is False or self._name_taken(name) or not self._match_slots_fit(match_slots):
             return
         try:
             content = Path(csv_path).read_text()
@@ -233,7 +261,8 @@ class WinningTicketCLI(cmd.Cmd):
             return
         try:
             rows = csv_import.parse_csv(content)
-            csv_import.import_tournament(self.conn, GUILD_ID, name, self.user_id, rows)
+            tournament_id = csv_import.import_tournament(self.conn, GUILD_ID, name, self.user_id, rows)
+            db.set_match_slots(self.conn, tournament_id, match_slots)
         except csv_import.CsvValidationError as e:
             print(f"CSV error: {e}")
             return
@@ -247,10 +276,14 @@ class WinningTicketCLI(cmd.Cmd):
     def do_lock(self, arg: str) -> None:
         "Lock a tournament and start recording real results: lock <name>"
         status = self._advance_status(arg.strip(), "in_progress")
+        if status is None:
+            return
+        tournament = db.get_tournament_by_name(self.conn, GUILD_ID, arg.strip())
+        db.set_tournament_channel_if_missing(self.conn, tournament["id"], 0)
         if status == "completed":
             print(f"'{arg.strip()}' locked. {SETTLED_BEFORE_LOCK}")
-        elif status is not None:
-            print(f"'{arg.strip()}' locked. Use 'matchresult' to record real outcomes.")
+        else:
+            print(f"'{arg.strip()}' locked. Players report with 'matchreport'; 'matchresult' records any result.")
 
     def do_conclude(self, arg: str) -> None:
         "Archive a finished tournament and show its final results: conclude <name>"
@@ -333,13 +366,15 @@ class WinningTicketCLI(cmd.Cmd):
     # -- registration --------------------------------------------------------
 
     def do_regopen(self, arg: str) -> None:
-        "Create a tournament that takes sign-ups, closing automatically after --closes-in hours if given: regopen <name> [--closes-in HOURS] [--seeding standard|slide|random]"
+        "Create a tournament that takes sign-ups, closing automatically after --closes-in hours if given: regopen <name> [--closes-in HOURS] [--seeding standard|slide|random] [--match-slots N]"
         rest, seeding = take_option(arg, "--seeding")
+        rest, slots = take_option(rest, "--match-slots")
         name, hours = take_option(rest, "--closes-in")
         if not name:
-            print("usage: regopen <name> [--closes-in HOURS] [--seeding standard|slide|random]")
+            print("usage: regopen <name> [--closes-in HOURS] [--seeding standard|slide|random] [--match-slots N]")
             return
-        if not check_seeding(seeding):
+        match_slots = parse_match_slots(slots)
+        if not check_seeding(seeding) or match_slots is False or not self._match_slots_fit(match_slots):
             return
         closes_at = None
         if hours:
@@ -355,8 +390,10 @@ class WinningTicketCLI(cmd.Cmd):
             closes_at = datetime.now(timezone.utc) + timedelta(hours=closes_in)
         if self._name_taken(name):
             return
-        db.open_registration(self.conn, GUILD_ID, name, self.user_id, None,
-                             db.to_db_time(closes_at) if closes_at is not None else None, seeding or "standard")
+        tournament_id = db.open_registration(self.conn, GUILD_ID, name, self.user_id, None,
+                                             db.to_db_time(closes_at) if closes_at is not None else None,
+                                             seeding or "standard")
+        db.set_match_slots(self.conn, tournament_id, match_slots)
         closing = f" Sign-ups close at {closes_at:%H:%M:%S} UTC." if closes_at is not None else ""
         print(f"Sign-ups open for '{name}'.{closing} Use 'as' to switch users, then 'register {name}'.")
 
@@ -577,9 +614,7 @@ class WinningTicketCLI(cmd.Cmd):
         if choice == "t" and found.vote is not None:
             db.take_back_report(self.conn, found.match.id, found.team_id)
             print("Your vote is taken back.")
-            post = db.get_report_post(self.conn, found.match.id)
-            if post is not None:
-                self._refresh_report_post(post)
+            self._sync_match_post(found.match.id)
             return
         if choice not in ("1", "2"):
             print("Invalid choice.")
@@ -590,18 +625,31 @@ class WinningTicketCLI(cmd.Cmd):
                                    self.user_id, 0)
         print(reports.vote_reply(self.conn, outcome, found, winner_id, teams_by_id))
         if outcome in ("agreed", "skipped"):
-            # The bot edits any report post into this announcement, so the CLI forgets it.
-            db.delete_report_post(self.conn, found.match.id)
+            # The bot edits any match post into this announcement, so the CLI forgets it.
+            db.delete_match_post(self.conn, found.match.id)
             print(reports.ending_text(self.conn, tournament, found.match))
             if outcome == "skipped":
                 for line in new_walkovers(self.conn, tournament, before):
                     print(line)
             return
-        post = db.get_report_post(self.conn, found.match.id)
-        if post is not None:
-            self._refresh_report_post(post)
+        if db.get_match_post(self.conn, found.match.id) is not None:
+            self._sync_match_post(found.match.id)
         elif outcome == "disputed":
-            self._open_report_post(found.match.id, found.teams)
+            db.claim_match_post(self.conn, found.match.id, 0, found.teams)
+            self._sync_match_post(found.match.id)
+
+    def do_ready(self, arg: str) -> None:
+        "Ready up for your called match, as the current user: ready <name>"
+        tournament = self._require_tournament(arg.strip())
+        if tournament is None:
+            return
+        team_id = db.get_entrant_team_id(self.conn, tournament["id"], self.user_id)
+        call = next((c for c in db.get_calls(self.conn, tournament["id"]) if team_id in (c["team_a_id"], c["team_b_id"])), None)
+        if call is None:
+            print("You don't have a called match waiting for you to ready up.")
+            return
+        print(coordination.ready_up(self.conn, call["match_id"], self.user_id, self.rooms))
+        self._sync_match_post(call["match_id"])
 
     def do_dropout(self, arg: str) -> None:
         "Drop the current user out, giving their remaining matches to their opponents: dropout <name>"
@@ -661,6 +709,7 @@ class WinningTicketCLI(cmd.Cmd):
         if tournament is None:
             return
         print(f"Status set to {db.set_tournament_status(self.conn, tournament['id'], status)}.")
+        db.set_tournament_channel_if_missing(self.conn, tournament["id"], 0)
 
     def do_admin_delete(self, arg: str) -> None:
         "Permanently delete a tournament (asks you to retype the name): admin_delete <name>"
@@ -782,8 +831,8 @@ class WinningTicketCLI(cmd.Cmd):
         matches_by_id, feeders, teams_by_id = db.load_bracket(self.conn, tournament["id"])
         outcomes = db.get_outcomes(self.conn, tournament["id"])
         slots = resolve_all_slots(matches_by_id, outcomes.winners.get, feeders)
-        # Walkovers follow from withdrawals, so they're undone with admin_reinstate instead.
-        clearable = set(outcomes.played) | outcomes.skipped
+        # Walkovers from withdrawals are undone with admin_reinstate instead.
+        clearable = set(outcomes.played) | outcomes.skipped | outcomes.forfeits
         decided = sorted((m for m in matches_by_id.values() if m.id in clearable), key=bracket_order)
         if not decided:
             print("No recorded results to clear.")
@@ -854,6 +903,41 @@ class WinningTicketCLI(cmd.Cmd):
             return
         lines, dropped = skip_and_describe(self.conn, tournament, match.id, slots[match.id], self.user_id, user_label)
         print("\n".join(lines) + dropped_results_note(dropped))
+
+    def do_admin_matchrooms(self, arg: str) -> None:
+        "Pretend the server has this many voice rooms for called matches: admin_matchrooms <count>"
+        if not arg.strip().isdigit():
+            print("usage: admin_matchrooms <count>")
+            return
+        self.rooms = list(range(1, int(arg.strip()) + 1))
+        print(f"Called matches are played in {len(self.rooms)} room(s).")
+
+    def do_admin_matchslots(self, arg: str) -> None:
+        "Set how many matches the bot calls at once, or 'off' to stop: admin_matchslots <name> <N|off>"
+        parts = shlex.split(arg)
+        if len(parts) != 2:
+            print("usage: admin_matchslots <name> <N|off>")
+            return
+        tournament = self._require_tournament(parts[0], needs_bracket=False)
+        match_slots = None if parts[1] == "off" else parse_match_slots(parts[1])
+        if tournament is None or match_slots is False or not self._match_slots_fit(match_slots):
+            return
+        db.set_match_slots(self.conn, tournament["id"], match_slots)
+        db.set_tournament_channel_if_missing(self.conn, tournament["id"], 0)
+        print(f"'{parts[0]}' " + (f"has up to {match_slots} matches called at once." if match_slots
+                                  else "no longer has its matches called."))
+
+    def _match_slots_fit(self, match_slots: int | None) -> bool:
+        """False, after saying why, if the bot can't call `match_slots` matches at once."""
+        if match_slots is None:
+            return True
+        if not self.rooms:
+            print("Set up the match rooms first with 'admin_matchrooms'.")
+            return False
+        if match_slots > len(self.rooms):
+            print(f"There are only {len(self.rooms)} room(s), so at most {len(self.rooms)} matches can be called at once.")
+            return False
+        return True
 
     def do_admin_clearpredictions(self, arg: str) -> None:
         "Wipe a user's saved predictions: admin_clearpredictions <name> <user_id>"
@@ -1064,7 +1148,7 @@ class WinningTicketCLI(cmd.Cmd):
         if allow_overwrite:
             # Walkovers are undone with admin_reinstate, not overwritten.
             candidates = [m for m in matches_with_both_teams(matches_by_id, slots)
-                          if m.id not in outcomes.unplayed]
+                          if m.id not in outcomes.from_withdrawals]
         else:
             candidates = resolvable_matches(matches_by_id, feeders, outcomes.winners.get, outcomes.decided)
 

@@ -13,6 +13,7 @@ import db
 from bracket import BracketError
 from common import (
     BotView,
+    bot_plays_for_testing,
     edit_signups_message,
     load_bracket_embed,
     refuse_taken_name,
@@ -25,6 +26,7 @@ from common import (
 )
 from embeds import EMBED_DESCRIPTION_LIMIT, mention
 from labels import CONSENT_NOTICE, OPTED_OUT_NOTE, draw_description, entrant_lines, join_within, name_held_message
+from posting import MATCH_SLOTS_HELP, match_slots_problem
 from tournament_builder import (
     MAX_CLOSES_IN_HOURS,
     MIN_CLOSES_IN_HOURS,
@@ -191,12 +193,13 @@ class RegistrationCog(commands.Cog):
         name="Tournament name",
         closes_in_hours="Close sign-ups automatically after this many hours (leave blank to close by hand)",
         seeding=SEEDING_OPTION_HELP,
+        match_slots=MATCH_SLOTS_HELP,
     )
     @app_commands.choices(seeding=SEEDING_CHOICES)
     @requires_manage_server
     async def open_signups(self, interaction: discord.Interaction, name: str,
                    closes_in_hours: app_commands.Range[float, MIN_CLOSES_IN_HOURS, MAX_CLOSES_IN_HOURS] | None = None,
-                   seeding: str = "standard") -> None:
+                   seeding: str = "standard", match_slots: app_commands.Range[int, 1] | None = None) -> None:
         closes_at = None
         if closes_in_hours is not None:
             closes_at = datetime.now(timezone.utc) + timedelta(hours=closes_in_hours)
@@ -204,10 +207,15 @@ class RegistrationCog(commands.Cog):
         try:
             if await refuse_taken_name(interaction, conn, name):
                 return
+            problem = match_slots_problem(self.bot, interaction.guild_id, conn, match_slots) if match_slots else None
+            if problem is not None:
+                await interaction.response.send_message(problem, ephemeral=True)
+                return
             tournament_id = db.open_registration(
                 conn, interaction.guild_id, name, interaction.user.id, interaction.channel_id,
                 db.to_db_time(closes_at) if closes_at is not None else None, seeding,
             )
+            db.set_match_slots(conn, tournament_id, match_slots)
             await interaction.response.send_message(signups_message(db.get_tournament(conn, tournament_id), 0))
             message = await interaction.original_response()
             db.set_announcement_message(conn, tournament_id, message.id)
@@ -286,8 +294,10 @@ class RegistrationCog(commands.Cog):
                     f"{user.display_name} is already signed up for **{tournament}**.", ephemeral=True
                 )
                 return
-            # A member's entry is only linked to them once they've agreed to it themselves.
-            linked = user is not None and db.has_agreed(conn, interaction.guild_id, user.id)
+            # A member's entry is only linked to them once they've agreed to it themselves. The
+            # bot can't agree to anything, so it's only linked while it plays for testing.
+            playing_bot = user is not None and user.id == interaction.client.user.id and bot_plays_for_testing()
+            linked = user is not None and (playing_bot or db.has_agreed(conn, interaction.guild_id, user.id))
             entrant = db.register_entrant(
                 conn, tournament_row["id"], name or user.display_name, user.id if linked else None
             )

@@ -6,7 +6,7 @@ dataclasses/dicts so it can be unit tested without a database or a running bot.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Callable, Optional
 
 
@@ -68,6 +68,7 @@ class Outcomes:
     skipped: set[int]  # matches someone called off with no winner
     empty: set[int]  # matches with nobody left to play them, after withdrawals or skips
     stale: list[int]  # recorded results and skips that no longer fit the bracket
+    forfeits: set[int] = field(default_factory=set)  # walkovers recorded because a side never readied up
 
     @property
     def played(self) -> dict[int, int]:
@@ -79,9 +80,10 @@ class Outcomes:
         return set(self.winners) | self.skipped | self.empty
 
     @property
-    def unplayed(self) -> set[int]:
-        """Matches settled with no game: walkovers, and those with nobody left."""
-        return self.walkovers | self.empty
+    def from_withdrawals(self) -> set[int]:
+        """Matches withdrawals settled with no game, which nothing recorded, so only
+        reinstating undoes them: walkovers, and matches with nobody left."""
+        return (self.walkovers - self.forfeits) | self.empty
 
 
 WinnerLookup = Callable[[int], Optional[int]]
@@ -280,9 +282,11 @@ def settle(
     recorded: dict[int, int],
     skips: dict[int, tuple[Optional[int], Optional[int]]],
     withdrawn: set[int],
+    forfeits: frozenset[int] = frozenset(),
 ) -> Outcomes:
-    """Work out how every match ended from what was recorded: `recorded` winners, `skips`
-    (each with the matchup it called off), and the `withdrawn` entrants.
+    """Work out how every match ended from what was recorded: `recorded` winners (those in
+    `forfeits` won because the other side never showed up), `skips` (each with the matchup
+    it called off), and the `withdrawn` entrants.
 
     A match nobody recorded is still decided once both of its sides are settled and at
     least one is missing: the one entrant still playing wins by walkover, and a match
@@ -302,6 +306,9 @@ def settle(
         if match.id in recorded:
             if recorded[match.id] in teams:
                 outcomes.winners[match.id] = recorded[match.id]
+                if match.id in forfeits:
+                    outcomes.walkovers.add(match.id)
+                    outcomes.forfeits.add(match.id)
                 continue
             outcomes.stale.append(match.id)
         elif match.id in skips:

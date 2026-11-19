@@ -34,7 +34,7 @@ from sim.actors import (
     guessed_winner,
 )
 from cogs.tournament import LIVE_POST_IN_VIEW, render_live_post
-from sim.discord_fakes import FakeAttachment
+from sim.discord_fakes import FakeAttachment, FakeCategory
 from sim.harness import GUILD_ID, Simulation
 
 CONFIRM_BRACKET = "Confirm & Save Bracket"
@@ -45,6 +45,9 @@ NOISE_LIMIT = 2
 START_OVER = "Start Over"
 # How many players agree to link their data when they first sign up.
 AGREES_TO_LINK = 0.8
+
+# Voice rooms in a coordinated scenario, and so how many matches are called at once.
+MATCH_ROOMS = 2
 
 # Rounds an organizer waits for players to report before recording results themselves.
 ORGANIZER_PATIENCE = 3
@@ -75,6 +78,7 @@ class Scenario:
     format: str = "single_elim"    # the only format the bot supports so far
     dropouts: bool = False         # as play starts, entrants drop out or are disqualified, and a game is called off
     self_reported: bool = False    # players report their own matches; organizers settle the rest
+    coordinated: bool = False      # the bot calls matches into voice rooms, and players ready up
 
 
 SCENARIOS = {
@@ -97,6 +101,9 @@ SCENARIOS = {
         Scenario("reported", "Players report their own results at once, a chaotic one sometimes falsely, and organizers settle disputes.",
                  ((DILIGENT, 3), (CASUAL, 3), (CHAOTIC, 2)), SLOPPY, guests=1, crowded=True, simultaneous=True,
                  self_reported=True),
+        Scenario("coordinated", "Matches are called two at a time into voice rooms. Players ready up and report, and a few don't show.",
+                 ((DILIGENT, 3), (CASUAL, 3), (CHAOTIC, 2)), SLOPPY, guests=1, crowded=True, simultaneous=True,
+                 self_reported=True, coordinated=True),
         Scenario("dropouts", "As play starts, a player drops out, a guest is disqualified and a game is called off.",
                  ((DILIGENT, 4), (CASUAL, 4)), SLOPPY, guests=2, dropouts=True),
     ]
@@ -126,6 +133,8 @@ class TournamentRun:
     # Entrants who have left, and matches called off, which the real results play around.
     out: set[int] = field(default_factory=set)
     called_off: set[int] = field(default_factory=set)
+    # For each called match, the entrants who never turn up for it, decided when it's first called.
+    no_shows: dict[int, set[int]] = field(default_factory=dict)
 
     # -- reading the bot's state --------------------------------------------------------
 
@@ -261,11 +270,18 @@ class TournamentRun:
             message = clicked.sent
 
     async def report_result(self, player: Player) -> None:
-        """/match report on their own match. They name who really won, except that a
-        player who goes off script sometimes claims a game they lost. They skip a matchup
-        they never played, which shows up while an earlier result is wrong."""
-        reply = await self.sim.run(player.user, "match report", tournament=await self.tournament_name(player, "match report"))
-        message = reply.sent
+        """Report their own match, from the Report Result button on its post when the bot
+        started it (about half the time), or else with /match report. They name who really
+        won, except that a player who goes off script sometimes claims a game they lost.
+        They skip a matchup they never played, which shows up while an earlier result is wrong."""
+        post = next((m for m in self.sim.visible_messages(player.user) if m.public and self._is_own_match_post(player, m)),
+                    None)
+        if post is not None and self.rng.random() < 0.5:
+            reply = await self.sim.click(player.user, post, "Report Result")
+        else:
+            reply = await self.sim.run(player.user, "match report",
+                                       tournament=await self.tournament_name(player, "match report"))
+        message = reply.sent if reply is not None else None
         buttons = [item.label for item in message.view.children] if message is not None and message.view is not None else []
         if len(buttons) < 2:
             return
@@ -284,6 +300,39 @@ class TournamentRun:
         if self.rng.random() < player.competence.double_click:
             await self.sim.click(player.user, message, team_label(teams_by_id, winner)[:80], late=True)
 
+    async def ready_up(self, player: Player) -> None:
+        """Press Ready Up on the call for their match, unless they're one who doesn't show."""
+        call = next((m for m in self.sim.visible_messages(player.user)
+                     if m.public and player.user.mention in (m.content or "") and _post_button(m, "ready") is not None),
+                    None)
+        if call is None:
+            return
+        match_id = _post_button(call, "ready")
+        if match_id not in self.no_shows:
+            # Decided once, before anyone can know the match's real result, which plays around it.
+            matches_by_id, feeders, _, _ = self._bracket()
+            self.no_shows[match_id] = {
+                team for team in self._real_matchup(match_id, matches_by_id, feeders) if team is not None
+                and any(self._is_players_team(p, team) and self.rng.random() < p.competence.off_script / 2
+                        for p in self.players)}
+        own = next((team for team in self._call_teams(match_id) if self._is_players_team(player, team)), None)
+        if player is self.banned and own is not None:
+            self.no_shows[match_id].add(own)  # the bot won't let them ready up, so they forfeit
+        if own not in self.no_shows[match_id]:
+            await self.sim.click(player.user, call, "Ready Up")
+
+    def _is_own_match_post(self, player: Player, message) -> bool:
+        match_id = _post_button(message, "report")
+        return match_id is not None and any(self._is_players_team(player, team) for team in self._call_teams(match_id))
+
+    def _call_teams(self, match_id: int) -> tuple[int, int]:
+        conn = db.get_connection()
+        try:
+            call = db.get_call(conn, match_id)
+            return (call["team_a_id"], call["team_b_id"]) if call is not None else ()
+        finally:
+            conn.close()
+
     def _is_players_team(self, player: Player, team_id: int) -> bool:
         conn = db.get_connection()
         try:
@@ -296,11 +345,12 @@ class TournamentRun:
         votes nobody answered and then gives them."""
         conn = db.get_connection()
         with conn:
-            for table, column in (("result_reports", "reported_at"), ("report_posts", "updated_at")):
+            for table, column in (("result_reports", "reported_at"), ("match_posts", "warned_at"),
+                                  ("match_calls", "called_at"), ("match_calls", "reminded_at")):
                 conn.execute(f"UPDATE {table} SET {column} = strftime('%Y-%m-%dT%H:%M:%fZ', {column}, '-6 minutes')")
         conn.close()
         cog = self.sim.cogs["ResultsCog"]
-        await self.sim.run_background("report check", lambda: cog.settle_reports.coro(cog))
+        await self.sim.run_background("match check", lambda: cog.tend_matches.coro(cog))
 
     async def match_stats(self, player: Player) -> None:
         reply = await self.sim.run(player.user, "match stats",
@@ -442,6 +492,14 @@ class TournamentRun:
         await self.sim.run(org, "tournament lock", name=self.name)
         if self.scenario.dropouts:
             await self._lose_entrants()
+        if self.scenario.coordinated:
+            # Asking for more matches at once than there are rooms is refused. The organizer
+            # starts with one match at a time, then opens the second room.
+            if self.rng.random() < style.wrong_order:
+                await self.sim.run(org, "admin matchslots", tournament=self.name, match_slots=MATCH_ROOMS + 1)
+            await self.sim.run(org, "admin matchslots", tournament=self.name, match_slots=1)
+            await self.let_time_pass()
+            await self.sim.run(org, "admin matchslots", tournament=self.name, match_slots=MATCH_ROOMS)
         await self._play_matches()
         # A last look over every result before concluding. Fixing an early one can drop the
         # final's result, and then there are games left to record.
@@ -467,8 +525,14 @@ class TournamentRun:
         org, style = self.organizer.user, self.organizer.style
         # Leaving seeding out tries the default.
         seeding = self.rng.choice([{}, {"seeding": "slide"}, {"seeding": "random"}])
+        coordination = {}
+        if self.scenario.coordinated:
+            category = FakeCategory("Match Rooms", MATCH_ROOMS)
+            self.sim.bot.channels[category.id] = category
+            await self.sim.run(org, "admin matchrooms", category=category)
+            coordination = {"match_slots": MATCH_ROOMS}
         await self.sim.run(org, "registration open", name=self.name,
-                           closes_in_hours=1.0 if style.uses_deadline else None, **seeding)
+                           closes_in_hours=1.0 if style.uses_deadline else None, **seeding, **coordination)
         self._remember_tournament_id()
         if self.rng.random() < style.wrong_order:
             await self.sim.run(org, "registration close", name=self.name)  # far too early
@@ -591,6 +655,8 @@ class TournamentRun:
             onlookers = [p.take_turn(self) for p in self.rng.sample(self.players, min(2, len(self.players)))]
             reporters = [self.report_result(p) for p in self.players
                          if self.scenario.self_reported and self.rng.random() < p.competence.reports]
+            if self.scenario.coordinated:
+                reporters += [self.ready_up(p) for p in self.players]
             await self._all_at_once([self._organizer_round(o, found_a_match, leave_to_players) for o in organizers]
                                     + onlookers + reporters + [self.refresh_live_posts()])
             await self.refresh_live_posts()
@@ -721,7 +787,8 @@ class TournamentRun:
         entrant who has left loses without playing, and a called-off game has no winner."""
         if match_id not in self.real_winners:
             team_a, team_b = self._real_matchup(match_id, matches_by_id, feeders)
-            present = [team for team in (team_a, team_b) if team is not None and team not in self.out]
+            gone = self.out | self.no_shows.get(match_id, set())
+            present = [team for team in (team_a, team_b) if team is not None and team not in gone]
             if match_id in self.called_off or not present:
                 self.real_winners[match_id] = None
             elif len(present) == 1:
@@ -963,6 +1030,15 @@ class TournamentRun:
         actual = {score.user_id: score.points for score in scores}
         if actual != expected:
             self.sim._problem(f"leaderboard points {actual} don't match the picks and results {expected}")
+
+
+def _post_button(message, kind: str) -> Optional[int]:
+    """The match a match post's `kind` button ("ready" or "report") is for, or None if it
+    has no such button."""
+    if message.view is None:
+        return None
+    return next((int(item.item.custom_id.split(":")[1]) for item in message.view.children
+                 if isinstance(item, discord.ui.DynamicItem) and item.item.custom_id.startswith(f"{kind}:")), None)
 
 
 def _menu(message) -> Optional[discord.ui.Select]:

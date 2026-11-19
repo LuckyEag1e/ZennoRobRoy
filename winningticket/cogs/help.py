@@ -30,7 +30,8 @@ class HelpCog(commands.Cog):
             ("/rating", "See your Elo rating from past tournaments, which decides your seed. Only you see it."),
             ("/predict tournament:<name>", "Fill out your bracket prediction, round by round."),
             ("/mypicks tournament:<name>", "See your saved picks and current score."),
-            ("/match report tournament:<name>", "Report who won your match. It's recorded once your opponent agrees, or after 10 minutes with no answer from them (they're reminded in the channel halfway through). Until then you can change your vote or take it back."),
+            ("Ready Up", "When the bot calls your match, press **Ready Up** on its post. Once both sides are ready, it tells you which voice room to play and stream in. A side that isn't ready within 10 minutes forfeits."),
+            ("/match report tournament:<name>", "Report who won your match. It's recorded once your opponent agrees, or after 10 minutes with no answer from them (they're reminded in the channel halfway through). Until then you can change your vote or take it back. When the bot called your match, its post has a Report Result button that does the same."),
             ("/match dropout tournament:<name> confirm_name:<name>", "Drop out of a tournament you're playing in. Your remaining matches go to your opponents."),
             ("/tournament bracket name:<name>", "See the real tournament bracket's progress."),
             ("/tournament leaderboard name:<name>", "See the standings."),
@@ -61,7 +62,10 @@ class HelpCog(commands.Cog):
              "`/tournament create name:<name> csv_file:<file>`\n"
              "The CSV needs a `team_a,team_b` header and one row per round-1 matchup in "
              "bracket order (the row count must be a power of 2: 2, 4, 8, 16...). "
-             "Leave one side blank to give that entrant a bye. A CSV tournament skips step 2."),
+             "Leave one side blank to give that entrant a bye. A CSV tournament skips step 2.\n"
+             "To have the bot call matches into voice rooms, first pick the category holding "
+             "the rooms with `/admin matchrooms`, then add `match_slots:<n>` (up to the number "
+             "of rooms) when you create the tournament, or set it later with `/admin matchslots`."),
             ("2. Close sign-ups",
              "`/registration close name:<name>`\n"
              "This happens automatically once `closes_in_hours` passes. Entrants are seeded by "
@@ -108,6 +112,8 @@ class HelpCog(commands.Cog):
             ("/admin setresult tournament:<name>", "Force or overwrite any known matchup's result. A result later ones depend on has to wait until those are cleared, latest first."),
             ("/admin clearresult tournament:<name>", "Delete a recorded match result, or undo a match being called off. Clear later results that depend on it first."),
             ("/admin withdraw tournament:<name> entrant:<name> reason:<withdrawn|disqualified>", "Take an entrant out. Their remaining matches go to their opponents by walkover, and the post says an organizer did it. `/admin reinstate` brings them back."),
+            ("/admin matchrooms category:<category>", "Pick the category whose voice channels called matches are played in. Add or remove rooms in Discord."),
+            ("/admin matchslots tournament:<name> match_slots:<n>", "Set how many of a tournament's matches the bot calls at once, or leave it blank to stop calling them."),
             ("/admin skipmatch tournament:<name>", "Call a match off with no winner, such as when neither side turns up. Whoever would have played the winner next advances by walkover."),
             ("/admin editteam tournament:<name> team:<name>", "Fix an entrant's name or seed after import."),
             ("/admin clearpredictions tournament:<name> user:<member>", "Wipe one user's saved predictions."),

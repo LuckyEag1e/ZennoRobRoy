@@ -21,6 +21,7 @@ from common import (
 from csv_import import CsvValidationError, import_tournament, parse_csv
 from embeds import render_final_results_embed, render_leaderboard_embed
 from labels import SETTLED_BEFORE_LOCK
+from posting import MATCH_SLOTS_HELP, match_slots_problem
 
 
 # A live post further up the channel than this many messages has scrolled out of view,
@@ -227,12 +228,18 @@ class TournamentCog(commands.Cog):
             conn.close()
 
     @group.command(name="create", description="Create a tournament from a bracket CSV")
-    @app_commands.describe(name="Tournament name", csv_file="CSV with team_a,team_b[,seed_a,seed_b] columns")
+    @app_commands.describe(name="Tournament name", csv_file="CSV with team_a,team_b[,seed_a,seed_b] columns",
+                           match_slots=MATCH_SLOTS_HELP)
     @requires_manage_server
-    async def create(self, interaction: discord.Interaction, name: str, csv_file: discord.Attachment) -> None:
+    async def create(self, interaction: discord.Interaction, name: str, csv_file: discord.Attachment,
+                     match_slots: app_commands.Range[int, 1] | None = None) -> None:
         conn = db.get_connection()
         try:
             if await refuse_taken_name(interaction, conn, name):
+                return
+            problem = match_slots_problem(self.bot, interaction.guild_id, conn, match_slots) if match_slots else None
+            if problem is not None:
+                await interaction.response.send_message(problem, ephemeral=True)
                 return
 
             raw = await csv_file.read()
@@ -244,7 +251,8 @@ class TournamentCog(commands.Cog):
 
             try:
                 rows = parse_csv(content)
-                import_tournament(conn, interaction.guild_id, name, interaction.user.id, rows)
+                tournament_id = import_tournament(conn, interaction.guild_id, name, interaction.user.id, rows)
+                db.set_match_slots(conn, tournament_id, match_slots)
             except CsvValidationError as e:
                 await interaction.response.send_message(f"CSV error: {e}", ephemeral=True)
                 return
@@ -277,9 +285,23 @@ class TournamentCog(commands.Cog):
         status = await self._advance_status(interaction, name, "in_progress")
         if status is None:
             return
+        conn = db.get_connection()
+        try:
+            tournament = db.get_tournament_by_name(conn, interaction.guild_id, name)
+            db.set_tournament_channel_if_missing(conn, tournament["id"], interaction.channel_id)
+        finally:
+            conn.close()
         await interaction.response.send_message(f"🔒 Predictions are locked for **{name}**.")
-        tip = SETTLED_BEFORE_LOCK if status == "completed" else "Use `/match result` to record real outcomes."
-        await interaction.followup.send(tip, ephemeral=True)
+        if status == "completed":
+            next_step = SETTLED_BEFORE_LOCK
+        elif tournament["match_slots"] is not None:
+            next_step = (f"The bot calls up to {tournament['match_slots']} matches at a time, and players report "
+                         f"them with `/match report`. Use `/match result` for disputes, and for matches against "
+                         f"an entrant with no Discord account.")
+        else:
+            next_step = ("Players report their own matches with `/match report`. Use `/match result` for disputes, "
+                         "and for matches against an entrant with no Discord account.")
+        await interaction.followup.send(next_step, ephemeral=True)
 
     @group.command(name="conclude", description="Archive a finished tournament, keeping its results")
     @app_commands.describe(name="Tournament name")

@@ -8,8 +8,9 @@ import sqlite3
 
 import discord
 
+import coordination
 import db
-from bracket import final_match
+from bracket import final_match, resolve_all_slots
 from sim.discord_fakes import FakeMessage
 
 # Discord's limits, past which it rejects a message outright.
@@ -91,6 +92,39 @@ def organizer_commands_named(message: FakeMessage, organizer_commands: set[str])
     ]
 
 
+def _call_problems(conn: sqlite3.Connection, tournament: sqlite3.Row, outcomes) -> list[str]:
+    """What's wrong with the tournament's called matches: each must be undecided, still
+    between the sides it called, readied by both before it starts (unless a side has no
+    account), and started before it holds a room."""
+    name = tournament["name"]
+    problems = []
+    matches_by_id, feeders, _ = db.load_bracket(conn, tournament["id"])
+    slots = resolve_all_slots(matches_by_id, outcomes.winners.get, feeders)
+    for call in db.get_calls(conn, tournament["id"]):
+        match_id = call["match_id"]
+        teams = (call["team_a_id"], call["team_b_id"])
+        if match_id in outcomes.decided:
+            problems.append(f"'{name}' still has a call on decided match {match_id}")
+        elif set(slots[match_id]) != set(teams):
+            problems.append(f"'{name}' has a call on match {match_id} for a matchup that changed")
+        if call["room_id"] is not None and call["started_at"] is None:
+            problems.append(f"'{name}' gave match {match_id} a room before it started")
+        if (call["started_at"] is not None and coordination.needs_ready_up(conn, teams)
+                and db.get_ready_teams(conn, match_id) != set(teams)):
+            problems.append(f"'{name}' started match {match_id} before both sides were ready")
+    return problems
+
+
+def _room_problems(conn: sqlite3.Connection, guild_id: int) -> list[str]:
+    """A room plays one match at a time, across every tournament in the server."""
+    held = [row["room_id"] for row in conn.execute(
+        """SELECT c.room_id FROM match_calls c JOIN matches m ON m.id = c.match_id
+           JOIN tournaments t ON t.id = m.tournament_id WHERE t.guild_id = ? AND c.room_id IS NOT NULL""",
+        (guild_id,))]
+    return [f"room {room} is held by {held.count(room)} matches at once"
+            for room in sorted(set(held)) if held.count(room) > 1]
+
+
 def database_problems(conn: sqlite3.Connection, guild_id: int) -> list[str]:
     problems = []
     for tournament in conn.execute("SELECT * FROM tournaments WHERE guild_id = ?", (guild_id,)):
@@ -122,6 +156,8 @@ def database_problems(conn: sqlite3.Connection, guild_id: int) -> list[str]:
             problems.append(f"'{name}' still has players' votes on decided matches: {sorted(voted & outcomes.decided)}")
         if status == "in_progress" and final_decided:
             problems.append(f"'{name}' has a decided final but is still in_progress")
+        problems += _call_problems(conn, tournament, outcomes)
+    problems += _room_problems(conn, guild_id)
     for row in conn.execute("SELECT id FROM feedback WHERE trim(message) = ''"):
         problems.append(f"blank feedback #{row['id']} was stored")
     return problems

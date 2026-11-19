@@ -37,6 +37,7 @@ from common import (
 )
 from embeds import EMBED_DESCRIPTION_LIMIT, mention
 from labels import ban_lines, dropped_results_note, feedback_page, join_within, reinstated_line, team_label
+from posting import MATCH_SLOTS_HELP, match_slots_problem
 
 # A walkover follows from a withdrawal, so a played result there would mean the game was
 # played after all. Reinstating the entrant reopens the match.
@@ -103,6 +104,7 @@ class AdminCog(commands.Cog):
             if tournament_row is None:
                 return
             status = db.set_tournament_status(conn, tournament_row["id"], status)
+            db.set_tournament_channel_if_missing(conn, tournament_row["id"], interaction.channel_id)
         finally:
             conn.close()
         await interaction.response.send_message(f"Status for **{tournament}** set to `{status}`.", ephemeral=True)
@@ -237,7 +239,7 @@ class AdminCog(commands.Cog):
             conn.close()
 
         slots = resolve_all_slots(session.matches_by_id, outcomes.winners.get, session.feeders_by_target)
-        known = [m for m in matches_with_both_teams(session.matches_by_id, slots) if m.id not in outcomes.unplayed]
+        known = [m for m in matches_with_both_teams(session.matches_by_id, slots) if m.id not in outcomes.from_withdrawals]
         if not known:
             await interaction.response.send_message("No matches have both teams known yet.", ephemeral=True)
             return
@@ -262,7 +264,7 @@ class AdminCog(commands.Cog):
                         tournament_row = db.get_tournament(conn, session.tournament_id)
                         now = db.match_now(conn, session.tournament_id, match.id)
                         refusal = (outdated_pick_message(now, (winner_id, loser_id))
-                                   or (WALKOVER_NOT_SETTABLE if now.unplayed else None)
+                                   or (WALKOVER_NOT_SETTABLE if now.from_withdrawals else None)
                                    or later_results_problem(conn, tournament_row, [match.id]))
                         if refusal is None:
                             text, dropped = set_result_and_describe(conn, tournament_row, match, winner_id, loser_id,
@@ -280,7 +282,7 @@ class AdminCog(commands.Cog):
 
                 now = current_match()
                 refusal = (outdated_pick_message(now, (winner_id, loser_id))
-                           or (WALKOVER_NOT_SETTABLE if now.unplayed else None)
+                           or (WALKOVER_NOT_SETTABLE if now.from_withdrawals else None)
                            or later_results_now(session, match))
                 if refusal is not None:
                     await winner_interaction.response.edit_message(content=refusal, view=None)
@@ -322,8 +324,8 @@ class AdminCog(commands.Cog):
             conn.close()
 
         slots = resolve_all_slots(session.matches_by_id, outcomes.winners.get, session.feeders_by_target)
-        # Walkovers follow from withdrawals, so they're undone with /admin reinstate instead.
-        clearable = set(outcomes.played) | outcomes.skipped
+        # Walkovers from withdrawals are undone with /admin reinstate instead.
+        clearable = set(outcomes.played) | outcomes.skipped | outcomes.forfeits
         decided = sorted((m for m in session.matches_by_id.values() if m.id in clearable), key=bracket_order)
         if not decided:
             await interaction.response.send_message("No recorded results to clear.", ephemeral=True)
@@ -492,6 +494,48 @@ class AdminCog(commands.Cog):
             view=MatchPicker(skippable, slots, session.teams_by_id, confirm_skip, outcomes.decided),
             ephemeral=True,
         )
+
+    @group.command(name="matchrooms", description="Pick the category whose voice channels called matches are played in")
+    @app_commands.describe(category="Category holding the match rooms (leave blank to stop using rooms)")
+    async def matchrooms(self, interaction: discord.Interaction, category: discord.CategoryChannel | None = None) -> None:
+        conn = db.get_connection()
+        try:
+            db.set_match_room_category(conn, interaction.guild_id, category.id if category else None)
+        finally:
+            conn.close()
+        if category is None:
+            await interaction.response.send_message("Match rooms are cleared, so no new matches are called.", ephemeral=True)
+            return
+        count = len(category.voice_channels)
+        room_word = "voice channel" if count == 1 else "voice channels"
+        await interaction.response.send_message(
+            f"Called matches are played in the {count} {room_word} in **{category.name}**. Add or remove rooms "
+            f"in Discord, and the bot uses whatever is there.", ephemeral=True)
+
+    @group.command(name="matchslots", description="Set how many matches the bot calls at once, or stop it calling them")
+    @app_commands.describe(tournament="Tournament name", match_slots=MATCH_SLOTS_HELP)
+    @app_commands.autocomplete(tournament=tournament_name_autocomplete)
+    async def matchslots(self, interaction: discord.Interaction, tournament: str,
+                         match_slots: app_commands.Range[int, 1] | None = None) -> None:
+        conn = db.get_connection()
+        try:
+            tournament_row = await resolve_tournament(interaction, conn, tournament, needs_bracket=False)
+            if tournament_row is None:
+                return
+            problem = match_slots_problem(self.bot, interaction.guild_id, conn, match_slots) if match_slots else None
+            if problem is None:
+                db.set_match_slots(conn, tournament_row["id"], match_slots)
+                db.set_tournament_channel_if_missing(conn, tournament_row["id"], interaction.channel_id)
+        finally:
+            conn.close()
+        if problem is not None:
+            await interaction.response.send_message(problem, ephemeral=True)
+        elif match_slots is None:
+            await interaction.response.send_message(
+                f"The bot no longer calls **{tournament}**'s matches. Matches it already called carry on.", ephemeral=True)
+        else:
+            await interaction.response.send_message(
+                f"The bot calls up to {match_slots} of **{tournament}**'s matches at once.", ephemeral=True)
 
     @group.command(name="clearpredictions", description="Wipe one user's saved predictions for a tournament")
     @app_commands.describe(tournament="Tournament name", user="The user whose predictions should be cleared")
