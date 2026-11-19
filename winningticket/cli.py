@@ -562,17 +562,20 @@ class WinningTicketCLI(cmd.Cmd):
             if not db.has_agreed(self.conn, GUILD_ID, user_id):
                 print(f"{user_label(user_id)} hasn't agreed to link their data, so they're entered by name only.")
                 user_id = None
+        problem = (lobby_flow.added_captain_problem(captain or "no", user_id is not None)
+                   if tournament["format"] == "lobbies" else None)
+        if problem is not None:
+            print(problem)
+            return
         entrant = db.register_entrant(self.conn, tournament["id"], parts[1], user_id)
         if entrant is None:
             link_hint = " Use 'admin_linkplayer' to link them to it." if user_id is not None else ""
             print(f"'{parts[0]}' already has an entrant named '{parts[1]}'.{link_hint}")
             return
         team_id, entrant_name = entrant
-        note = ""
         if tournament["format"] == "lobbies":
-            pref, note = lobby_flow.added_captain_pref(captain or "no", user_id is not None)
-            lobby_db.set_captain_pref(self.conn, tournament["id"], team_id, pref)
-        print(f"Signed up {entrant_name} ({len(db.get_entrants(self.conn, tournament['id']))} entered so far).{note}")
+            lobby_db.set_captain_pref(self.conn, tournament["id"], team_id, captain or "no")
+        print(f"Signed up {entrant_name} ({len(db.get_entrants(self.conn, tournament['id']))} entered so far).")
 
     def do_regremove(self, arg: str) -> None:
         "Withdraw any entrant by name: regremove <name> <entrant>"

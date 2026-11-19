@@ -71,12 +71,13 @@ def signup_reply(conn: sqlite3.Connection, tournament: sqlite3.Row, team_id: int
     return where + f"\nTo change your captain choice, run {register_command(name)} again."
 
 
-def added_captain_pref(pref: str, linked: bool) -> tuple[str, str]:
-    """The captain choice to save when an organizer signs someone up, and a note for the
-    organizer if it had to change: only entrants with a linked account can captain."""
+def added_captain_problem(pref: str, linked: bool) -> Optional[str]:
+    """Why an organizer can't sign someone up with this captain choice, or None if they can:
+    only entrants with a linked account can captain."""
     if linked or pref == "no":
-        return pref, ""
-    return "no", " They have no linked account, so they can't captain and are entered as Not captain."
+        return None
+    return ("Only players with a linked account can captain, since captains give the bot the room code and report "
+            "the points. Add them as Not captain instead.")
 
 
 def sign_up(conn: sqlite3.Connection, tournament: sqlite3.Row, name: str, user_id: int, linked: bool,

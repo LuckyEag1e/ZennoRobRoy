@@ -221,16 +221,16 @@ def test_one_post_for_every_lobby_and_an_organizer_picks_the_lobby(tmp_path):
         asyncio.run(sim.close())
 
 
-def test_adding_a_name_only_captain_says_they_cant(tmp_path):
+def test_adding_a_name_only_captain_is_refused(tmp_path):
     sim, organizer, users, announcement = _event(tmp_path, players=1, captains=1)
     try:
         reply = asyncio.run(sim.run(organizer, "registration add", tournament="Duel", name="Dummy1",
                                     captain="want")).sent
-        assert "can't captain" in reply.content
+        assert "Only players with a linked account can captain" in reply.content
         conn = db.get_connection()
         tournament = db.get_tournament_by_name(conn, GUILD_ID, "Duel")
-        prefs = {s.name: s.captain_pref for s in lobby_db.get_signups(conn, tournament["id"])}
+        names = [s.name for s in lobby_db.get_signups(conn, tournament["id"])]
         conn.close()
-        assert prefs["Dummy1"] == "no"
+        assert "Dummy1" not in names
     finally:
         asyncio.run(sim.close())

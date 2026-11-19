@@ -467,6 +467,10 @@ class RegistrationCog(commands.Cog):
             # bot can't agree to anything, so it's only linked while it plays for testing.
             playing_bot = user is not None and user.id == interaction.client.user.id and bot_plays_for_testing()
             linked = user is not None and (playing_bot or db.has_agreed(conn, interaction.guild_id, user.id))
+            problem = lobby_flow.added_captain_problem(captain, linked) if tournament_row["format"] == "lobbies" else None
+            if problem is not None:
+                await interaction.response.send_message(problem, ephemeral=True)
+                return
             entrant = db.register_entrant(
                 conn, tournament_row["id"], name or user.display_name, user.id if linked else None
             )
@@ -481,9 +485,7 @@ class RegistrationCog(commands.Cog):
             note = (" They haven't agreed to link their data to their account, so they're entered by name only."
                     if user is not None and not linked else "")
             if tournament_row["format"] == "lobbies":
-                pref, captain_note = lobby_flow.added_captain_pref(captain, linked)
-                lobby_db.set_captain_pref(conn, tournament_row["id"], team_id, pref)
-                note += captain_note
+                lobby_db.set_captain_pref(conn, tournament_row["id"], team_id, captain)
             who = f"{entrant_name} ({user.mention})" if linked else entrant_name
             await interaction.response.send_message(
                 f"✅ Signed up {who} for **{tournament}** ({db.entrant_count(conn, tournament_row['id'])} entered so far).{note}",
