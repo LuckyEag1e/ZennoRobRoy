@@ -30,7 +30,7 @@ from common import (
 from embeds import EMBED_DESCRIPTION_LIMIT, mention
 from labels import CONSENT_NOTICE, OPTED_OUT_NOTE, draw_description, entrant_lines, join_within, name_held_message
 from lobby_flow import split_label
-from lobby_posting import event_view, leave_event, refresh_signups, start_signup, sync_posts
+from lobby_posting import CaptainChoice, event_view, leave_event, refresh_signups, start_signup, sync_posts
 from posting import MATCH_SLOTS_HELP, match_slots_problem
 from tournament_builder import (
     MAX_CLOSES_IN_HOURS,
@@ -55,6 +55,22 @@ SPREAD_OPTION_HELP = ("5v5: tier puts the strongest together, balanced (default)
 CAPTAIN_CHOICES = [app_commands.Choice(name=name, value=value) for value, name in lobby_flow.CAPTAIN_CHOICES.items()]
 # Discord's limit on options in one select menu.
 MAX_SPLIT_OPTIONS = 25
+
+
+class AddCaptainChoice(BotView):
+    """Asks the organizer adding someone to a 5v5 event whether they'll captain, then adds
+    them. A choice that can't stand is refused and the menu stays, as it does for /register."""
+
+    def __init__(self, cog: RegistrationCog, tournament: str, user: discord.Member | None, name: str | None) -> None:
+        super().__init__(timeout=600)
+        self.cog = cog
+        self.tournament = tournament
+        self.user = user
+        self.name = name
+        self.add_item(CaptainChoice())
+
+    async def choose(self, interaction: discord.Interaction, pref: str) -> None:
+        await self.cog.add_entrant(interaction, self.tournament, self.user, self.name, pref, menu=self)
 
 
 class LobbyClosePreview(BotView):
@@ -447,50 +463,64 @@ class RegistrationCog(commands.Cog):
     @app_commands.choices(captain=CAPTAIN_CHOICES)
     @requires_manage_server
     async def add(self, interaction: discord.Interaction, tournament: str,
-                  user: discord.Member | None = None, name: str | None = None, captain: str = "no") -> None:
+                  user: discord.Member | None = None, name: str | None = None, captain: str | None = None) -> None:
         if user is None and name is None:
             await interaction.response.send_message(
                 "Give a member to sign up, or a name for an entrant with no Discord account.", ephemeral=True
             )
             return
+        await self.add_entrant(interaction, tournament, user, name, captain)
+
+    async def add_entrant(self, interaction: discord.Interaction, tournament: str, user: discord.Member | None,
+                          name: str | None, captain: str | None, menu: Optional[AddCaptainChoice] = None) -> None:
+        """Sign up a member or a name-only entrant. A 5v5 event needs their captain choice,
+        so without one the organizer is asked for it (`menu`, whose pick comes back here)."""
+
+        async def reply(content: str, keep_menu: bool = False) -> None:
+            if menu is None:
+                await interaction.response.send_message(content, view=menu, ephemeral=True)
+            else:
+                await interaction.response.edit_message(content=content, view=menu if keep_menu else None)
+
         conn = db.get_connection()
         try:
             tournament_row = await resolve_tournament(interaction, conn, tournament, needs_bracket=False, formats=db.FORMATS)
             if tournament_row is None or not await _require_registration(interaction, tournament_row):
                 return
             if user is not None and db.get_entrant_team_id(conn, tournament_row["id"], user.id) is not None:
-                await interaction.response.send_message(
-                    f"{user.display_name} is already signed up for **{tournament}**.", ephemeral=True
-                )
+                await reply(f"{user.display_name} is already signed up for **{tournament}**.")
                 return
             # A member's entry is only linked to them once they've agreed to it themselves. The
             # bot can't agree to anything, so it's only linked while it plays for testing.
             playing_bot = user is not None and user.id == interaction.client.user.id and bot_plays_for_testing()
             linked = user is not None and (playing_bot or db.has_agreed(conn, interaction.guild_id, user.id))
-            problem = lobby_flow.captain_problem(captain, linked, by_organizer=True) if tournament_row["format"] == "lobbies" else None
+            five_v_five = tournament_row["format"] == "lobbies"
+            if five_v_five and captain is None:
+                question = f"Will **{name or user.display_name}** captain? {lobby_flow.ADD_CAPTAIN_QUESTION}"
+                await interaction.response.send_message(
+                    question, view=AddCaptainChoice(self, tournament, user, name), ephemeral=True)
+                return
+            problem = lobby_flow.captain_problem(captain, linked, by_organizer=True) if five_v_five else None
             if problem is not None:
-                await interaction.response.send_message(problem, ephemeral=True)
+                await reply(problem, keep_menu=True)
                 return
             entrant = db.register_entrant(
                 conn, tournament_row["id"], name or user.display_name, user.id if linked else None
             )
             if entrant is None:
                 link_hint = ", or link them to it with `/admin linkplayer`" if linked else ""
-                await interaction.response.send_message(
-                    f"**{tournament}** already has an entrant named '{name or user.display_name}'. "
-                    f"Pick another name{link_hint}.", ephemeral=True
-                )
+                await reply(f"**{tournament}** already has an entrant named '{name or user.display_name}'. "
+                            f"Pick another name{link_hint}.")
                 return
             team_id, entrant_name = entrant
             note = (" They haven't agreed to link their data to their account, so they're entered by name only."
                     if user is not None and not linked else "")
-            if tournament_row["format"] == "lobbies":
+            if five_v_five:
                 lobby_db.set_captain_pref(conn, tournament_row["id"], team_id, captain)
+                note += f" Captain choice: {lobby_flow.CAPTAIN_CHOICES[captain]}."
             who = f"{entrant_name} ({user.mention})" if linked else entrant_name
-            await interaction.response.send_message(
-                f"✅ Signed up {who} for **{tournament}** ({db.entrant_count(conn, tournament_row['id'])} entered so far).{note}",
-                ephemeral=True,
-            )
+            await reply(f"✅ Signed up {who} for **{tournament}** ({db.entrant_count(conn, tournament_row['id'])} "
+                        f"entered so far).{note}")
             await self._refresh_signups_message(conn, tournament_row["id"])
         finally:
             conn.close()

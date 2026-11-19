@@ -35,6 +35,8 @@ CAPTAIN_CHOICES = {
 }
 CAPTAIN_QUESTION = ("Will you captain? Each team needs one: captains host the drafter room or join it, give the bot "
                     "the room code, and report everyone's points at the end.")
+# Asked of an organizer adding someone without a captain choice, after "Will <name> captain?".
+ADD_CAPTAIN_QUESTION = "Captains host the drafter room and report the points, and need a linked account."
 DEFAULT_CHECKIN_MINUTES = 15
 MAX_CHECKIN_MINUTES = 120
 ROOM_CODE_MAX_LENGTH = 32

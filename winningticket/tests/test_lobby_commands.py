@@ -265,3 +265,16 @@ def test_the_commands_captain_choice_is_used_after_the_consent_notice(tmp_path):
         conn.close()
     finally:
         asyncio.run(sim.close())
+
+
+def test_adding_without_a_captain_choice_asks_for_it(tmp_path):
+    sim, organizer, users, announcement = _event(tmp_path, players=0)
+    try:
+        reply = asyncio.run(sim.run(organizer, "registration add", tournament="Duel", name="Dummy1")).sent
+        assert "Will **Dummy1** captain?" in reply.content
+        asyncio.run(sim.choose(organizer, reply, "can"))
+        assert "Only players with a linked account can captain" in reply.content
+        asyncio.run(sim.choose(organizer, reply, "no"))
+        assert "Signed up Dummy1" in reply.content and "Not captain" in reply.content
+    finally:
+        asyncio.run(sim.close())

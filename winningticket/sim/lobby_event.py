@@ -92,7 +92,17 @@ class LobbyEventRun:
         for player in self.players[:-2]:
             await self._sign_up(player, announcement)
         for number in range(1, self.scenario.guests + 1):
-            await self.sim.run(org, "registration add", tournament=NAME, user=None, name=f"Guest {number}")
+            if self.rng.random() < 0.5:
+                await self.sim.run(org, "registration add", tournament=NAME, user=None, name=f"Guest {number}",
+                                   captain="no")
+                continue
+            # Left out, the captain choice is asked for; a guest can't captain, so "want" is refused.
+            reply = (await self.sim.run(org, "registration add", tournament=NAME, user=None,
+                                        name=f"Guest {number}")).sent
+            if reply is not None and reply.view is not None:
+                await self.sim.choose(org, reply, self.rng.choice(["want", "no"]))
+            if reply is not None and reply.view is not None:
+                await self.sim.choose(org, reply, "no")
         await self.sim.run(self.players[0].user, "registration entrants", name=NAME)
         await self._close()
         for player in late:

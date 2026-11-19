@@ -562,11 +562,17 @@ class WinningTicketCLI(cmd.Cmd):
             if not db.has_agreed(self.conn, GUILD_ID, user_id):
                 print(f"{user_label(user_id)} hasn't agreed to link their data, so they're entered by name only.")
                 user_id = None
-        problem = (lobby_flow.captain_problem(captain or "no", user_id is not None, by_organizer=True)
-                   if tournament["format"] == "lobbies" else None)
-        if problem is not None:
-            print(problem)
-            return
+        if tournament["format"] == "lobbies":
+            if captain is None:
+                print(f"Will {parts[1]} captain? {lobby_flow.ADD_CAPTAIN_QUESTION}")
+                captain = input("want, can or no? ").strip().lower()
+                if captain not in lobby_flow.CAPTAIN_CHOICES:
+                    print("Nothing changed.")
+                    return
+            problem = lobby_flow.captain_problem(captain, user_id is not None, by_organizer=True)
+            if problem is not None:
+                print(f"{problem}\nNothing changed.")
+                return
         entrant = db.register_entrant(self.conn, tournament["id"], parts[1], user_id)
         if entrant is None:
             link_hint = " Use 'admin_linkplayer' to link them to it." if user_id is not None else ""
@@ -574,7 +580,7 @@ class WinningTicketCLI(cmd.Cmd):
             return
         team_id, entrant_name = entrant
         if tournament["format"] == "lobbies":
-            lobby_db.set_captain_pref(self.conn, tournament["id"], team_id, captain or "no")
+            lobby_db.set_captain_pref(self.conn, tournament["id"], team_id, captain)
         print(f"Signed up {entrant_name} ({len(db.get_entrants(self.conn, tournament['id']))} entered so far).")
 
     def do_regremove(self, arg: str) -> None:
