@@ -467,7 +467,7 @@ class RegistrationCog(commands.Cog):
             # bot can't agree to anything, so it's only linked while it plays for testing.
             playing_bot = user is not None and user.id == interaction.client.user.id and bot_plays_for_testing()
             linked = user is not None and (playing_bot or db.has_agreed(conn, interaction.guild_id, user.id))
-            problem = lobby_flow.added_captain_problem(captain, linked) if tournament_row["format"] == "lobbies" else None
+            problem = lobby_flow.captain_problem(captain, linked, by_organizer=True) if tournament_row["format"] == "lobbies" else None
             if problem is not None:
                 await interaction.response.send_message(problem, ephemeral=True)
                 return

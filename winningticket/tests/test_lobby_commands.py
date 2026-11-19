@@ -234,3 +234,34 @@ def test_adding_a_name_only_captain_is_refused(tmp_path):
         assert "Dummy1" not in names
     finally:
         asyncio.run(sim.close())
+
+
+def test_opting_out_then_choosing_to_captain_is_refused_and_asked_again(tmp_path):
+    sim, organizer, users, announcement = _event(tmp_path, players=0)
+    try:
+        newcomer = sim.add_user(500, "Late")
+        reply = asyncio.run(_sign_up_by_button(sim, newcomer, announcement, "want", agree=False))
+        assert "Only players with a linked account can captain" in reply.content
+        conn = db.get_connection()
+        tournament = db.get_tournament_by_name(conn, GUILD_ID, "Duel")
+        assert lobby_db.get_signups(conn, tournament["id"]) == []
+        asyncio.run(sim.choose(newcomer, reply, "no"))
+        assert [s.captain_pref for s in lobby_db.get_signups(conn, tournament["id"])] == ["no"]
+        conn.close()
+    finally:
+        asyncio.run(sim.close())
+
+
+def test_the_commands_captain_choice_is_used_after_the_consent_notice(tmp_path):
+    sim, organizer, users, announcement = _event(tmp_path, players=0)
+    try:
+        newcomer = sim.add_user(500, "Late")
+        reply = asyncio.run(sim.run(newcomer, "register", tournament="Duel", captain="can")).sent
+        asyncio.run(sim.click(newcomer, reply, "Agree"))
+        assert "Can captain if needed" in reply.content
+        conn = db.get_connection()
+        tournament = db.get_tournament_by_name(conn, GUILD_ID, "Duel")
+        assert [s.captain_pref for s in lobby_db.get_signups(conn, tournament["id"])] == ["can"]
+        conn.close()
+    finally:
+        asyncio.run(sim.close())

@@ -167,11 +167,13 @@ class CaptainChoice(discord.ui.Select):
 
 class LobbySignupView(BotView):
     """A private sign-up for a 5v5 event: the consent notice when it's needed, then the
-    captain question. Nothing is saved until a captain choice is picked."""
+    captain question, unless the command already gave a choice. Nothing is saved until a
+    captain choice that's allowed is picked."""
 
-    def __init__(self, tournament_id: int, needs_consent: bool) -> None:
+    def __init__(self, tournament_id: int, needs_consent: bool, pref: Optional[str] = None) -> None:
         super().__init__(timeout=600)
         self.tournament_id = tournament_id
+        self.pref = pref
         self.linked = True
         if needs_consent:
             for label, linked, style in (("Agree", True, discord.ButtonStyle.success),
@@ -185,6 +187,9 @@ class LobbySignupView(BotView):
     def _consent_callback(self, linked: bool):
         async def answer(interaction: discord.Interaction) -> None:
             self.linked = linked
+            if self.pref is not None:
+                await self.choose(interaction, self.pref)
+                return
             self.clear_items()
             self.add_item(CaptainChoice())
             await interaction.response.edit_message(content=lobby_flow.CAPTAIN_QUESTION, view=self)
@@ -196,6 +201,13 @@ class LobbySignupView(BotView):
             tournament = db.get_tournament(conn, self.tournament_id)
             if tournament is None:
                 await interaction.response.edit_message(content="That event no longer exists.", view=None)
+                return
+            problem = lobby_flow.captain_problem(pref, self.linked, by_organizer=False)
+            if problem is not None:
+                # Ask again, keeping the menu, rather than saving a choice that can't stand.
+                self.clear_items()
+                self.add_item(CaptainChoice())
+                await interaction.response.edit_message(content=problem, view=self)
                 return
             user = interaction.user
             if self.linked:
@@ -226,7 +238,7 @@ async def start_signup(interaction: discord.Interaction, conn: sqlite3.Connectio
     content = CONSENT_NOTICE if not agreed else lobby_flow.CAPTAIN_QUESTION
     if signed_up:
         content = f"You're already signed up for **{tournament['name']}**. {lobby_flow.CAPTAIN_QUESTION}"
-    await interaction.response.send_message(content, view=LobbySignupView(tournament["id"], not agreed),
+    await interaction.response.send_message(content, view=LobbySignupView(tournament["id"], not agreed, pref),
                                             ephemeral=True)
 
 

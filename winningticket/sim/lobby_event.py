@@ -125,6 +125,8 @@ class LobbyEventRun:
             await self.sim.click(player.user, reply, "Agree" if player.agrees else "Opt Out")
         if reply is not None and reply.view is not None:
             await self.sim.choose(player.user, reply, pref)
+        if reply is not None and reply.view is not None and "linked account can captain" in (reply.content or ""):
+            await self.sim.choose(player.user, reply, "no")  # opted out, so they can't captain
         if self.rng.random() < competence.double_click:
             await self.sim.run(player.user, "register", tournament=NAME, captain="can")  # changes their mind
 

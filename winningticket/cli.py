@@ -562,7 +562,7 @@ class WinningTicketCLI(cmd.Cmd):
             if not db.has_agreed(self.conn, GUILD_ID, user_id):
                 print(f"{user_label(user_id)} hasn't agreed to link their data, so they're entered by name only.")
                 user_id = None
-        problem = (lobby_flow.added_captain_problem(captain or "no", user_id is not None)
+        problem = (lobby_flow.captain_problem(captain or "no", user_id is not None, by_organizer=True)
                    if tournament["format"] == "lobbies" else None)
         if problem is not None:
             print(problem)
@@ -1151,6 +1151,10 @@ class WinningTicketCLI(cmd.Cmd):
         if not signed_up and not db.has_agreed(self.conn, GUILD_ID, self.user_id):
             print(CONSENT_NOTICE.replace("**", ""))
             linked = input("Agree? [y/N] ").strip().lower() == "y"
+            problem = lobby_flow.captain_problem(captain, linked, by_organizer=False)
+            if problem is not None:
+                print(f"{problem}\nNothing changed.")
+                return
             if linked:
                 db.record_agreement(self.conn, GUILD_ID, self.user_id)
             else:

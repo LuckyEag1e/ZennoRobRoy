@@ -52,14 +52,12 @@ def takes_late_signups(tournament: sqlite3.Row) -> bool:
     return tournament["status"] == "in_progress" and not tournament["checkin_finished"]
 
 
-def signup_reply(conn: sqlite3.Connection, tournament: sqlite3.Row, team_id: int, pref: str, linked: bool,
+def signup_reply(conn: sqlite3.Connection, tournament: sqlite3.Row, team_id: int, pref: str,
                  changed: bool = False) -> str:
     """What a player is told once they're signed up, or have changed their captain choice.
     Only what's theirs alone: the public post already says how the event runs."""
     name = tournament["name"]
     choice = CAPTAIN_CHOICES[pref]
-    if not linked and pref != "no":
-        choice += " (but captains need a linked account to give the bot the room code and report, so you won't be picked)"
     if changed:
         return f"✅ Your captain choice for **{name}** is now: {choice}."
     if tournament["status"] == "registration":
@@ -71,13 +69,16 @@ def signup_reply(conn: sqlite3.Connection, tournament: sqlite3.Row, team_id: int
     return where + f"\nTo change your captain choice, run {register_command(name)} again."
 
 
-def added_captain_problem(pref: str, linked: bool) -> Optional[str]:
-    """Why an organizer can't sign someone up with this captain choice, or None if they can:
-    only entrants with a linked account can captain."""
+def captain_problem(pref: str, linked: bool, by_organizer: bool) -> Optional[str]:
+    """Why someone can't be signed up with this captain choice, or None if they can. Only
+    entrants with a linked account can captain, and both ways of signing up (a player
+    themselves, or an organizer adding them) refuse rather than change the choice."""
     if linked or pref == "no":
         return None
-    return ("Only players with a linked account can captain, since captains give the bot the room code and report "
-            "the points. Add them as Not captain instead.")
+    fix = ("Add them as Not captain instead." if by_organizer else
+           "Pick Not captain, or press Register again and choose Agree.")
+    return (f"Only players with a linked account can captain, since captains give the bot the room code and report "
+            f"the points. {fix}")
 
 
 def sign_up(conn: sqlite3.Connection, tournament: sqlite3.Row, name: str, user_id: int, linked: bool,
@@ -89,9 +90,12 @@ def sign_up(conn: sqlite3.Connection, tournament: sqlite3.Row, name: str, user_i
     existing = db.get_entrant_team_id(conn, tournament["id"], user_id)
     if existing is not None:
         lobby_db.set_captain_pref(conn, tournament["id"], existing, pref)
-        return signup_reply(conn, tournament, existing, pref, True, changed=True)
+        return signup_reply(conn, tournament, existing, pref, changed=True)
     if tournament["status"] != "registration" and not takes_late_signups(tournament):
         return f"Sign-ups for **{tournament_name}** are closed."
+    problem = captain_problem(pref, linked, by_organizer=False)
+    if problem is not None:
+        return problem
     entrant = db.register_entrant(conn, tournament["id"], name, user_id if linked else None)
     if entrant is None:
         if linked:
@@ -102,7 +106,7 @@ def sign_up(conn: sqlite3.Connection, tournament: sqlite3.Row, name: str, user_i
     lobby_db.set_captain_pref(conn, tournament["id"], team_id, pref)
     if tournament["status"] != "registration":
         lobby_db.join_waitlist(conn, tournament["id"], team_id)
-    reply = signup_reply(conn, db.get_tournament(conn, tournament["id"]), team_id, pref, linked)
+    reply = signup_reply(conn, db.get_tournament(conn, tournament["id"]), team_id, pref)
     return reply if linked else f"{reply}\n{OPTED_OUT_NOTE}"
 
 
