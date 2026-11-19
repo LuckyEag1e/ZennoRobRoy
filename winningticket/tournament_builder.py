@@ -106,8 +106,7 @@ def close_lobby_registration(conn: sqlite3.Connection, tournament_id: int, split
     proposed, options = lobby_split_options(conn, tournament_id)
     split = split or proposed
     if split is None or split not in options:
-        raise lobbies.LobbyError("There aren't enough players, or enough who can captain, for a lobby: each needs "
-                                 f"{lobbies.MIN_LOBBY} players, two of whom can captain.")
+        raise lobbies.LobbyError("There aren't enough players who can captain for that many lobbies: each needs two.")
     spread = spread or tournament["lobby_spread"] or "balanced"
     signups = lobby_db.get_signups(conn, tournament_id)
     prefs = lobby_db.captain_prefs(signups)

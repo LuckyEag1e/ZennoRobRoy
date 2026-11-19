@@ -12,8 +12,8 @@ from typing import Optional
 
 # What a player said when signing up: they want to captain, can if needed, or won't.
 CAPTAIN_PREFS = ("want", "can", "no")
-# A lobby is two teams: 5v5 at most, 4v4 at least.
-MIN_LOBBY = 8
+# A lobby is two teams of at most 5. All it needs is the two captains, so 1v1 at least.
+MIN_LOBBY = 2
 MAX_LOBBY = 10
 # How players are shared out between lobbies: the strongest together, a similar mix in
 # every lobby, or at random.
@@ -38,7 +38,7 @@ def best_candidate(players: list[int], prefs: dict[int, str]) -> Optional[int]:
 
 
 def team_sizes(lobby_size: int) -> tuple[int, int]:
-    """The two team sizes for a lobby: 10 is 5v5, 9 is 5v4, 8 is 4v4."""
+    """The two team sizes for a lobby: 10 is 5v5, 9 is 5v4, 7 is 4v3."""
     return math.ceil(lobby_size / 2), lobby_size // 2
 
 
@@ -59,7 +59,7 @@ def _even_split(players: int, lobbies: int) -> tuple[int, ...]:
 
 def possible_splits(player_count: int, captain_count: int) -> list[Split]:
     """Every way of splitting the players into lobbies, fewest lobbies first. Each lobby
-    takes 8 to 10 players and needs two captains, and whoever doesn't fit waits."""
+    takes 2 to 10 players and needs two captains, and whoever doesn't fit waits."""
     most = min(captain_count // 2, player_count // MIN_LOBBY)
     splits = []
     for lobbies in range(1, most + 1):

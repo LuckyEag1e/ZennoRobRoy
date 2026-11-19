@@ -394,8 +394,8 @@ class RegistrationCog(commands.Cog):
                 proposed, options = lobby_split_options(conn, tournament["id"])
                 if proposed is None:
                     await interaction.response.send_message(
-                        f"**{name}** can't be drawn yet: each lobby needs {lobbies.MIN_LOBBY} players, two of whom "
-                        f"can captain (with a linked account).", ephemeral=True)
+                        f"**{name}** can't be drawn yet: a lobby needs two players who can captain (with a linked "
+                        f"account).", ephemeral=True)
                     return
                 preview = LobbyClosePreview(self, tournament, proposed, options)
                 await interaction.response.send_message(preview.describe(tournament), view=preview, ephemeral=True)

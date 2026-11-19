@@ -41,7 +41,7 @@ async def _sign_up_by_button(sim, user, announcement, pref, agree=True):
     return reply
 
 
-def _event(tmp_path, players=12, captains=4):
+def _event(tmp_path, players=12, captains=2):
     async def build():
         sim = await Simulation.create(tmp_path / "test.db")
         organizer = sim.add_user(1, "Organizer", organizer=True)

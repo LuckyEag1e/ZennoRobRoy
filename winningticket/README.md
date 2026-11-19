@@ -113,7 +113,7 @@ Everyone:
 
 ## 5v5 events
 
-Ten players (or nine or eight, as 5v4 or 4v4) play in a drafter room as two teams with a
+Up to ten players play in a drafter room as two teams of up to five (5v5, 5v4, 4v4 and so on), with a
 captain each. Each race gives 5, 3 and 1 points for 1st, 2nd and 3rd, the team with more
 points wins, and a tie is settled on a tiebreaker track before anyone reports.
 

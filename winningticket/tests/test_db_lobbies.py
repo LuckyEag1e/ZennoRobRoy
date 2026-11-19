@@ -48,7 +48,7 @@ def team_of(conn, tournament_id, user_id) -> int:
 
 
 def test_close_draws_lobbies_with_two_captains_and_a_waitlist(conn):
-    tournament_id = event_with(conn, 23, captains=6)
+    tournament_id = event_with(conn, 23, captains=4)
     split = close_lobby_registration(conn, tournament_id, rng=random.Random(1))
     assert split == lobbies.Split((10, 10), 3)
     tournament = db.get_tournament(conn, tournament_id)

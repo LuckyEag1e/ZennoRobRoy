@@ -1152,8 +1152,8 @@ class WinningTicketCLI(cmd.Cmd):
     def _close_lobbies(self, tournament, lobby_count: str | None, spread: str | None) -> None:
         proposed, options = tournament_builder.lobby_split_options(self.conn, tournament["id"])
         if proposed is None:
-            print(f"'{tournament['name']}' can't be drawn yet: each lobby needs {lobbies.MIN_LOBBY} players, two of "
-                  f"whom can captain (with a linked account).")
+            print(f"'{tournament['name']}' can't be drawn yet: a lobby needs two players who can captain (with a "
+                  f"linked account).")
             return
         split = proposed
         if lobby_count is not None:

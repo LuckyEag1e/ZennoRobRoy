@@ -138,7 +138,7 @@ class HelpCog(commands.Cog):
              "Press **Register** on the sign-ups post (or `/register tournament:<name> captain:<choice>`) and say whether you want to captain, can if "
              "needed, or won't. Each team needs a captain, who hosts the drafter room and reports the points."),
             ("2. Lobbies are drawn",
-             "Ahead of the event, players are drawn into lobbies of two teams (5v5, 5v4 or 4v4) balanced by past "
+             "Ahead of the event, players are drawn into lobbies of two teams of up to five, balanced by past "
              "5v5 results, with captains picked automatically. You're pinged on your lobby's post, or on the "
              "event post with your place on the waitlist. Can't make it? `/match dropout` gives your spot to the "
              "next player waiting."),

@@ -23,13 +23,14 @@ from lobbies import (
 
 
 @pytest.mark.parametrize("players, expected", [
-    (8, Split((8,), 0)),
+    (2, Split((2,), 0)),
+    (7, Split((7,), 0)),
     (10, Split((10,), 0)),
-    (12, Split((10,), 2)),
+    (12, Split((6, 6), 0)),
     (17, Split((9, 8), 0)),
     (18, Split((9, 9), 0)),
     (20, Split((10, 10), 0)),
-    (23, Split((10, 10), 3)),
+    (23, Split((8, 8, 7), 0)),
     (24, Split((8, 8, 8), 0)),
     (40, Split((10, 10, 10, 10), 0)),
 ])
@@ -39,15 +40,17 @@ def test_propose_split_places_the_most_players_in_the_fullest_lobbies(players, e
 
 def test_propose_split_is_capped_by_captains():
     assert propose_split(20, captain_count=3) == Split((10,), 10)
+    assert propose_split(12, captain_count=2) == Split((10,), 2)
 
 
-def test_propose_split_needs_one_full_lobby():
-    assert propose_split(7, captain_count=7) is None
+def test_propose_split_needs_two_captains():
+    assert propose_split(1, captain_count=1) is None
     assert propose_split(20, captain_count=1) is None
+    assert propose_split(2, captain_count=2) == Split((2,), 0)
 
 
 def test_possible_splits_lists_every_lobby_count():
-    assert possible_splits(23, captain_count=10) == [Split((10,), 13), Split((10, 10), 3)]
+    assert possible_splits(23, captain_count=6) == [Split((10,), 13), Split((10, 10), 3), Split((8, 8, 7), 0)]
 
 
 def test_team_sizes():
