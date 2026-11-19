@@ -546,7 +546,10 @@ class WinningTicketCLI(cmd.Cmd):
         if len(parts) not in (2, 3) or (captain is not None and captain not in lobby_flow.CAPTAIN_CHOICES):
             print("usage: regadd <name> <entrant> [user_id] [--captain want|can|no]")
             return
-        tournament = self._require_registration(parts[0])
+        tournament = self._require_tournament(parts[0], needs_bracket=False, formats=db.FORMATS)
+        late = tournament is not None and tournament["format"] == "lobbies" and lobby_flow.takes_late_signups(tournament)
+        if not late:
+            tournament = self._require_registration(parts[0])
         if tournament is None:
             return
         user_id = None
@@ -579,9 +582,12 @@ class WinningTicketCLI(cmd.Cmd):
             print(f"'{parts[0]}' already has an entrant named '{parts[1]}'.{link_hint}")
             return
         team_id, entrant_name = entrant
+        note = ""
         if tournament["format"] == "lobbies":
             lobby_db.set_captain_pref(self.conn, tournament["id"], team_id, captain)
-        print(f"Signed up {entrant_name} ({len(db.get_entrants(self.conn, tournament['id']))} entered so far).")
+        if late:
+            note = f" The lobbies are drawn, so they're #{lobby_db.join_waitlist(self.conn, tournament['id'], team_id)} on the waitlist."
+        print(f"Signed up {entrant_name} ({len(db.get_entrants(self.conn, tournament['id']))} entered so far).{note}")
 
     def do_regremove(self, arg: str) -> None:
         "Withdraw any entrant by name: regremove <name> <entrant>"

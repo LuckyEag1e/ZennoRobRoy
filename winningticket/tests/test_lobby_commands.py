@@ -278,3 +278,17 @@ def test_adding_without_a_captain_choice_asks_for_it(tmp_path):
         assert "Signed up Dummy1" in reply.content and "Not captain" in reply.content
     finally:
         asyncio.run(sim.close())
+
+
+def test_an_organizer_can_add_to_the_waitlist_after_the_draw(tmp_path):
+    sim, organizer, users, announcement = _event(tmp_path, players=10, captains=2)
+    try:
+        preview = asyncio.run(sim.run(organizer, "registration close", name="Duel")).sent
+        asyncio.run(sim.click(organizer, preview, "Create Lobbies"))
+        reply = asyncio.run(sim.run(organizer, "registration add", tournament="Duel", name="Late1",
+                                    captain="no")).sent
+        assert "#1 on the waitlist" in reply.content
+        _loop(sim)
+        assert "Late1" in _post_with(sim, "🎌").content
+    finally:
+        asyncio.run(sim.close())

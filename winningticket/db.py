@@ -591,6 +591,18 @@ def get_tournament_names(conn: sqlite3.Connection, guild_id: int, status: str | 
     return [r["name"] for r in rows]
 
 
+def get_signup_tournament_names(conn: sqlite3.Connection, guild_id: int) -> list[str]:
+    """Names of tournaments taking sign-ups, newest first: those in registration, and 5v5
+    events whose waitlist still takes late sign-ups (lobby_flow.takes_late_signups)."""
+    rows = conn.execute(
+        """SELECT name FROM tournaments WHERE guild_id = ?
+           AND (status = 'registration' OR (format = 'lobbies' AND status = 'in_progress' AND NOT checkin_finished))
+           ORDER BY created_at DESC""",
+        (guild_id,),
+    ).fetchall()
+    return [r["name"] for r in rows]
+
+
 def set_tournament_status(conn: sqlite3.Connection, tournament_id: int, status: str) -> str:
     """Returns the status stored, which is completed instead of in_progress when
     walkovers already decided the final."""

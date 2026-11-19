@@ -21,6 +21,7 @@ from common import (
     load_bracket_embed,
     refuse_taken_name,
     registration_name_autocomplete,
+    signup_name_autocomplete,
     requires_manage_server,
     resolve_tournament,
     signups_message,
@@ -459,7 +460,7 @@ class RegistrationCog(commands.Cog):
         name="Entrant name (defaults to the member's server name; needed when no member is given)",
         captain="5v5 events: whether they'll captain (only members with a linked account can)",
     )
-    @app_commands.autocomplete(tournament=registration_name_autocomplete)
+    @app_commands.autocomplete(tournament=signup_name_autocomplete)
     @app_commands.choices(captain=CAPTAIN_CHOICES)
     @requires_manage_server
     async def add(self, interaction: discord.Interaction, tournament: str,
@@ -485,7 +486,10 @@ class RegistrationCog(commands.Cog):
         conn = db.get_connection()
         try:
             tournament_row = await resolve_tournament(interaction, conn, tournament, needs_bracket=False, formats=db.FORMATS)
-            if tournament_row is None or not await _require_registration(interaction, tournament_row):
+            if tournament_row is None:
+                return
+            late = tournament_row["format"] == "lobbies" and lobby_flow.takes_late_signups(tournament_row)
+            if not late and not await _require_registration(interaction, tournament_row):
                 return
             if user is not None and db.get_entrant_team_id(conn, tournament_row["id"], user.id) is not None:
                 await reply(f"{user.display_name} is already signed up for **{tournament}**.")
@@ -518,10 +522,15 @@ class RegistrationCog(commands.Cog):
             if five_v_five:
                 lobby_db.set_captain_pref(conn, tournament_row["id"], team_id, captain)
                 note += f" Captain choice: {lobby_flow.CAPTAIN_CHOICES[captain]}."
+            if late:
+                place = lobby_db.join_waitlist(conn, tournament_row["id"], team_id)
+                note = f" The lobbies are drawn, so they're #{place} on the waitlist.{note}"
             who = f"{entrant_name} ({user.mention})" if linked else entrant_name
             await reply(f"✅ Signed up {who} for **{tournament}** ({db.entrant_count(conn, tournament_row['id'])} "
                         f"entered so far).{note}")
             await self._refresh_signups_message(conn, tournament_row["id"])
+            if late:
+                await sync_posts(interaction.client, conn, tournament_row["id"])
         finally:
             conn.close()
 
@@ -550,7 +559,7 @@ class RegistrationCog(commands.Cog):
     @app_commands.command(name="register", description="Sign up for a tournament")
     @app_commands.describe(tournament="Tournament name",
                            captain="5v5 events: whether you'll captain (asked if you leave it out)")
-    @app_commands.autocomplete(tournament=registration_name_autocomplete)
+    @app_commands.autocomplete(tournament=signup_name_autocomplete)
     @app_commands.choices(captain=CAPTAIN_CHOICES)
     @app_commands.guild_only()
     async def register(self, interaction: discord.Interaction, tournament: str, captain: str | None = None) -> None:
@@ -589,7 +598,7 @@ class RegistrationCog(commands.Cog):
 
     @app_commands.command(name="unregister", description="Withdraw from a tournament you signed up for")
     @app_commands.describe(tournament="Tournament name")
-    @app_commands.autocomplete(tournament=registration_name_autocomplete)
+    @app_commands.autocomplete(tournament=signup_name_autocomplete)
     @app_commands.guild_only()
     async def unregister(self, interaction: discord.Interaction, tournament: str) -> None:
         conn = db.get_connection()

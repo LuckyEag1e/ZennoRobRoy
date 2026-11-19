@@ -109,8 +109,20 @@ async def tournament_name_autocomplete(
 async def registration_name_autocomplete(
     interaction: discord.Interaction, current: str
 ) -> list[app_commands.Choice[str]]:
-    """Only tournaments still taking sign-ups."""
+    """Only tournaments still in registration."""
     return _tournament_choices(interaction, current, "registration")
+
+
+async def signup_name_autocomplete(
+    interaction: discord.Interaction, current: str
+) -> list[app_commands.Choice[str]]:
+    """Tournaments taking sign-ups, including 5v5 events whose waitlist still takes them."""
+    conn = db.get_connection()
+    try:
+        names = db.get_signup_tournament_names(conn, interaction.guild_id)
+    finally:
+        conn.close()
+    return _matching_choices(names, current)
 
 
 def _entrant_choices(interaction: discord.Interaction, current: str,

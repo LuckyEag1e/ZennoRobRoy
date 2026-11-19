@@ -105,6 +105,8 @@ class LobbyEventRun:
                 await self.sim.choose(org, reply, "no")
         await self.sim.run(self.players[0].user, "registration entrants", name=NAME)
         await self._close()
+        # A guest who turns up after the draw joins the waitlist.
+        await self.sim.run(org, "registration add", tournament=NAME, user=None, name="Late guest", captain="no")
         for player in late:
             await self._sign_up(player, announcement)  # they join the waitlist
         await self._early_dropout()
