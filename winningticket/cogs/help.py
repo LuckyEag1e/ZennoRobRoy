@@ -139,15 +139,15 @@ class HelpCog(commands.Cog):
              "needed, or won't. Each team needs a captain, who hosts the drafter room and reports the points."),
             ("2. Lobbies are drawn",
              "Ahead of the event, players are drawn into lobbies of two teams of up to five, balanced by past "
-             "5v5 results, with captains picked automatically. You're pinged on your lobby's post, or on the "
-             "event post with your place on the waitlist. Can't make it? `/match dropout` gives your spot to the "
+             "5v5 results, with captains picked automatically. They're all on one post in the channel, "
+             "with the waitlist, and you're pinged there. Can't make it? `/match dropout` gives your spot to the "
              "next player waiting."),
             ("3. Check in",
              "Before play starts you're pinged to press **Check In** (or `/checkin`). Anyone in a lobby who "
              "hasn't checked in by the end is replaced by the next checked-in player on the waitlist."),
             ("4. Play",
              "A captain creates the room at https://drafter.uma.guide/host and presses **Submit Room Code**. "
-             "Everyone else presses **Get Room Code** on the lobby's post, joins, drafts, trains their character "
+             "Everyone else presses **Get Room Code** on the event's post, joins, drafts, trains their character "
              "and races. Each race gives 5, 3 and 1 points for 1st, 2nd and 3rd."),
             ("5. Report",
              "After the races (and a tiebreaker track if the teams are level), a captain presses **Report "
@@ -156,7 +156,7 @@ class HelpCog(commands.Cog):
             ("Organizers",
              "`/registration open5v5 name:<name> starts_in_hours:<hours>`, then `/registration close` "
              "(ideally a day before) to preview and create the lobbies. Start check-in with the button on the "
-             "event post or `/lobby startcheckin`. `/lobby report lobby:<n>` records points directly, and "
+             "event's post or `/lobby startcheckin`. `/lobby report lobby:<n>` records points directly, and "
              "`/tournament conclude` posts how each lobby went."),
         ])
         await interaction.response.send_message(embed=embed, ephemeral=True)

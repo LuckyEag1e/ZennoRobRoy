@@ -61,7 +61,7 @@ def test_close_draws_lobbies_with_two_captains_and_a_waitlist(conn):
     # The latest three sign-ups wait, in sign-up order.
     assert lobby_db.get_waitlist(conn, tournament_id) == [team_of(conn, tournament_id, u) for u in (21, 22, 23)]
     keys = [post["post_key"] for post in lobby_db.get_posts(conn, tournament_id)]
-    assert keys[-1] == "event" and len(keys) == 3
+    assert keys == ["event"]
 
 
 def test_close_refuses_without_enough_captains(conn):

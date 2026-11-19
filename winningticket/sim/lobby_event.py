@@ -65,8 +65,8 @@ class LobbyEventRun:
         return next((m for m in reversed(self.sim.channel.messages)
                      if m.public and not m.deleted and text in (m.content or "")), None)
 
-    def _lobby_post(self, number: int):
-        return self._post(f"lobby {number}")
+    def _event_post(self):
+        return self._post(f"🎌 **{NAME}**")
 
     async def _tend(self) -> None:
         cog = self.sim.cogs["LobbiesCog"]
@@ -185,7 +185,7 @@ class LobbyEventRun:
         await self._tend()
 
     async def _check_in(self) -> None:
-        event_post = self._post("Waitlist")
+        event_post = self._event_post()
         outsider = self.rng.choice(self.players)
         await self.sim.click(outsider.user, event_post, "Start Check-In")  # only organizers can
         click = await self.sim.click(self.organizer.user, event_post, "Start Check-In")
@@ -203,7 +203,7 @@ class LobbyEventRun:
         others = [p for lobby in lobbies for p in lobby.players if p not in captains]
         missing |= set(self.rng.sample(others, min(2, len(others))))
         for lobby in lobbies:
-            post = self._lobby_post(lobby.number)
+            post = self._event_post()
             for player in lobby.players:
                 if player in user_of and player not in missing:
                     await self.sim.click(self._player(user_of[player]).user, post, "Check In")
@@ -217,7 +217,7 @@ class LobbyEventRun:
     async def _play_lobbies(self) -> None:
         user_of = self._user_of()
         for lobby in self._lobbies():
-            post = self._lobby_post(lobby.number)
+            post = self._event_post()
             captains = [self._player(user_of[c]) for c in lobby.captains if c in user_of]
             if len(captains) < 2:
                 continue  # an organizer settles a lobby without two captains
@@ -239,7 +239,7 @@ class LobbyEventRun:
                 await self.sim.submit_fields(host.user, form.response.modal, [f"ROOM{lobby.number}"])
                 # The host dismissed the reply and asks again for who to pass the code to.
                 await self.sim.run(host.user, "lobby code", tournament=NAME)
-            post = self._lobby_post(lobby.number) or post
+            post = self._event_post() or post
             for player in players:
                 await self.sim.click(player.user, post, "Get Room Code")
             await self._report(host, other, lobby)
@@ -250,7 +250,7 @@ class LobbyEventRun:
         return {p: str(self.rng.randint(0, 20)) for p in lobby.players}
 
     async def _report(self, host: Player, other: Player, lobby: lobby_db.Lobby) -> None:
-        post = self._lobby_post(lobby.number)
+        post = self._event_post()
         tied = self.rng.random() < 0.3
         points = self._points(lobby, tied)
         if not tied and lobby_db.winning_side(lobby, {p: int(v) for p, v in points.items()}) is None:
@@ -260,7 +260,7 @@ class LobbyEventRun:
             points = self._points(lobby)
             points[lobby.players[0]] = "99"  # the tiebreaker settles it
             await self._enter_points(host, post, lobby, points)
-        post = self._post("reported the points")
+        post = self._event_post()
         if post is None:
             return
         answer = self.rng.choice(["Confirm", "Dispute", None])

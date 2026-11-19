@@ -409,7 +409,7 @@ class AdminCog(commands.Cog):
                 await interaction.response.send_message(f"**{entrant}** has already left **{tournament}**.", ephemeral=True)
                 return
             if tournament_row["format"] == "lobbies":
-                # The lobby's post shows who took the spot, so nothing else is announced.
+                # The event's post shows who took the spot, so nothing else is announced.
                 reply = lobby_flow.dropout(conn, tournament_row, team["id"], reason, interaction.user.id)
                 await interaction.response.send_message(reply, ephemeral=True)
                 await sync_posts(self.bot, conn, tournament_row["id"])

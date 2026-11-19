@@ -1170,7 +1170,7 @@ class WinningTicketCLI(cmd.Cmd):
         except lobbies.LobbyError as e:
             print(f"Couldn't create the lobbies: {e}")
             return
-        print(f"Created the lobbies: {lobby_flow.split_label(split)}. The posts follow; start check-in with "
+        print(f"Created the lobbies: {lobby_flow.split_label(split)}. The post follows; start check-in with "
               f"'lobby_startcheckin {tournament['name']}' when it's nearly time to play.")
         self._tend_matches()
 

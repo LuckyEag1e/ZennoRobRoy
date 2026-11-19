@@ -439,16 +439,11 @@ def load_lobby_history(conn: sqlite3.Connection, guild_id: int) -> list[PlayedLo
 EVENT_POST = "event"
 
 
-def lobby_post_key(lobby_id: int) -> str:
-    return f"lobby:{lobby_id}"
-
-
-def add_posts(conn: sqlite3.Connection, tournament_id: int, channel_id: int) -> None:
-    """Reserve the event post and one post per lobby, without committing. They're sent the
-    next time posts are brought up to date."""
-    keys = [EVENT_POST] + [lobby_post_key(lobby.id) for lobby in get_lobbies(conn, tournament_id)]
-    conn.executemany("INSERT OR IGNORE INTO lobby_posts (tournament_id, post_key, channel_id) VALUES (?, ?, ?)",
-                     [(tournament_id, key, channel_id) for key in keys])
+def add_event_post(conn: sqlite3.Connection, tournament_id: int, channel_id: int) -> None:
+    """Reserve the event's post, without committing. It's sent the next time posts are
+    brought up to date."""
+    conn.execute("INSERT OR IGNORE INTO lobby_posts (tournament_id, post_key, channel_id) VALUES (?, ?, ?)",
+                 (tournament_id, EVENT_POST, channel_id))
 
 
 def get_posts(conn: sqlite3.Connection, tournament_id: int) -> list[sqlite3.Row]:

@@ -122,5 +122,5 @@ def close_lobby_registration(conn: sqlite3.Connection, tournament_id: int, split
                      (spread, tournament_id))
         lobby_db.form_lobbies(conn, tournament_id, formed, waiting)
         if tournament["channel_id"] is not None:
-            lobby_db.add_posts(conn, tournament_id, tournament["channel_id"])
+            lobby_db.add_event_post(conn, tournament_id, tournament["channel_id"])
     return split

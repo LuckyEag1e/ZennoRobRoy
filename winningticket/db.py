@@ -321,8 +321,8 @@ CREATE TABLE IF NOT EXISTS lobby_points (
     points          INTEGER NOT NULL,
     PRIMARY KEY (lobby_id, team_id)
 );
--- A 5v5 event's public posts: the event post (`post_key` 'event', with the waitlist and
--- check-in) and one per lobby ('lobby:<id>'). Each is edited as things change, and sent
+-- A 5v5 event's one public post (`post_key` 'event'; other keys are from older versions,
+-- which had a post per lobby, and are skipped). It's edited as things change, and sent
 -- afresh when someone needs notifying, like match_posts.
 CREATE TABLE IF NOT EXISTS lobby_posts (
     tournament_id   INTEGER NOT NULL REFERENCES tournaments(id) ON DELETE CASCADE,

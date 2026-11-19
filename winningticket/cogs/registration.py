@@ -129,9 +129,8 @@ class LobbyClosePreview(BotView):
                 return
             tournament = db.get_tournament(conn, self.tournament_id)
             await interaction.response.edit_message(
-                content=(f"✅ Created the lobbies for **{tournament['name']}**. Their posts are going up in the "
-                         f"channel. When it's nearly time to play, press **Start Check-In** on the event post (or "
-                         f"run `/lobby startcheckin`)."), view=None)
+                content=(f"✅ Created the lobbies for **{tournament['name']}**. When it's nearly time to play, press "
+                         f"**Start Check-In** on the event's post (or run `/lobby startcheckin`)."), view=None)
             await refresh_signups(interaction.client, conn, self.tournament_id)
             await sync_posts(interaction.client, conn, self.tournament_id)
         finally:

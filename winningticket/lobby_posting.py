@@ -1,6 +1,6 @@
-"""The Discord side of 5v5 events: the buttons on their public posts, the private menus and
-forms those buttons open, and keeping the posts up to date (lobby_posts says what they
-should show). lobby_flow holds the rules and replies, shared with the CLI."""
+"""The Discord side of 5v5 events: the buttons on their public post, the private menus and
+forms those buttons open, and keeping the post up to date (lobby_posts says what it should
+show). lobby_flow holds the rules and replies, shared with the CLI."""
 
 from __future__ import annotations
 
@@ -26,7 +26,7 @@ log = logging.getLogger("winningticket")
 FIELD_LABEL_LIMIT = 45
 
 # What each post button does, by the name lobby_posts gives it. The id in a button's
-# custom_id is the tournament's for event-wide actions and the lobby's otherwise.
+# custom_id is the tournament's.
 BUTTON_ACTIONS = {
     lobby_posts.START_CHECKIN: ("startcheckin", discord.ButtonStyle.primary),
     lobby_posts.CHECK_IN: ("checkin", discord.ButtonStyle.success),
@@ -37,6 +37,8 @@ BUTTON_ACTIONS = {
     lobby_posts.DISPUTE: ("dispute", discord.ButtonStyle.danger),
 }
 EVENT_ACTIONS = {"register", "unregister", "startcheckin", "checkin"}
+# Buttons that act on one lobby: the presser's own, or for an organizer, one they pick.
+LOBBY_ACTIONS = {"submitcode", "getcode", "report", "confirm", "dispute"}
 LABELS = {action: label for label, (action, _) in BUTTON_ACTIONS.items()} | {"register": "Register",
                                                                            "unregister": "Unregister"}
 STYLES = {action: style for action, style in BUTTON_ACTIONS.values()} | {
@@ -48,14 +50,15 @@ def is_organizer(interaction: discord.Interaction) -> bool:
 
 
 class LobbyButton(discord.ui.DynamicItem[discord.ui.Button], template=r"lobby:(?P<action>[a-z]+):(?P<id>\d+)"):
-    """Every button on a 5v5 event's posts. They're rebuilt from their custom_id after a
-    restart (bot.add_dynamic_items), so posts keep working across deploys."""
+    """Every button on a 5v5 event's sign-ups post and event post. They're rebuilt from
+    their custom_id after a restart (bot.add_dynamic_items), so posts keep working across
+    deploys."""
 
-    def __init__(self, action: str, target_id: int) -> None:
+    def __init__(self, action: str, tournament_id: int) -> None:
         super().__init__(discord.ui.Button(label=LABELS[action], style=STYLES[action],
-                                           custom_id=f"lobby:{action}:{target_id}"))
+                                           custom_id=f"lobby:{action}:{tournament_id}"))
         self.action = action
-        self.target_id = target_id
+        self.tournament_id = tournament_id
 
     @classmethod
     async def from_custom_id(cls, interaction: discord.Interaction, item: discord.ui.Button, match) -> LobbyButton:
@@ -67,13 +70,71 @@ class LobbyButton(discord.ui.DynamicItem[discord.ui.Button], template=r"lobby:(?
     async def callback(self, interaction: discord.Interaction) -> None:
         conn = db.get_connection()
         try:
-            if self.action in EVENT_ACTIONS:
-                tournament, lobby = db.get_tournament(conn, self.target_id), None
-            else:
-                lobby = lobby_db.get_lobby(conn, self.target_id)
-                tournament = db.get_tournament(conn, lobby.tournament_id) if lobby is not None else None
-            if tournament is None:
+            tournament = db.get_tournament(conn, self.tournament_id)
+            if tournament is None or tournament["format"] != "lobbies":
                 await interaction.response.send_message("That event no longer exists.", ephemeral=True)
+                return
+            if self.action in EVENT_ACTIONS:
+                await HANDLERS[self.action](interaction, conn, tournament, None)
+                return
+            await _for_a_lobby(interaction, conn, tournament, self.action)
+        finally:
+            conn.close()
+
+
+async def _for_a_lobby(interaction: discord.Interaction, conn: sqlite3.Connection, tournament: sqlite3.Row,
+                       action: str) -> None:
+    """Run a lobby button for the presser's own lobby. An organizer who isn't playing picks
+    the lobby, unless only one lobby is left to act on."""
+    team_id = db.get_entrant_team_id(conn, tournament["id"], interaction.user.id)
+    own = lobby_db.find_lobby_of(conn, tournament["id"], team_id) if team_id is not None else None
+    if own is not None:
+        await HANDLERS[action](interaction, conn, tournament, own)
+        return
+    if not is_organizer(interaction):
+        await interaction.response.send_message(f"You aren't playing in a lobby of **{tournament['name']}**.",
+                                                ephemeral=True)
+        return
+    choices = _lobbies_to_act_on(conn, tournament, action)
+    if len(choices) == 1:
+        await HANDLERS[action](interaction, conn, tournament, choices[0])
+        return
+    if not choices:
+        await interaction.response.send_message("No lobby needs that right now.", ephemeral=True)
+        return
+    await interaction.response.send_message("Which lobby?", view=LobbyPicker(tournament["id"], action, choices),
+                                            ephemeral=True)
+
+
+def _lobbies_to_act_on(conn: sqlite3.Connection, tournament: sqlite3.Row, action: str) -> list[lobby_db.Lobby]:
+    """The lobbies an organizer might mean by pressing `action`: those still being played,
+    and for Confirm and Dispute, those with a report waiting."""
+    playing = [lobby for lobby in lobby_db.get_lobbies(conn, tournament["id"])
+               if lobby_db.get_result(conn, lobby.id) is None]
+    if action in ("confirm", "dispute"):
+        return [lobby for lobby in playing if lobby_db.get_report(conn, lobby.id) is not None]
+    return playing
+
+
+class LobbyPicker(BotView):
+    """Lets an organizer pick which lobby a button on the event post is for."""
+
+    def __init__(self, tournament_id: int, action: str, choices: list[lobby_db.Lobby]) -> None:
+        super().__init__(timeout=600)
+        self.tournament_id = tournament_id
+        self.action = action
+        select = discord.ui.Select(placeholder="Lobby", options=[
+            discord.SelectOption(label=f"Lobby {lobby.number}", value=str(lobby.id)) for lobby in choices[:25]])
+        select.callback = self._picked
+        self.add_item(select)
+
+    async def _picked(self, interaction: discord.Interaction) -> None:
+        conn = db.get_connection()
+        try:
+            tournament = db.get_tournament(conn, self.tournament_id)
+            lobby = lobby_db.get_lobby(conn, int(interaction.data["values"][0]))
+            if tournament is None or lobby is None:
+                await interaction.response.send_message("That lobby no longer exists.", ephemeral=True)
                 return
             await HANDLERS[self.action](interaction, conn, tournament, lobby)
         finally:
@@ -87,14 +148,10 @@ def event_view(tournament_id: int, actions: list[str]) -> BotView:
     return view
 
 
-def _post_view(state: lobby_posts.PostState, tournament_id: int, lobby_id: Optional[int]) -> Optional[BotView]:
+def _post_view(state: lobby_posts.PostState, tournament_id: int) -> Optional[BotView]:
     if not state.buttons:
         return None
-    view = BotView(timeout=None)
-    for name in state.buttons:
-        action = BUTTON_ACTIONS[name][0]
-        view.add_item(LobbyButton(action, tournament_id if action in EVENT_ACTIONS else lobby_id))
-    return view
+    return event_view(tournament_id, [BUTTON_ACTIONS[name][0] for name in state.buttons])
 
 
 # -- signing up --------------------------------------------------------------------------
@@ -394,6 +451,7 @@ HANDLERS = {
 # -- keeping posts up to date ------------------------------------------------------------
 
 async def sync_posts(client: discord.Client, conn: sqlite3.Connection, tournament_id: int) -> None:
+    """Bring the event's post up to date."""
     for post in lobby_db.get_posts(conn, tournament_id):
         try:
             await _sync_post(client, conn, post)
@@ -413,7 +471,6 @@ async def _sync_post(client: discord.Client, conn: sqlite3.Connection, post: sql
     if state is None:
         return
     tournament_id, key = post["tournament_id"], post["post_key"]
-    lobby_id = None if key == lobby_db.EVENT_POST else int(key.split(":")[1])
     note = lobby_posts.notification(state, post["pinged"])
     if post["message_id"] is None or note is not None:
         claim = lobby_db.claim_post_send(conn, tournament_id, key)
@@ -421,7 +478,7 @@ async def _sync_post(client: discord.Client, conn: sqlite3.Connection, post: sql
             return  # something else is sending it right now
         pinged, notify = note if note is not None else (post["pinged"], [])
         message = await send_public(client.get_channel(post["channel_id"]), state.text,
-                                    view=_post_view(state, tournament_id, lobby_id), notify=notify)
+                                    view=_post_view(state, tournament_id), notify=notify)
         if message is None:
             lobby_db.release_post_send(conn, tournament_id, key)
             return
@@ -439,7 +496,7 @@ async def _sync_post(client: discord.Client, conn: sqlite3.Connection, post: sql
         return
     try:
         await channel.get_partial_message(post["message_id"]).edit(
-            content=state.text, view=_post_view(state, tournament_id, lobby_id))
+            content=state.text, view=_post_view(state, tournament_id))
     except discord.NotFound:
         lobby_db.mark_post_unsent(conn, tournament_id, key, post["message_id"])
         return

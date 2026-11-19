@@ -65,7 +65,7 @@ def test_a_5v5_event_from_the_cli(repl, capsys, monkeypatch):
     repl.onecmd(f"as {captain_b} CaptainB")
     repl.onecmd("lobby_confirm Duel")
     out = capsys.readouterr().out
-    assert "Confirmed" in out and "wins lobby 1" in out
+    assert "Confirmed" in out and "Every lobby has finished" in out
 
     repl.onecmd("as 1 tester")
     repl.onecmd("conclude Duel")

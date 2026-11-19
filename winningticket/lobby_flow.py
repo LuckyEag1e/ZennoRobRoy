@@ -55,7 +55,7 @@ def takes_late_signups(tournament: sqlite3.Row) -> bool:
 def signup_reply(conn: sqlite3.Connection, tournament: sqlite3.Row, team_id: int, pref: str, linked: bool,
                  changed: bool = False) -> str:
     """What a player is told once they're signed up, or have changed their captain choice.
-    Only what's theirs alone: the public posts already say how the event runs."""
+    Only what's theirs alone: the public post already says how the event runs."""
     name = tournament["name"]
     choice = CAPTAIN_CHOICES[pref]
     if not linked and pref != "no":
@@ -294,7 +294,7 @@ def confirm_report(conn: sqlite3.Connection, lobby: Lobby, role: Role, user_id: 
     if report.disputed and not role.organizer:
         return "You disputed these points, so an organizer settles them now."
     if not lobby_db.accept_report(conn, report, user_id):
-        return "The report changed while you were looking at it. Check the lobby's post and answer again."
+        return "The report changed while you were looking at it. Check the event's post and answer again."
     return f"✅ Confirmed. The result for lobby {lobby.number} is in."
 
 
@@ -305,7 +305,7 @@ def dispute_report(conn: sqlite3.Connection, lobby: Lobby, role: Role) -> str:
     if report.disputed:
         return "These points are already disputed. An organizer will settle them."
     if not lobby_db.dispute_report(conn, report):
-        return "The report changed while you were looking at it. Check the lobby's post and answer again."
+        return "The report changed while you were looking at it. Check the event's post and answer again."
     return f"✅ Disputed the points for lobby {lobby.number}."
 
 
@@ -357,7 +357,7 @@ def lobby_signups_message(tournament: sqlite3.Row, entrants: int) -> str:
                 f"{register_command(name)}) and say whether you'll captain. Lobbies and teams are drawn ahead of "
                 f"time, and everyone is pinged here with their lobby or their place on the waitlist. {count}")
     if takes_late_signups(tournament):
-        return (f"📝 The lobbies for **{name}** are drawn: see the posts below. Pressing **Register** now adds you to "
+        return (f"📝 The lobbies for **{name}** are drawn: see the post below. Pressing **Register** now adds you to "
                 f"the end of the waitlist. {count}")
     return f"📝 Sign-ups for **{name}** are closed."
 

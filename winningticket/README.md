@@ -122,9 +122,10 @@ points wins, and a tie is settled on a tiebreaker track before anyone reports.
    `/register tournament:<name> captain:<choice>`) and say whether they want to captain, can if needed, or won't.
 2. `/registration close name:<name>`, ideally a day before, shows the organizer the proposed
    split (such as "5v5 + 5v4, 3 waitlisted") to accept or change, then draws the lobbies.
-   Teams are balanced on each player's 5v5 contribution, two opposing captains per lobby. Late
+   One post in the channel shows every lobby and the waitlist, and carries the event's
+   buttons from then on. Teams are balanced on each player's 5v5 contribution, two opposing captains per lobby. Late
    sign-ups join the end of the waitlist, and a dropout's spot goes to the first one waiting.
-3. **Start Check-In** on the event post (or `/lobby startcheckin`) pings everyone to check in.
+3. **Start Check-In** on that post (or `/lobby startcheckin`) pings everyone to check in.
    When it ends, no-shows are replaced in place by checked-in players from the waitlist.
 4. A captain creates the room at https://drafter.uma.guide/host and presses **Submit Room
    Code**. Players press **Get Room Code** for a private copy, and the host is told who has no

@@ -353,8 +353,8 @@ FORMAT_NAMES = {"single_elim": "Single elimination", "lobbies": "5v5 lobbies"}
 def wrong_format_message(tournament) -> str:
     """Why a command doesn't apply to `tournament`'s format."""
     if tournament["format"] == "lobbies":
-        return (f"**{tournament['name']}** is a 5v5 event, so it has no bracket or predictions. Its lobby posts in "
-                f"the channel show how it's going.")
+        return (f"**{tournament['name']}** is a 5v5 event, so it has no bracket or predictions. Its post in the "
+                f"channel shows how it's going.")
     return f"**{tournament['name']}** is a bracket tournament, so it has no lobbies."
 
 
