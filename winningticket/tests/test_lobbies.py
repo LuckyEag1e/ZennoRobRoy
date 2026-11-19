@@ -204,11 +204,11 @@ def test_replace_in_place_brings_in_a_waiting_captain_when_no_teammate_can():
     assert (replacement.newcomer, replacement.captain) == (8, 8)
 
 
-def test_replace_in_place_with_nobody_suitable_left():
+def test_replace_in_place_holds_the_spot_when_nobody_can_captain():
     prefs = {p: "no" for p in range(1, 8)}
     prefs[1] = "want"
     replacement = replace_in_place([1, 2, 3, 4, 5], 1, 1, prefs, [6])
-    assert (replacement.newcomer, replacement.captain) == (6, None)
+    assert (replacement.newcomer, replacement.captain) == (None, None)
     assert replace_in_place([1, 2, 3, 4, 5], 1, 2, prefs, []).newcomer is None
 
 
@@ -232,3 +232,10 @@ def test_open_spot_sends_someone_who_can_captain_to_a_team_without_one():
     teams = [TeamRoom(1, "A", 3, 7), TeamRoom(1, "B", 4, 7, has_captain=False)]
     assert open_spot(teams, can_captain=True) == teams[1]
     assert open_spot(teams, can_captain=False) == teams[0]
+
+
+def test_open_spot_keeps_a_team_without_a_captain_for_someone_who_can():
+    from lobbies import TeamRoom, open_spot
+    teams = [TeamRoom(1, "A", 5, 9), TeamRoom(1, "B", 4, 9, has_captain=False)]
+    assert open_spot(teams, can_captain=False) is None
+    assert open_spot(teams, can_captain=True) == teams[1]

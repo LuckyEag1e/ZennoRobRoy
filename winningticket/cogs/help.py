@@ -126,6 +126,7 @@ class HelpCog(commands.Cog):
             ("/admin unlinkplayer tournament:<name> entrant:<name>", "Unlink the member behind an entrant, such as one linked to the wrong entry. Their agreement and other entries stay as they are."),
             ("/admin setcaptain tournament:<name> entrant:<name>", "5v5: make a player (with a linked account) captain of their team, such as when a team has none."),
             ("/admin lobbyswap tournament:<name> leaving:<name> joining:<name>", "5v5: put a waitlisted player in someone's spot. The player leaving goes to the front of the waitlist."),
+            ("/admin lobbymove tournament:<name> entrant:<name>", "5v5: move a player to the other team in their lobby, such as to give a team with no captain one. Their old spot is filled from the waitlist."),
             ("/admin feedback [page:<n>]", "Read anonymous feedback, newest first. `/admin deletefeedback number:<n>` removes one."),
             ("/admin ban user:<member> [reason:<text>]", "Block a member from using the bot. `/admin unban` undoes it, and `/admin bans` lists everyone banned."),
         ])

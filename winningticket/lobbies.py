@@ -202,7 +202,7 @@ def form_teams(players: list[int], prefs: dict[int, str], sizes: tuple[int, int]
 
 @dataclass(frozen=True)
 class Replacement:
-    newcomer: Optional[int]  # who takes the spot, or None if nobody is waiting
+    newcomer: Optional[int]  # who takes the spot, or None if it's left empty
     captain: Optional[int]  # the team's captain afterwards, or None if nobody can captain
 
 
@@ -211,7 +211,8 @@ def replace_in_place(team: list[int], captain: Optional[int], leaving: int, pref
     """Who takes the place of a player leaving a team that's already been announced, and
     who captains it afterwards. Nobody else moves. The first waiting player takes the spot,
     unless the team is losing its captain (or has none) and no teammate can take over:
-    then the first waiting captain candidate does, and captains."""
+    then the first waiting captain candidate does, and captains. With none waiting, the
+    spot is left empty, held for the next player who can captain (see open_spot)."""
     first_waiting = waitlist[0] if waitlist else None
     if captain is not None and leaving != captain:
         return Replacement(first_waiting, captain)
@@ -219,9 +220,7 @@ def replace_in_place(team: list[int], captain: Optional[int], leaving: int, pref
     if teammate is not None:
         return Replacement(first_waiting, teammate)
     newcomer = best_candidate(waitlist, prefs)
-    if newcomer is not None:
-        return Replacement(newcomer, newcomer)
-    return Replacement(first_waiting, None)
+    return Replacement(newcomer, newcomer)
 
 
 @dataclass(frozen=True)
@@ -236,9 +235,9 @@ class TeamRoom:
 
 def open_spot(teams: list[TeamRoom], can_captain: bool = False) -> Optional[TeamRoom]:
     """Where a late sign-up plays: the smallest team with room (a team holds MAX_LOBBY // 2),
-    in the emptiest lobby, then the first lobby. Someone who can captain goes to a team
-    with no captain first. None if every team is full, so they wait."""
-    with_room = [team for team in teams if team.team_size < MAX_LOBBY // 2]
+    in the emptiest lobby, then the first lobby. A team with no captain only takes someone
+    who can captain, and they go there first. None if no team fits, so they wait."""
+    with_room = [team for team in teams if team.team_size < MAX_LOBBY // 2 and (team.has_captain or can_captain)]
     if not with_room:
         return None
     return min(with_room, key=lambda team: (not (can_captain and not team.has_captain), team.team_size,

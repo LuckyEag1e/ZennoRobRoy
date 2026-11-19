@@ -55,13 +55,49 @@ def takes_late_signups(tournament: sqlite3.Row) -> bool:
     return tournament["status"] == "in_progress" and not tournament["checkin_finished"]
 
 
-def no_captain_fix(tournament: sqlite3.Row) -> str:
-    """How an organizer gets a captain for a team that has none. Captains need a linked account."""
-    by_hand = ("make a player on it with a linked account captain with `/admin setcaptain`, or swap one in from the "
-               "waitlist with `/admin lobbyswap`")
-    if takes_late_signups(tournament):
-        return f"The next player who can captain and signs up before check-in ends joins it; otherwise {by_hand}."
-    return by_hand[0].upper() + by_hand[1:] + "."
+def move_player(conn: sqlite3.Connection, tournament: sqlite3.Row, team_id: int) -> str:
+    """An organizer moving a player to the other team of their lobby, usually to give a
+    team with no captain one. Returns the organizer's reply."""
+    lobby = lobby_db.find_lobby_of(conn, tournament["id"], team_id)
+    if lobby is None:
+        return "That player isn't in a lobby."
+    if lobby_db.get_result(conn, lobby.id) is not None:
+        return "That lobby's result is already in."
+    names = Names(conn, tournament["id"], str)
+    other = "B" if lobby.side_of(team_id) == "A" else "A"
+    change = lobby_db.move_to_other_team(conn, tournament["id"], team_id)
+    if change is None:
+        return f"{team_name(lobby, other, names)} is full, so there's no spot to move them into."
+    lobby = lobby_db.get_lobby(conn, lobby.id)
+    names = Names(conn, tournament["id"], str)
+    reply = f"✅ {names.plain(team_id)} moved to {team_name(lobby, other, names)}."
+    if change.newcomer is not None:
+        reply += f" {names.plain(change.newcomer)} takes their old spot from the waitlist."
+    return "\n".join([reply] + captain_fix_lines(conn, db.get_tournament(conn, tournament["id"])))
+
+
+def captain_fix_lines(conn: sqlite3.Connection, tournament: sqlite3.Row) -> list[str]:
+    """For an organizer: each team with no captain, and how to give it one. Check-in can't
+    finish until every team has one."""
+    name = tournament["name"]
+    names = Names(conn, tournament["id"], str)
+    prefs = lobby_db.captain_prefs(list(names.signups.values()))
+    lines = []
+    for lobby, side in lobby_db.teams_without_captain(conn, tournament["id"]):
+        other = "B" if side == "A" else "A"
+        spare = [p for p in lobby.teams[other].players if lobbies.is_candidate(prefs.get(p, "no"))]
+        line = f"⚠️ Lobby {lobby.number}'s {team_name(lobby, side, names)} has no captain."
+        if len(spare) >= 2:
+            mover = next(p for p in spare if p != lobby.teams[other].captain)
+            line += (f" {team_name(lobby, other, names)} has {len(spare)} who can captain: move one over with "
+                     f"`/admin lobbymove tournament:{name} entrant:{names.plain(mover)}`.")
+        elif takes_late_signups(tournament):
+            line += " Its empty spot is held for the next player who signs up and can captain."
+        line += " Or make a player on it with a linked account captain with `/admin setcaptain`."
+        lines.append(line)
+    if lines and takes_late_signups(tournament):
+        lines.append("Check-in can't finish until every team has a captain.")
+    return lines
 
 
 def signups_over(name: str, by_organizer: bool) -> str:
@@ -183,7 +219,7 @@ def dropout(conn: sqlite3.Connection, tournament: sqlite3.Row, team_id: int, rea
     else:
         reply = f"Done. {names.plain(change.newcomer)} takes the spot in lobby {lobby.number} from the waitlist."
     if change.captain_lost and reason != "dropped":
-        reply += f" That team has no captain now. {no_captain_fix(db.get_tournament(conn, tournament['id']))}"
+        reply = "\n".join([reply] + captain_fix_lines(conn, db.get_tournament(conn, tournament["id"])))
     return reply
 
 
@@ -194,13 +230,7 @@ def start_checkin(conn: sqlite3.Connection, tournament: sqlite3.Row, minutes: in
     if not lobby_db.start_checkin(conn, tournament["id"], db.to_db_time(ends)):
         return f"Check-in for **{tournament['name']}** has already started."
     reply = f"✅ Check-in for **{tournament['name']}** is open for {minutes} minutes."
-    names = Names(conn, tournament["id"], str)
-    captainless = [f"lobby {lobby.number}'s {team_name(lobby, side, names)}"
-                   for lobby in lobby_db.get_lobbies(conn, tournament["id"]) for side in SIDES
-                   if lobby.teams[side].captain is None]
-    if captainless:
-        reply += f"\n⚠️ No captain yet: {', '.join(captainless)}. {no_captain_fix(tournament)}"
-    return reply
+    return "\n".join([reply] + captain_fix_lines(conn, db.get_tournament(conn, tournament["id"])))
 
 
 def check_in(conn: sqlite3.Connection, tournament: sqlite3.Row, user_id: int) -> str:

@@ -137,7 +137,7 @@ points wins, and a tie is settled on a tiebreaker track before anyone reports.
 
 A player's **contribution** in a lobby is 10 for its top scorer down to 1, +3 for the winning
 team and +1 more for its captain. Teams are balanced on the average of each player's last
-3 lobbies. It's separate from Elo, and `/rating` shows your own. `/admin setcaptain` and
+3 lobbies. It's separate from Elo, and `/rating` shows your own. `/admin setcaptain`, `/admin lobbymove` and
 `/admin lobbyswap` fix a lobby by hand.
 
 ## Local CLI (no Discord needed)
@@ -160,7 +160,7 @@ Commands mirror the slash commands: `create <name> <csv>`, `regopen <name> [--cl
 `admin_deletefeedback`, `admin_ban`, `admin_unban`, `admin_bans`, `admin_linkplayer`, `admin_unlinkplayer`.
 5v5 events use `regopen5v5 <name> --starts-in HOURS [--spread tier|balanced|random]`, `register <name> --captain want|can|no`,
 `regclose <name> [--lobbies N] [--spread tier|balanced|random]`, `lobby_startcheckin`, `checkin`, `lobby_roomcode`,
-`lobby_code`, `lobby_report`, `lobby_confirm`, `lobby_dispute`, `admin_setcaptain` and `admin_lobbyswap`.
+`lobby_code`, `lobby_report`, `lobby_confirm`, `lobby_dispute`, `admin_setcaptain`, `admin_lobbyswap` and `admin_lobbymove`.
 Use `as <user_id> <name>` to switch which simulated user you're acting as (so you can
 submit multiple different predictions and see the leaderboard play out). Commands that
 take more than one argument (like `create`) need quotes around a multi-word name;

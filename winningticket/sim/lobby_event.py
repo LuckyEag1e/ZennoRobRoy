@@ -114,7 +114,9 @@ class LobbyEventRun:
         await self._check_in()
         await self._organizer_fixes_after_checkin()
         await self._play_lobbies()
-        while self.status() == "in_progress":
+        for _ in range(10):
+            if self.status() != "in_progress":
+                break
             await self._settle_disputes()
             self._shift("UPDATE lobby_reports SET changed_at = strftime('%Y-%m-%dT%H:%M:%fZ', changed_at, '-11 minutes') "
                         "WHERE lobby_id IN (SELECT id FROM lobbies WHERE tournament_id = ?)")
@@ -227,6 +229,34 @@ class LobbyEventRun:
         self._shift("UPDATE tournaments SET checkin_ends_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-1 second') "
                     "WHERE id = ?")
         await self._tend()
+        await self._give_teams_captains()
+
+    async def _give_teams_captains(self) -> None:
+        """Check-in waits until every team has a captain, so the organizer gives one to any
+        team left without: moving a spare captain over, or making a linked player captain."""
+        org = self.organizer.user
+        for _ in range(5):
+            missing = self._query(lambda conn: lobby_db.teams_without_captain(conn, self.tournament_id))
+            if not missing:
+                return
+            lobby, side = missing[0]
+            other = "B" if side == "A" else "A"
+            signups = {s.team_id: s for s in self._query(lambda conn: lobby_db.get_signups(conn, self.tournament_id))}
+            spare = [p for p in lobby.teams[other].players
+                     if signups[p].can_captain and p != lobby.teams[other].captain]
+            linked = [p for p in lobby.teams[side].players if signups[p].user_id is not None]
+            if spare:
+                await self.sim.run(org, "admin lobbymove", tournament=NAME, entrant=signups[spare[0]].name)
+            elif linked:
+                await self.sim.run(org, "admin setcaptain", tournament=NAME, entrant=signups[linked[0]].name)
+            else:
+                # Nobody there can captain: move the other team's linked player over and make them captain.
+                mover = next(p for p in lobby.teams[other].players
+                             if signups[p].user_id is not None and p != lobby.teams[other].captain)
+                await self.sim.run(org, "admin lobbymove", tournament=NAME, entrant=signups[mover].name)
+                await self.sim.run(org, "admin setcaptain", tournament=NAME, entrant=signups[mover].name)
+            await self._tend()
+        self.sim._problem("a team still has no captain, so check-in can't finish")
 
     async def _play_lobbies(self) -> None:
         user_of = self._user_of()

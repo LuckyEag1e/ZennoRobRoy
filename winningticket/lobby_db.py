@@ -213,13 +213,17 @@ def _replacement_pool(conn: sqlite3.Connection, tournament_id: int) -> list[int]
     return [team_id for team_id in waitlist if team_id in checked_in]
 
 
-def _replace(conn: sqlite3.Connection, tournament_id: int, lobby: Lobby, leaving: int) -> Change:
-    """Fill `leaving`'s spot in place from the waitlist, without committing."""
+def _replace(conn: sqlite3.Connection, tournament_id: int, lobby: Lobby, leaving: int,
+             only_if_filled: bool = False) -> Optional[Change]:
+    """Fill `leaving`'s spot in place from the waitlist, without committing. With
+    `only_if_filled`, nothing changes (and None is returned) when nobody can take it."""
     side = lobby.side_of(leaving)
     team = lobby.teams[side]
     prefs = captain_prefs(get_signups(conn, tournament_id))
     replacement = lobbies.replace_in_place(team.players, team.captain, leaving, prefs,
                                            _replacement_pool(conn, tournament_id))
+    if replacement.newcomer is None and only_if_filled:
+        return None
     if replacement.newcomer is None:
         conn.execute("DELETE FROM lobby_players WHERE team_id = ?", (leaving,))
     else:
@@ -248,6 +252,32 @@ def leave(conn: sqlite3.Connection, tournament_id: int, team_id: int, reason: st
             return None
         conn.execute(f"UPDATE teams SET withdrawn = ?, withdrawn_by = ?, withdrawn_at = {_NOW} WHERE id = ?",
                      (reason, by, team_id))
+    return change
+
+
+def move_to_other_team(conn: sqlite3.Connection, tournament_id: int, team_id: int) -> Optional[Change]:
+    """An organizer moving a player to the other team of their lobby, into a free spot
+    there, taking its captaincy if it has none and they can captain. Their old spot is
+    filled from the waitlist like anyone leaving it. None if they aren't in a lobby, or
+    the other team is full."""
+    with conn:
+        lobby = find_lobby_of(conn, tournament_id, team_id)
+        if lobby is None:
+            return None
+        other = "B" if lobby.side_of(team_id) == "A" else "A"
+        if len(lobby.teams[other].players) >= lobbies.MAX_LOBBY // 2:
+            return None
+        change = _replace(conn, tournament_id, lobby, team_id)
+        conn.execute("DELETE FROM lobby_players WHERE team_id = ?", (team_id,))
+        conn.execute(
+            """INSERT INTO lobby_players (lobby_id, side, spot, team_id)
+               SELECT ?, ?, COALESCE(MAX(spot), -1) + 1, ? FROM lobby_players WHERE lobby_id = ? AND side = ?""",
+            (lobby.id, other, team_id, lobby.id, other),
+        )
+        signup = next(s for s in get_signups(conn, tournament_id) if s.team_id == team_id)
+        if lobby.teams[other].captain is None and signup.can_captain:
+            conn.execute("UPDATE lobby_sides SET captain_team_id = ? WHERE lobby_id = ? AND side = ?",
+                         (team_id, lobby.id, other))
     return change
 
 
@@ -300,8 +330,9 @@ def get_checkins_due(conn: sqlite3.Connection) -> list[sqlite3.Row]:
 def finish_checkin(conn: sqlite3.Connection, tournament_id: int) -> Optional[list[Change]]:
     """Replace everyone in a lobby who didn't check in, in place, from the checked-in
     waitlist. Captains are replaced first, so waiting captain candidates go where they're
-    needed. Once nobody checked-in is left waiting, the rest keep their spots: they may
-    only have forgotten to press the button. None if check-in had already been finished."""
+    needed. A no-show nobody suitable can replace keeps their spot: they may only have
+    forgotten to press the button. None, with nothing changed, if check-in had already
+    been finished, or if a team would still have no captain: check-in then stays open."""
     with conn:
         claimed = conn.execute(
             "UPDATE tournaments SET checkin_finished = 1 WHERE id = ? AND checkin_finished = 0 AND checkin_ends_at IS NOT NULL",
@@ -314,10 +345,19 @@ def finish_checkin(conn: sqlite3.Connection, tournament_id: int) -> Optional[lis
         for lobby in get_lobbies(conn, tournament_id):
             missing = [player for player in lobby.players if player not in checked_in]
             for player in sorted(missing, key=lambda player: player not in lobby.captains):
-                if not _replacement_pool(conn, tournament_id):
-                    return changes
-                changes.append(_replace(conn, tournament_id, get_lobby(conn, lobby.id), player))
+                change = _replace(conn, tournament_id, get_lobby(conn, lobby.id), player, only_if_filled=True)
+                if change is not None:
+                    changes.append(change)
+        if teams_without_captain(conn, tournament_id):
+            conn.rollback()  # check-in stays open until every team has a captain
+            return None
     return changes
+
+
+def teams_without_captain(conn: sqlite3.Connection, tournament_id: int) -> list[tuple[Lobby, str]]:
+    """(lobby, side) for each team still playing that has no captain."""
+    return [(lobby, side) for lobby in get_lobbies(conn, tournament_id) if get_result(conn, lobby.id) is None
+            for side in SIDES if lobby.teams[side].captain is None]
 
 
 def checkin_running(tournament: sqlite3.Row) -> bool:

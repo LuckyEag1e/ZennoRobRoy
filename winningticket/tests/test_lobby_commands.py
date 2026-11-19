@@ -348,37 +348,99 @@ def test_someone_who_left_after_the_draw_can_sign_up_again(tmp_path):
         asyncio.run(sim.close())
 
 
-def test_a_team_left_without_a_captain_says_so_and_takes_the_next_one(tmp_path):
-    sim, organizer, users, announcement = _event(tmp_path, players=7, captains=2)
+def _drawn_without_a_captain(tmp_path, captains=2):
+    """A drawn 4v3 lobby whose first captain has left, so their team has no captain."""
+    sim, organizer, users, announcement = _event(tmp_path, players=7, captains=captains)
+    preview = asyncio.run(sim.run(organizer, "registration close", name="Duel")).sent
+    asyncio.run(sim.click(organizer, preview, "Create Lobbies"))
+    conn = db.get_connection()
+    tournament = db.get_tournament_by_name(conn, GUILD_ID, "Duel")
+    lobby = lobby_db.get_lobbies(conn, tournament["id"])[0]
+    user_of = {team_id: members[0] for team_id, members in db.get_members_by_team(conn, tournament["id"]).items()}
+    conn.close()
+    leaving = next(u for u in users if u.id == user_of[lobby.captains[0]])
+    asyncio.run(sim.run(leaving, "unregister", tournament="Duel"))
+    _loop(sim)
+    return sim, organizer, users, tournament["id"]
+
+
+def _lobby(tournament_id):
+    conn = db.get_connection()
     try:
-        preview = asyncio.run(sim.run(organizer, "registration close", name="Duel")).sent
-        asyncio.run(sim.click(organizer, preview, "Create Lobbies"))
-        asyncio.run(sim.run(users[0], "unregister", tournament="Duel"))
-        _loop(sim)
-        assert "has no captain. The next player who can captain" in _post_with(sim, "🎌").content
-        newcomer = sim.add_user(500, "NewCaptain")
-        conn = db.get_connection()
-        db.record_agreement(conn, GUILD_ID, 500)
+        return lobby_db.get_lobbies(conn, tournament_id)[0]
+    finally:
         conn.close()
-        asyncio.run(sim.run(newcomer, "register", tournament="Duel", captain="want"))
+
+
+def _newcomer(sim, user_id, name):
+    user = sim.add_user(user_id, name)
+    conn = db.get_connection()
+    db.record_agreement(conn, GUILD_ID, user_id)
+    conn.close()
+    return user
+
+
+def test_a_team_without_a_captain_holds_its_spot_for_one(tmp_path):
+    sim, organizer, users, tournament_id = _drawn_without_a_captain(tmp_path)
+    try:
+        assert "needs a captain: its empty spot is held" in _post_with(sim, "🎌").content
+        # Someone who can't captain doesn't take the held spot.
+        asyncio.run(sim.run(_newcomer(sim, 500, "NoCaptain"), "register", tournament="Duel", captain="no"))
+        lobby = _lobby(tournament_id)
+        assert len(lobby.captains) == 1
+        asyncio.run(sim.run(_newcomer(sim, 501, "NewCaptain"), "register", tournament="Duel", captain="want"))
         conn = db.get_connection()
-        tournament = db.get_tournament_by_name(conn, GUILD_ID, "Duel")
-        lobby = lobby_db.get_lobbies(conn, tournament["id"])[0]
-        assert db.get_entrant_team_id(conn, tournament["id"], 500) in lobby.captains and len(lobby.captains) == 2
+        assert db.get_entrant_team_id(conn, tournament_id, 501) in _lobby(tournament_id).captains
         conn.close()
         _loop(sim)
-        assert "has no captain" not in _post_with(sim, "🎌").content
+        assert "needs a captain" not in _post_with(sim, "🎌").content
     finally:
         asyncio.run(sim.close())
 
 
-def test_starting_check_in_warns_the_organizer_about_a_team_without_a_captain(tmp_path):
+def test_check_in_waits_until_every_team_has_a_captain(tmp_path):
+    sim, organizer, users, tournament_id = _drawn_without_a_captain(tmp_path)
+    try:
+        reply = asyncio.run(sim.run(organizer, "lobby startcheckin", tournament="Duel", minutes=5)).sent
+        assert "has no captain" in reply.content and "Check-in can't finish" in reply.content
+        conn = db.get_connection()
+        conn.execute("UPDATE tournaments SET checkin_ends_at = ? WHERE id = ?",
+                     (db.to_db_time(datetime.now(timezone.utc) - timedelta(seconds=1)), tournament_id))
+        conn.commit()
+        conn.close()
+        _loop(sim)
+        assert "open until every team has a captain" in _post_with(sim, "🎌").content
+        asyncio.run(sim.run(_newcomer(sim, 501, "NewCaptain"), "register", tournament="Duel", captain="want"))
+        _loop(sim)
+        conn = db.get_connection()
+        assert db.get_tournament(conn, tournament_id)["checkin_finished"]
+        conn.close()
+    finally:
+        asyncio.run(sim.close())
+
+
+def test_an_organizer_is_told_to_move_a_spare_captain_over(tmp_path):
     sim, organizer, users, announcement = _event(tmp_path, players=7, captains=2)
     try:
         preview = asyncio.run(sim.run(organizer, "registration close", name="Duel")).sent
         asyncio.run(sim.click(organizer, preview, "Create Lobbies"))
-        asyncio.run(sim.run(users[0], "unregister", tournament="Duel"))
+        conn = db.get_connection()
+        tournament = db.get_tournament_by_name(conn, GUILD_ID, "Duel")
+        lobby = lobby_db.get_lobbies(conn, tournament["id"])[0]
+        keeping = lobby.side_of(lobby.captains[1])
+        # A second player who can captain on the team that keeps its captain.
+        spare = next(p for p in lobby.teams[keeping].players if p != lobby.teams[keeping].captain)
+        lobby_db.set_captain_pref(conn, tournament["id"], spare, "can")
+        user_of = {team_id: members[0] for team_id, members in db.get_members_by_team(conn, tournament["id"]).items()}
+        conn.close()
+        leaving = next(u for u in users if u.id == user_of[lobby.captains[0]])
+        asyncio.run(sim.run(leaving, "unregister", tournament="Duel"))
         reply = asyncio.run(sim.run(organizer, "lobby startcheckin", tournament="Duel", minutes=5)).sent
-        assert "No captain yet" in reply.content and "/admin setcaptain" in reply.content
+        assert "/admin lobbymove" in reply.content
+        mover = reply.content.split("entrant:")[1].split("`")[0]
+        reply = asyncio.run(sim.run(organizer, "admin lobbymove", tournament="Duel", entrant=mover)).sent
+        assert "moved to" in reply.content
+        lobby = _lobby(tournament["id"])
+        assert len(lobby.captains) == 2 and spare in lobby.captains
     finally:
         asyncio.run(sim.close())

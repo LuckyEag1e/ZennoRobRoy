@@ -6,11 +6,10 @@ from __future__ import annotations
 
 import sqlite3
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Callable, Optional
 
 import db
-import lobbies
 import lobby_db
 from lobby_db import SIDES, Lobby
 
@@ -41,7 +40,6 @@ class PostState:
     audience: list[tuple[str, int]] = field(default_factory=list)
 
 
-MAX_TEAM = lobbies.MAX_LOBBY // 2
 # Discord's limit on a message's length.
 MESSAGE_LIMIT = 2000
 
@@ -107,18 +105,17 @@ def team_lines(lobby: Lobby, names: Names, show_checkin: bool, points: Optional[
 
 
 def missing_captain_lines(lobby: Lobby, names: Names, signups_open: bool) -> list[str]:
-    """A warning for each team with no captain, which happens when its captain leaves and
-    nobody left on it can captain, saying how it gets one."""
+    """A line for each team with no captain, which happens when its captain leaves and
+    nobody left on it can captain. Its empty spot is held for the next one who signs up."""
     lines = []
     for side in SIDES:
-        team = lobby.teams[side]
-        if team.captain is not None:
+        if lobby.teams[side].captain is not None:
             continue
-        if signups_open and len(team.players) < MAX_TEAM:
-            lines.append(f"⚠️ {team_name(lobby, side, names)} has no captain. The next player who can captain and "
-                         f"signs up before check-in ends joins it; otherwise an organizer will pick one.")
+        if signups_open:
+            lines.append(f"⚠️ {team_name(lobby, side, names)} needs a captain: its empty spot is held for the next "
+                         f"player who signs up and can captain.")
         else:
-            lines.append(f"⚠️ {team_name(lobby, side, names)} has no captain: an organizer will pick one.")
+            lines.append(f"⚠️ {team_name(lobby, side, names)} needs a captain: an organizer will sort it out.")
     return lines
 
 
@@ -194,9 +191,12 @@ def describe_event(conn: sqlite3.Connection, tournament: sqlite3.Row, player_lab
         return PostState(_fit(lines), buttons, "play", everyone + answering)
     if running:
         ends = db.from_db_time(tournament["checkin_ends_at"])
-        lines += ["", f"✅ **Check-in is open** until {_when(ends, 't')} ({_when(ends)}): press **{CHECK_IN}**. "
-                      f"Anyone in a lobby who hasn't checked in by then is replaced by the next checked-in player "
-                      f"on the waitlist."]
+        if ends <= datetime.now(timezone.utc) and lobby_db.teams_without_captain(conn, tournament["id"]):
+            when = "is open until every team has a captain"
+        else:
+            when = f"is open until {_when(ends, 't')} ({_when(ends)})"
+        lines += ["", f"✅ **Check-in {when}**: press **{CHECK_IN}**. Anyone in a lobby who hasn't checked in by "
+                      f"then is replaced by the next checked-in player on the waitlist."]
         return PostState(_fit(lines), [CHECK_IN], "checkin", everyone + waiters)
     lines += ["", f"Check-in opens before the start, and you'll be pinged here. Can't make it? "
                   f"`/match dropout tournament:{name}`"]

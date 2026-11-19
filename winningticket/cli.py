@@ -1350,6 +1350,18 @@ class WinningTicketCLI(cmd.Cmd):
             return
         self._say(f"{parts[2]} takes {parts[1]}'s spot, and {parts[1]} is first on the waitlist.")
 
+    def do_admin_lobbymove(self, arg: str) -> None:
+        "Move a 5v5 player to the other team in their lobby: admin_lobbymove <name> <entrant>"
+        parts = shlex.split(arg)
+        if len(parts) != 2:
+            print("usage: admin_lobbymove <name> <entrant>")
+            return
+        found = self._require_entrant(*parts, ("in_progress",), ("lobbies",))
+        if found is None:
+            return
+        tournament, team = found
+        self._say(lobby_flow.move_player(self.conn, tournament, team["id"]))
+
     def do_features(self, arg: str) -> None:
         "What the bot can be used for, and what's coming."
         print("What it does:")

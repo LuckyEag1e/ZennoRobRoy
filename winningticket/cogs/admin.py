@@ -469,6 +469,22 @@ class AdminCog(commands.Cog):
         finally:
             conn.close()
 
+    @group.command(name="lobbymove", description="Move a 5v5 player to the other team in their lobby")
+    @app_commands.describe(tournament="Event name", entrant="Player to move (their old spot is filled from the waitlist)")
+    @app_commands.autocomplete(tournament=tournament_name_autocomplete, entrant=playing_entrant_autocomplete)
+    async def lobbymove(self, interaction: discord.Interaction, tournament: str, entrant: str) -> None:
+        conn = db.get_connection()
+        try:
+            found = await self._find_entrant(interaction, conn, tournament, entrant, ("in_progress",), ("lobbies",))
+            if found is None:
+                return
+            tournament_row, team = found
+            await interaction.response.send_message(lobby_flow.move_player(conn, tournament_row, team["id"]),
+                                                    ephemeral=True)
+            await sync_posts(self.bot, conn, tournament_row["id"])
+        finally:
+            conn.close()
+
     @group.command(name="reinstate", description="Undo a dropout, withdrawal or disqualification")
     @app_commands.describe(tournament="Tournament name", entrant="Entrant to bring back")
     @app_commands.autocomplete(tournament=tournament_name_autocomplete, entrant=withdrawn_entrant_autocomplete)
