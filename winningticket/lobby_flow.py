@@ -93,6 +93,22 @@ def late_signup_line(conn: sqlite3.Connection, tournament_id: int, team_id: int,
     return f"{who} in lobby {lobby.number}, on **{team_name(lobby, lobby.side_of(team_id), names)}**."
 
 
+def returning_entrant(conn: sqlite3.Connection, tournament: sqlite3.Row, name: str,
+                      user_id: Optional[int]) -> Optional[int]:
+    """The entrant an organizer means by adding `name` (or the member `user_id`) again to a
+    drawn 5v5 event they left, or None if that isn't who they mean."""
+    if tournament["status"] == "registration":
+        return None
+    if user_id is not None:
+        team_id = db.get_entrant_team_id(conn, tournament["id"], user_id)
+    else:
+        team = db.get_team_by_name(conn, tournament["id"], name)
+        team_id = team["id"] if team is not None and not db.team_member_ids(conn, team["id"]) else None
+    if team_id is None or not db.get_teams(conn, tournament["id"])[team_id]["withdrawn"]:
+        return None
+    return team_id
+
+
 def captain_problem(pref: str, linked: bool, by_organizer: bool) -> Optional[str]:
     """Why someone can't be signed up with this captain choice, or None if they can. Only
     entrants with a linked account can captain, and both ways of signing up (a player
@@ -112,11 +128,17 @@ def sign_up(conn: sqlite3.Connection, tournament: sqlite3.Row, name: str, user_i
     account; if not, they're entered by `name` only. Returns their private reply."""
     tournament_name = tournament["name"]
     existing = db.get_entrant_team_id(conn, tournament["id"], user_id)
-    if existing is not None:
-        lobby_db.set_captain_pref(conn, tournament["id"], existing, pref)
-        return signup_reply(conn, tournament, existing, pref, changed=True)
     if tournament["status"] != "registration" and not takes_late_signups(tournament):
         return f"Sign-ups for **{tournament_name}** are closed."
+    if existing is not None:
+        withdrawn = db.get_teams(conn, tournament["id"])[existing]["withdrawn"]
+        if withdrawn == "disqualified":
+            return f"An organizer disqualified you from **{tournament_name}**, so you can't sign up again."
+        if withdrawn:
+            lobby_db.rejoin(conn, tournament["id"], existing, pref)
+            return signup_reply(conn, db.get_tournament(conn, tournament["id"]), existing, pref)
+        lobby_db.set_captain_pref(conn, tournament["id"], existing, pref)
+        return signup_reply(conn, tournament, existing, pref, changed=True)
     problem = captain_problem(pref, linked, by_organizer=False)
     if problem is not None:
         return problem

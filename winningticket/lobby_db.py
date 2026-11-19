@@ -64,6 +64,17 @@ def set_captain_pref(conn: sqlite3.Connection, tournament_id: int, team_id: int,
         )
 
 
+def rejoin(conn: sqlite3.Connection, tournament_id: int, team_id: int, pref: str) -> Optional[Lobby]:
+    """Bring back a player who left after the draw, with a new captain choice, placed like
+    any late sign-up. Returns the lobby they joined, or None if they're waiting."""
+    with conn:
+        conn.execute("UPDATE teams SET withdrawn = NULL, withdrawn_by = NULL, withdrawn_at = NULL WHERE id = ?",
+                     (team_id,))
+        conn.execute("UPDATE lobby_signups SET checked_in_at = NULL WHERE team_id = ?", (team_id,))
+    set_captain_pref(conn, tournament_id, team_id, pref)
+    return place_late_signup(conn, tournament_id, team_id)
+
+
 def place_late_signup(conn: sqlite3.Connection, tournament_id: int, team_id: int) -> Optional[Lobby]:
     """Put a sign-up from after the draw on the smallest team with room (lobbies.open_spot),
     taking the captaincy if that team has none and they can captain, or else at the end of

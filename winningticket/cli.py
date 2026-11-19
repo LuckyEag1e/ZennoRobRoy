@@ -562,12 +562,14 @@ class WinningTicketCLI(cmd.Cmd):
             except ValueError:
                 print("user_id must be an integer")
                 return
-            if db.get_entrant_team_id(self.conn, tournament["id"], user_id) is not None:
+            back = late and lobby_flow.returning_entrant(self.conn, tournament, parts[1], user_id) is not None
+            if db.get_entrant_team_id(self.conn, tournament["id"], user_id) is not None and not back:
                 print(f"User {user_id} is already signed up.")
                 return
             if not db.has_agreed(self.conn, GUILD_ID, user_id):
                 print(f"{user_label(user_id)} hasn't agreed to link their data, so they're entered by name only.")
                 user_id = None
+        returning = lobby_flow.returning_entrant(self.conn, tournament, parts[1], user_id) if late else None
         if tournament["format"] == "lobbies":
             if captain is None:
                 print(f"Will {parts[1]} captain? {lobby_flow.ADD_CAPTAIN_QUESTION}")
@@ -579,6 +581,11 @@ class WinningTicketCLI(cmd.Cmd):
             if problem is not None:
                 print(f"{problem}\nNothing changed.")
                 return
+        if returning is not None:
+            lobby_db.rejoin(self.conn, tournament["id"], returning, captain)
+            line = lobby_flow.late_signup_line(self.conn, tournament["id"], returning, False).replace("**", "")
+            print(f"Brought {db.get_teams(self.conn, tournament['id'])[returning]['name']} back in. {line}")
+            return
         entrant = db.register_entrant(self.conn, tournament["id"], parts[1], user_id)
         if entrant is None:
             link_hint = " Use 'admin_linkplayer' to link them to it." if user_id is not None else ""

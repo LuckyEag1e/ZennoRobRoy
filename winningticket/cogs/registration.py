@@ -491,6 +491,25 @@ class RegistrationCog(commands.Cog):
             late = tournament_row["format"] == "lobbies" and lobby_flow.takes_late_signups(tournament_row)
             if not late and not await _require_registration(interaction, tournament_row):
                 return
+            returning = lobby_flow.returning_entrant(conn, tournament_row, name or user.display_name,
+                                                     user.id if user is not None else None) if late else None
+            if returning is not None:
+                if captain is None:
+                    question = f"Will **{name or user.display_name}** captain? {lobby_flow.ADD_CAPTAIN_QUESTION}"
+                    await interaction.response.send_message(
+                        question, view=AddCaptainChoice(self, tournament, user, name), ephemeral=True)
+                    return
+                problem = lobby_flow.captain_problem(captain, bool(db.team_member_ids(conn, returning)),
+                                                     by_organizer=True)
+                if problem is not None:
+                    await reply(problem, keep_menu=True)
+                    return
+                lobby_db.rejoin(conn, tournament_row["id"], returning, captain)
+                await reply(f"✅ Brought {db.get_teams(conn, tournament_row['id'])[returning]['name']} back into "
+                            f"**{tournament}**. {lobby_flow.late_signup_line(conn, tournament_row['id'], returning, False)}")
+                await self._refresh_signups_message(conn, tournament_row["id"])
+                await sync_posts(interaction.client, conn, tournament_row["id"])
+                return
             if user is not None and db.get_entrant_team_id(conn, tournament_row["id"], user.id) is not None:
                 await reply(f"{user.display_name} is already signed up for **{tournament}**.")
                 return

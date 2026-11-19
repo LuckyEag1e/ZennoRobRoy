@@ -322,3 +322,27 @@ def test_registration_commands_work_until_check_in_ends_then_point_to_dropouts(t
         assert "/match dropout" in reply.content
     finally:
         asyncio.run(sim.close())
+
+
+def test_someone_who_left_after_the_draw_can_sign_up_again(tmp_path):
+    sim, organizer, users, announcement = _event(tmp_path, players=7, captains=2)
+    try:
+        preview = asyncio.run(sim.run(organizer, "registration close", name="Duel")).sent
+        asyncio.run(sim.click(organizer, preview, "Create Lobbies"))
+        asyncio.run(sim.run(organizer, "registration add", tournament="Duel", name="Late1", captain="no"))
+        asyncio.run(sim.run(organizer, "registration remove", tournament="Duel", entrant="Late1"))
+        reply = asyncio.run(sim.run(organizer, "registration add", tournament="Duel", name="Late1",
+                                    captain="no")).sent
+        assert "Brought Late1 back" in reply.content and "in lobby 1" in reply.content
+        # A member who dropped out signs themselves up again the same way.
+        player = users[-1]
+        asyncio.run(sim.run(player, "unregister", tournament="Duel"))
+        reply = asyncio.run(sim.run(player, "register", tournament="Duel", captain="no")).sent
+        assert "You're in lobby 1" in reply.content
+        conn = db.get_connection()
+        tournament = db.get_tournament_by_name(conn, GUILD_ID, "Duel")
+        team_id = db.get_entrant_team_id(conn, tournament["id"], player.id)
+        assert not db.get_teams(conn, tournament["id"])[team_id]["withdrawn"]
+        conn.close()
+    finally:
+        asyncio.run(sim.close())
