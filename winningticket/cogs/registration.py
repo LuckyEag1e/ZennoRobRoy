@@ -479,7 +479,7 @@ class RegistrationCog(commands.Cog):
 
         async def reply(content: str, keep_menu: bool = False) -> None:
             if menu is None:
-                await interaction.response.send_message(content, view=menu, ephemeral=True)
+                await interaction.response.send_message(content, ephemeral=True)
             else:
                 await interaction.response.edit_message(content=content, view=menu if keep_menu else None)
 

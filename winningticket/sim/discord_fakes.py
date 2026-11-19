@@ -168,7 +168,9 @@ class FakeResponse:
         self.kind = kind
 
     async def send_message(self, content: Optional[str] = None, *, embed: Optional[discord.Embed] = None,
-                           view: Optional[discord.ui.View] = None, ephemeral: bool = False) -> None:
+                           view: Any = _UNSET, ephemeral: bool = False) -> None:
+        _check_view(view)
+        view = None if view is _UNSET else view
         # What was gone when the bot started answering. Anything deleted while the answer is
         # on its way is news the bot couldn't have had.
         self._interaction.deleted_before_answer = {m.id for m in self._interaction.channel.messages if m.deleted}
@@ -194,12 +196,21 @@ class FakeResponse:
         self._answer("defer")
 
 
+def _check_view(view: Any) -> None:
+    """Answering an interaction, discord.py takes a view or no view argument at all: an
+    explicit None crashes it (AttributeError or TypeError), so it's an error here too."""
+    if view is None:
+        raise TypeError("view=None isn't accepted when answering an interaction; leave view out instead")
+
+
 class FakeFollowup:
     def __init__(self, interaction: FakeInteraction) -> None:
         self._interaction = interaction
 
     async def send(self, content: Optional[str] = None, *, embed: Optional[discord.Embed] = None,
-                   view: Optional[discord.ui.View] = None, ephemeral: bool = False) -> FakeMessage:
+                   view: Any = _UNSET, ephemeral: bool = False) -> FakeMessage:
+        _check_view(view)
+        view = None if view is _UNSET else view
         interaction = self._interaction
         await interaction.channel.network()
         if not interaction.response.is_done():
