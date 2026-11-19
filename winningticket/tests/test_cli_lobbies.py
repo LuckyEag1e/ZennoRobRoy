@@ -22,7 +22,7 @@ def repl(tmp_path, monkeypatch):
 
 
 def test_a_5v5_event_from_the_cli(repl, capsys, monkeypatch):
-    repl.onecmd("regopen Duel --format lobbies --starts-in 24")
+    repl.onecmd("regopen5v5 Duel --starts-in 24")
     for user_id in range(10, 21):
         db.record_agreement(repl.conn, cli.GUILD_ID, user_id)
         repl.onecmd(f"as {user_id} P{user_id}")
@@ -61,7 +61,7 @@ def test_a_5v5_event_from_the_cli(repl, capsys, monkeypatch):
     answers = iter(["8" if player in lobby.teams["A"].players else "1" for player in lobby.players])
     monkeypatch.setattr("builtins.input", lambda prompt="": next(answers))
     repl.onecmd("lobby_report Duel")
-    assert "other captain has been asked" in capsys.readouterr().out
+    assert "Sent to the other captain" in capsys.readouterr().out
     repl.onecmd(f"as {captain_b} CaptainB")
     repl.onecmd("lobby_confirm Duel")
     out = capsys.readouterr().out

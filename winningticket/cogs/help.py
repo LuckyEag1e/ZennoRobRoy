@@ -135,7 +135,7 @@ class HelpCog(commands.Cog):
     async def five_v_five(self, interaction: discord.Interaction) -> None:
         embed = _command_list_embed("5v5 events", [
             ("1. Sign up",
-             "Press **Register** on the sign-ups post (or `/register`) and say whether you want to captain, can if "
+             "Press **Register** on the sign-ups post (or `/register tournament:<name> captain:<choice>`) and say whether you want to captain, can if "
              "needed, or won't. Each team needs a captain, who hosts the drafter room and reports the points."),
             ("2. Lobbies are drawn",
              "Ahead of the event, players are drawn into lobbies of two teams (5v5, 5v4 or 4v4) balanced by past "
@@ -154,7 +154,7 @@ class HelpCog(commands.Cog):
              "Result** and enters everyone's points. The other captain confirms or disputes; unanswered, the "
              "points are accepted after 10 minutes. `/rating` shows your 5v5 contribution."),
             ("Organizers",
-             "`/registration open format:5v5 lobbies starts_in_hours:<hours>`, then `/registration close` "
+             "`/registration open5v5 name:<name> starts_in_hours:<hours>`, then `/registration close` "
              "(ideally a day before) to preview and create the lobbies. Start check-in with the button on the "
              "event post or `/lobby startcheckin`. `/lobby report lobby:<n>` records points directly, and "
              "`/tournament conclude` posts how each lobby went."),

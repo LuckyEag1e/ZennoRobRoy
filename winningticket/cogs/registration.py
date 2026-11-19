@@ -48,8 +48,6 @@ log = logging.getLogger("winningticket")
 # explains them.
 SEEDING_CHOICES = [app_commands.Choice(name=mode, value=mode) for mode in db.SEEDING_MODES]
 SEEDING_OPTION_HELP = "standard (default): top seeds play the lowest. slide: top seeds play mid-ranked. random: no seeds"
-FORMAT_CHOICES = [app_commands.Choice(name="bracket", value="single_elim"),
-                  app_commands.Choice(name="5v5 lobbies", value="lobbies")]
 SPREAD_NAMES = {"tier": "by skill tier", "balanced": "balanced", "random": "random"}
 SPREAD_CHOICES = [app_commands.Choice(name=name, value=value) for value, name in SPREAD_NAMES.items()]
 SPREAD_OPTION_HELP = ("5v5: tier puts the strongest together, balanced (default) mixes every lobby, random draws them; "
@@ -303,36 +301,43 @@ class RegistrationCog(commands.Cog):
         except discord.HTTPException:
             log.exception("Couldn't post to channel %s", channel_id)
 
-    @group.command(name="open", description="Create a tournament that players sign up for with /register")
+    @group.command(name="open", description="Create a bracket tournament that players sign up for with /register")
     @app_commands.describe(
         name="Tournament name",
         closes_in_hours="Close sign-ups automatically after this many hours (leave blank to close by hand)",
         seeding=SEEDING_OPTION_HELP,
         match_slots=MATCH_SLOTS_HELP,
-        format="bracket (default), or 5v5 lobbies played on the drafter site",
-        starts_in_hours="5v5: when play starts, in hours from now (shown to players; needed for 5v5)",
-        spread=SPREAD_OPTION_HELP,
     )
-    @app_commands.choices(seeding=SEEDING_CHOICES, format=FORMAT_CHOICES, spread=SPREAD_CHOICES)
+    @app_commands.choices(seeding=SEEDING_CHOICES)
     @requires_manage_server
     async def open_signups(self, interaction: discord.Interaction, name: str,
                    closes_in_hours: app_commands.Range[float, MIN_CLOSES_IN_HOURS, MAX_CLOSES_IN_HOURS] | None = None,
-                   seeding: str = "standard", match_slots: app_commands.Range[int, 1] | None = None,
-                   format: str = "single_elim",
-                   starts_in_hours: app_commands.Range[float, MIN_CLOSES_IN_HOURS, MAX_CLOSES_IN_HOURS] | None = None,
-                   spread: str = "balanced") -> None:
+                   seeding: str = "standard", match_slots: app_commands.Range[int, 1] | None = None) -> None:
+        await self._open(interaction, name, closes_in_hours, seeding=seeding, match_slots=match_slots)
+
+    @group.command(name="open5v5", description="Create a 5v5 event, played on the drafter site, that players sign up for")
+    @app_commands.describe(
+        name="Event name",
+        starts_in_hours="When play starts, in hours from now (shown to players)",
+        closes_in_hours="Draw the lobbies automatically after this many hours (leave blank to close by hand)",
+        spread=SPREAD_OPTION_HELP,
+    )
+    @app_commands.choices(spread=SPREAD_CHOICES)
+    @requires_manage_server
+    async def open_5v5(self, interaction: discord.Interaction, name: str,
+                       starts_in_hours: app_commands.Range[float, MIN_CLOSES_IN_HOURS, MAX_CLOSES_IN_HOURS],
+                       closes_in_hours: app_commands.Range[float, MIN_CLOSES_IN_HOURS, MAX_CLOSES_IN_HOURS] | None = None,
+                       spread: str = "balanced") -> None:
+        await self._open(interaction, name, closes_in_hours, starts_in_hours=starts_in_hours, spread=spread)
+
+    async def _open(self, interaction: discord.Interaction, name: str, closes_in_hours: float | None,
+                    seeding: str = "standard", match_slots: int | None = None,
+                    starts_in_hours: float | None = None, spread: str | None = None) -> None:
+        """Open sign-ups: a 5v5 event when `starts_in_hours` is given, a bracket otherwise."""
         now = datetime.now(timezone.utc)
         closes_at = now + timedelta(hours=closes_in_hours) if closes_in_hours is not None else None
-        five_v_five = format == "lobbies"
-        if five_v_five and starts_in_hours is None:
-            await interaction.response.send_message(
-                "A 5v5 event needs a start time: give `starts_in_hours`, so players know when to play.", ephemeral=True)
-            return
-        if five_v_five and match_slots is not None:
-            await interaction.response.send_message(
-                "5v5 lobbies are played on the drafter site, so the bot doesn't call them into match rooms. Leave "
-                "out `match_slots`.", ephemeral=True)
-            return
+        five_v_five = starts_in_hours is not None
+        format = "lobbies" if five_v_five else "single_elim"
         starts_at = now + timedelta(hours=starts_in_hours) if five_v_five else None
         if five_v_five and closes_at is not None and closes_at >= starts_at:
             await interaction.response.send_message(
@@ -350,7 +355,7 @@ class RegistrationCog(commands.Cog):
             tournament_id = db.open_registration(
                 conn, interaction.guild_id, name, interaction.user.id, interaction.channel_id,
                 db.to_db_time(closes_at) if closes_at is not None else None, seeding, format,
-                db.to_db_time(starts_at) if starts_at is not None else None, spread if five_v_five else None,
+                db.to_db_time(starts_at) if starts_at is not None else None, spread,
             )
             db.set_match_slots(conn, tournament_id, match_slots)
             announcement = signups_message(db.get_tournament(conn, tournament_id), 0)
@@ -368,9 +373,9 @@ class RegistrationCog(commands.Cog):
         finally:
             conn.close()
 
-    @group.command(name="close", description="Close sign-ups and draw the bracket")
+    @group.command(name="close", description="Close sign-ups and draw the bracket or the 5v5 lobbies")
     @app_commands.describe(name="Tournament name",
-                           seeding="Override the seeding chosen at open: standard, slide or random")
+                           seeding="Brackets only: override the seeding chosen at open (standard, slide or random)")
     @app_commands.autocomplete(name=registration_name_autocomplete)
     @app_commands.choices(seeding=SEEDING_CHOICES)
     @requires_manage_server
@@ -379,6 +384,11 @@ class RegistrationCog(commands.Cog):
         try:
             tournament = await resolve_tournament(interaction, conn, name, needs_bracket=False, formats=db.FORMATS)
             if tournament is None or not await _require_registration(interaction, tournament):
+                return
+            if tournament["format"] == "lobbies" and seeding is not None:
+                await interaction.response.send_message(
+                    "5v5 events aren't seeded: leave out `seeding`. The preview lets you pick how players are spread "
+                    "across the lobbies.", ephemeral=True)
                 return
             if tournament["format"] == "lobbies":
                 proposed, options = lobby_split_options(conn, tournament["id"])
@@ -472,7 +482,7 @@ class RegistrationCog(commands.Cog):
             if tournament_row["format"] == "lobbies":
                 lobby_db.set_captain_pref(conn, tournament_row["id"], team_id, captain)
             who = f"{entrant_name} ({user.mention})" if linked else entrant_name
-            note = (f" They haven't agreed to link their data to their account, so they're entered by name only."
+            note = (" They haven't agreed to link their data to their account, so they're entered by name only."
                     if user is not None and not linked else "")
             await interaction.response.send_message(
                 f"✅ Signed up {who} for **{tournament}** ({db.entrant_count(conn, tournament_row['id'])} entered so far).{note}",

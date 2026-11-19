@@ -40,6 +40,11 @@ class PostState:
     audience: list[int] = field(default_factory=list)
 
 
+def register_command(name: str) -> str:
+    """How to sign up for a 5v5 event, or change your captain choice, with a command."""
+    return f"`/register tournament:{name} captain:<your choice>`"
+
+
 def report_due_at(report: lobby_db.Report) -> datetime:
     return db.from_db_time(report.changed_at) + ANSWER_WITHIN
 
@@ -104,7 +109,8 @@ def describe_event(conn: sqlite3.Connection, tournament: sqlite3.Row, player_lab
     waiting_lines = [f"{place}. {names(team_id)}" + ((" ✅" if names.checked_in(team_id) else " ⏳") if running else "")
                      for place, team_id in enumerate(waitlist, start=1)]
     waiting = "\n".join(waiting_lines) if waiting_lines else "Nobody yet."
-    join_late = f"Signing up now with `/register tournament:{name}` adds you to the end of the waitlist."
+    join_late = (f"Signing up now with **Register** on the sign-ups post or {register_command(name)} adds you to "
+                 f"the end of the waitlist.")
 
     if tournament["status"] in ("completed", "concluded"):
         return PostState(f"🏁 Every lobby in **{name}** has finished. Thanks for playing!", [])

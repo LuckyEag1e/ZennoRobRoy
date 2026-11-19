@@ -17,10 +17,9 @@ import lobby_db
 from labels import OPTED_OUT_NOTE, name_held_message
 from lobby_db import SIDES, Lobby
 from lobby_posts import (
-    CHECK_IN,
     DRAFTER_HOST_URL,
-    GET_ROOM_CODE,
     REPORT_RESULT,
+    register_command,
     report_due_at,
     team_lines,
     team_name,
@@ -55,7 +54,8 @@ def takes_late_signups(tournament: sqlite3.Row) -> bool:
 
 def signup_reply(conn: sqlite3.Connection, tournament: sqlite3.Row, team_id: int, pref: str, linked: bool,
                  changed: bool = False) -> str:
-    """What a player is told once they're signed up, or have changed their captain choice."""
+    """What a player is told once they're signed up, or have changed their captain choice.
+    Only what's theirs alone: the public posts already say how the event runs."""
     name = tournament["name"]
     choice = CAPTAIN_CHOICES[pref]
     if not linked and pref != "no":
@@ -63,16 +63,12 @@ def signup_reply(conn: sqlite3.Connection, tournament: sqlite3.Row, team_id: int
     if changed:
         return f"✅ Your captain choice for **{name}** is now: {choice}."
     if tournament["status"] == "registration":
-        where = (f"✅ You're signed up for **{name}** ({db.entrant_count(conn, tournament['id'])} entered so far). "
-                 f"Captain choice: {choice}.\nLobbies and teams are drawn before the event, and you'll be pinged "
-                 f"in this channel when they are, either with your lobby or on the waitlist.")
+        where = f"✅ You're signed up for **{name}**. Captain choice: {choice}."
     else:
         place = lobby_db.get_waitlist(conn, tournament["id"]).index(team_id) + 1
-        checked = " You're checked in already." if lobby_db.checkin_running(tournament) else (
-            f" Press **{CHECK_IN}** on the event post when check-in opens.")
-        where = (f"✅ The lobbies for **{name}** are already drawn, so you're **#{place} on the waitlist**. "
-                 f"Captain choice: {choice}.{checked} If a spot opens up, you'll be pinged on that lobby's post.")
-    return where + f"\nTo change your captain choice, run `/register tournament:{name}` again."
+        checked = " You're checked in already." if lobby_db.checkin_running(tournament) else ""
+        where = f"✅ You're **#{place} on the waitlist** for **{name}**. Captain choice: {choice}.{checked}"
+    return where + f"\nTo change your captain choice, run {register_command(name)} again."
 
 
 def sign_up(conn: sqlite3.Connection, tournament: sqlite3.Row, name: str, user_id: int, linked: bool,
@@ -125,15 +121,14 @@ def start_checkin(conn: sqlite3.Connection, tournament: sqlite3.Row, minutes: in
     ends = now + timedelta(minutes=minutes)
     if not lobby_db.start_checkin(conn, tournament["id"], db.to_db_time(ends)):
         return f"Check-in for **{tournament['name']}** has already started."
-    return (f"Check-in for **{tournament['name']}** is open for {minutes} minutes. Everyone in a lobby and on the "
-            f"waitlist has been pinged.")
+    return f"✅ Check-in for **{tournament['name']}** is open for {minutes} minutes."
 
 
 def check_in(conn: sqlite3.Connection, tournament: sqlite3.Row, user_id: int) -> str:
     name = tournament["name"]
     team_id = db.get_entrant_team_id(conn, tournament["id"], user_id)
     if team_id is None:
-        return f"You aren't signed up for **{name}**. `/register tournament:{name}` adds you to the waitlist."
+        return f"You aren't signed up for **{name}**. {register_command(name)} adds you to the waitlist."
     if not lobby_db.checkin_running(tournament):
         if tournament["checkin_ends_at"] is None:
             return f"Check-in for **{name}** hasn't opened yet. You'll be pinged when it does."
@@ -145,12 +140,10 @@ def check_in(conn: sqlite3.Connection, tournament: sqlite3.Row, user_id: int) ->
     lobby_db.check_in(conn, team_id)
     ends = db.from_db_time(tournament["checkin_ends_at"])
     if in_lobby is not None:
-        return (f"✅ Checked in for lobby {in_lobby.number} of **{name}**. When check-in ends <t:{int(ends.timestamp())}:R>, "
-                f"your lobby's post tells your captains how to set up the room.")
+        return f"✅ Checked in for lobby {in_lobby.number} of **{name}**."
     place = waitlist.index(team_id) + 1
-    return (f"✅ Checked in, **#{place} on the waitlist** for **{name}**. Stay around: when check-in ends "
-            f"<t:{int(ends.timestamp())}:R>, anyone in a lobby who hasn't checked in is replaced from the waitlist, "
-            f"and you'll be pinged on the lobby's post if you're brought in.")
+    return (f"✅ Checked in for **{name}**, **#{place} on the waitlist**. Stay around until check-in ends "
+            f"<t:{int(ends.timestamp())}:R> in case you're brought in.")
 
 
 def finish_due_checkins(conn: sqlite3.Connection) -> list[int]:
@@ -219,8 +212,7 @@ def submit_room_code(conn: sqlite3.Connection, tournament: sqlite3.Row, lobby: L
     if not code or len(code) > ROOM_CODE_MAX_LENGTH:
         return f"Enter the room code shown on {DRAFTER_HOST_URL} after you create the room."
     lobby_db.set_room_code(conn, lobby.id, code, user_id)
-    return (f"✅ Saved room code **{code}** for lobby {lobby.number}. You're the host: the lobby's players can now "
-            f"press **{GET_ROOM_CODE}** to get it.{_name_only_note(conn, lobby)}")
+    return f"✅ Saved room code **{code}** for lobby {lobby.number}.{_name_only_note(conn, lobby)}"
 
 
 def get_room_code(conn: sqlite3.Connection, tournament: sqlite3.Row, lobby: Lobby, role: Role) -> str:
@@ -231,12 +223,8 @@ def get_room_code(conn: sqlite3.Connection, tournament: sqlite3.Row, lobby: Lobb
         return problem
     if lobby.room_code is None:
         return "The room code isn't in yet. A captain enters it once they've created the room; check back in a moment."
-    names = Names(conn, tournament["id"], str)
-    side = role.side
-    team = f" You're on **{team_name(lobby, side, names)}**." if side is not None else ""
     text = (f"🎮 Room code for lobby {lobby.number}: **{lobby.room_code}**\nJoin at https://drafter.uma.guide with that "
-            f"code.{team} Draft with your team, train your character, and race. Your captain reports the points "
-            f"afterwards.")
+            f"code.")
     if role.captain or role.organizer:
         text += _name_only_note(conn, lobby)
     return text
@@ -278,7 +266,7 @@ def submit_report(conn: sqlite3.Connection, tournament: sqlite3.Row, lobby: Lobb
         return problem
     if role.organizer and not role.captain:
         lobby_db.record_result(conn, lobby.id, points, user_id)
-        return f"✅ Recorded the points for lobby {lobby.number}. The lobby's post now shows the result."
+        return f"✅ Recorded the points for lobby {lobby.number}."
     other = "B" if role.side == "A" else "A"
     if lobby.teams[other].captain is None:
         lobby_db.record_result(conn, lobby.id, points, user_id)
@@ -286,9 +274,8 @@ def submit_report(conn: sqlite3.Connection, tournament: sqlite3.Row, lobby: Lobb
                 f"so an organizer can correct them if needed.")
     lobby_db.submit_report(conn, lobby.id, user_id, role.side, points)
     report = lobby_db.get_report(conn, lobby.id)
-    return (f"✅ Sent. The other captain has been asked to confirm, and the points are accepted "
-            f"<t:{int(report_due_at(report).timestamp())}:R> if they don't answer. Press **{REPORT_RESULT}** again "
-            f"to correct them before then.")
+    return (f"✅ Sent to the other captain. To correct the points before they're accepted "
+            f"<t:{int(report_due_at(report).timestamp())}:R>, press **{REPORT_RESULT}** again.")
 
 
 def _answerable_report(conn: sqlite3.Connection, lobby: Lobby, role: Role) -> lobby_db.Report | str:
@@ -319,8 +306,7 @@ def dispute_report(conn: sqlite3.Connection, lobby: Lobby, role: Role) -> str:
         return "These points are already disputed. An organizer will settle them."
     if not lobby_db.dispute_report(conn, report):
         return "The report changed while you were looking at it. Check the lobby's post and answer again."
-    return ("Disputed. An organizer will settle it. If the other captain made a mistake, they can press "
-            f"**{REPORT_RESULT}** to send corrected points.")
+    return f"✅ Disputed the points for lobby {lobby.number}."
 
 
 def accept_due_reports(conn: sqlite3.Connection, now: datetime) -> None:
@@ -368,8 +354,8 @@ def lobby_signups_message(tournament: sqlite3.Row, entrants: int) -> str:
         starts = db.from_db_time(tournament["starts_at"]) if tournament["starts_at"] else None
         when = f" Play starts <t:{int(starts.timestamp())}:F> (<t:{int(starts.timestamp())}:R>)." if starts else ""
         return (f"📝 Sign-ups are open for **{name}**, a 5v5 event!{when} Press **Register** below (or run "
-                f"`/register tournament:{name}`) and say whether you'll captain. Lobbies and teams are drawn ahead of "
-                f"time, so you'll know early whether you have a spot or where you are on the waitlist. {count}")
+                f"{register_command(name)}) and say whether you'll captain. Lobbies and teams are drawn ahead of "
+                f"time, and everyone is pinged here with their lobby or their place on the waitlist. {count}")
     if takes_late_signups(tournament):
         return (f"📝 The lobbies for **{name}** are drawn: see the posts below. Pressing **Register** now adds you to "
                 f"the end of the waitlist. {count}")

@@ -117,9 +117,9 @@ Ten players (or nine or eight, as 5v4 or 4v4) play in a drafter room as two team
 captain each. Each race gives 5, 3 and 1 points for 1st, 2nd and 3rd, the team with more
 points wins, and a tie is settled on a tiebreaker track before anyone reports.
 
-1. An organizer runs `/registration open name:<name> format:5v5 lobbies starts_in_hours:<hours>
+1. An organizer runs `/registration open5v5 name:<name> starts_in_hours:<hours>
    [spread:tier|balanced|random]`. Players press **Register** on the sign-ups post (or run
-   `/register`) and say whether they want to captain, can if needed, or won't.
+   `/register tournament:<name> captain:<choice>`) and say whether they want to captain, can if needed, or won't.
 2. `/registration close name:<name>`, ideally a day before, shows the organizer the proposed
    split (such as "5v5 + 5v4, 3 waitlisted") to accept or change, then draws the lobbies.
    Teams are balanced on each player's 5v5 contribution, two opposing captains per lobby. Late
@@ -157,7 +157,7 @@ Commands mirror the slash commands: `create <name> <csv>`, `regopen <name> [--cl
 `history_leaderboard <name>`, `features`, `feedback <message>`, and the admin set: `admin_setstatus`, `admin_delete`,
 `admin_editteam`, `admin_setresult`, `admin_clearresult`, `admin_clearpredictions`, `admin_feedback`,
 `admin_deletefeedback`, `admin_ban`, `admin_unban`, `admin_bans`, `admin_linkplayer`, `admin_unlinkplayer`.
-5v5 events use `regopen <name> --format lobbies --starts-in HOURS`, `register <name> --captain want|can|no`,
+5v5 events use `regopen5v5 <name> --starts-in HOURS [--spread tier|balanced|random]`, `register <name> --captain want|can|no`,
 `regclose <name> [--lobbies N] [--spread tier|balanced|random]`, `lobby_startcheckin`, `checkin`, `lobby_roomcode`,
 `lobby_code`, `lobby_report`, `lobby_confirm`, `lobby_dispute`, `admin_setcaptain` and `admin_lobbyswap`.
 Use `as <user_id> <name>` to switch which simulated user you're acting as (so you can

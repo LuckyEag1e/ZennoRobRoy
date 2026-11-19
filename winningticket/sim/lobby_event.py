@@ -83,7 +83,7 @@ class LobbyEventRun:
 
     async def play(self) -> None:
         org = self.organizer.user
-        await self.sim.run(org, "registration open", name=NAME, format="lobbies", starts_in_hours=30.0,
+        await self.sim.run(org, "registration open5v5", name=NAME, starts_in_hours=30.0,
                            spread=self.rng.choice(["tier", "balanced", "random"]))
         self.tournament_id = self._query(lambda conn: db.get_tournament_by_name(conn, GUILD_ID, NAME))["id"]
         self.status()

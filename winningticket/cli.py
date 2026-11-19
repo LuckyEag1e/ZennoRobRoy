@@ -409,52 +409,71 @@ class WinningTicketCLI(cmd.Cmd):
     # -- registration --------------------------------------------------------
 
     def do_regopen(self, arg: str) -> None:
-        "Create a tournament that takes sign-ups, closing automatically after --closes-in hours if given. A 5v5 event (--format lobbies) needs --starts-in: regopen <name> [--closes-in HOURS] [--seeding standard|slide|random] [--match-slots N] [--format single_elim|lobbies] [--starts-in HOURS] [--spread tier|balanced|random]"
-        arg, format = take_option(arg, "--format")
-        arg, starts_in = take_option(arg, "--starts-in")
-        arg, spread = take_option(arg, "--spread")
-        format = format or "single_elim"
-        if format not in db.FORMATS or (spread is not None and spread not in lobbies.SPREADS):
-            print(f"--format must be one of {', '.join(db.FORMATS)}, and --spread one of {', '.join(lobbies.SPREADS)}")
-            return
-        starts_at = None
-        if format == "lobbies":
-            try:
-                starts_at = datetime.now(timezone.utc) + timedelta(hours=float(starts_in or ""))
-            except ValueError:
-                print("A 5v5 event needs --starts-in HOURS, so players know when to play.")
-                return
+        "Create a bracket tournament that takes sign-ups, closing automatically after --closes-in hours if given: regopen <name> [--closes-in HOURS] [--seeding standard|slide|random] [--match-slots N]"
         rest, seeding = take_option(arg, "--seeding")
         rest, slots = take_option(rest, "--match-slots")
-        name, hours = take_option(rest, "--closes-in")
+        name, closes_at = self._take_closes_in(rest)
         if not name:
             print("usage: regopen <name> [--closes-in HOURS] [--seeding standard|slide|random] [--match-slots N]")
             return
         match_slots = parse_match_slots(slots)
-        if not check_seeding(seeding) or match_slots is False or not self._match_slots_fit(match_slots):
+        if closes_at is False or not check_seeding(seeding) or match_slots is False or not self._match_slots_fit(match_slots):
             return
-        closes_at = None
-        if hours:
-            low, high = tournament_builder.MIN_CLOSES_IN_HOURS, tournament_builder.MAX_CLOSES_IN_HOURS
-            try:
-                closes_in = float(hours)
-            except ValueError:
-                closes_in = None
-            # Written so a NaN fails it too.
-            if closes_in is None or not low <= closes_in <= high:
-                print(f"--closes-in must be a number of hours from {low} to {high:g}")
-                return
-            closes_at = datetime.now(timezone.utc) + timedelta(hours=closes_in)
+        if self._name_taken(name):
+            return
+        tournament_id = db.open_registration(self.conn, GUILD_ID, name, self.user_id, None,
+                                             db.to_db_time(closes_at) if closes_at is not None else None,
+                                             seeding or "standard")
+        db.set_match_slots(self.conn, tournament_id, match_slots)
+        self._report_opened(name, closes_at)
+
+    def do_regopen5v5(self, arg: str) -> None:
+        "Create a 5v5 event that takes sign-ups, starting --starts-in hours from now: regopen5v5 <name> --starts-in HOURS [--closes-in HOURS] [--spread tier|balanced|random]"
+        rest, starts_in = take_option(arg, "--starts-in")
+        rest, spread = take_option(rest, "--spread")
+        name, closes_at = self._take_closes_in(rest)
+        if not name:
+            print("usage: regopen5v5 <name> --starts-in HOURS [--closes-in HOURS] [--spread tier|balanced|random]")
+            return
+        if spread is not None and spread not in lobbies.SPREADS:
+            print(f"--spread must be one of {', '.join(lobbies.SPREADS)}")
+            return
+        try:
+            starts_at = datetime.now(timezone.utc) + timedelta(hours=float(starts_in or ""))
+        except ValueError:
+            print("A 5v5 event needs --starts-in HOURS, so players know when to play.")
+            return
+        if closes_at is False:
+            return
+        if closes_at is not None and closes_at >= starts_at:
+            print("Sign-ups have to close before play starts.")
+            return
         if self._name_taken(name):
             return
         # A 5v5 event's posts need a channel to belong to; the CLI's one pretend channel is 0.
-        channel_id = 0 if format == "lobbies" else None
-        tournament_id = db.open_registration(self.conn, GUILD_ID, name, self.user_id, channel_id,
-                                             db.to_db_time(closes_at) if closes_at is not None else None,
-                                             seeding or "standard", format,
-                                             db.to_db_time(starts_at) if starts_at is not None else None,
-                                             (spread or "balanced") if format == "lobbies" else None)
-        db.set_match_slots(self.conn, tournament_id, match_slots)
+        db.open_registration(self.conn, GUILD_ID, name, self.user_id, 0,
+                             db.to_db_time(closes_at) if closes_at is not None else None, "standard", "lobbies",
+                             db.to_db_time(starts_at), spread or "balanced")
+        self._report_opened(name, closes_at)
+
+    def _take_closes_in(self, arg: str) -> tuple[str, datetime | None | bool]:
+        """The rest of `arg`, and when --closes-in says sign-ups close: None without it,
+        False (after saying why) if it's not a usable number of hours."""
+        name, hours = take_option(arg, "--closes-in")
+        if not hours:
+            return name, None
+        low, high = tournament_builder.MIN_CLOSES_IN_HOURS, tournament_builder.MAX_CLOSES_IN_HOURS
+        try:
+            closes_in = float(hours)
+        except ValueError:
+            closes_in = None
+        # Written so a NaN fails it too.
+        if closes_in is None or not low <= closes_in <= high:
+            print(f"--closes-in must be a number of hours from {low} to {high:g}")
+            return name, False
+        return name, datetime.now(timezone.utc) + timedelta(hours=closes_in)
+
+    def _report_opened(self, name: str, closes_at: datetime | None) -> None:
         closing = f" Sign-ups close at {closes_at:%H:%M:%S} UTC." if closes_at is not None else ""
         print(f"Sign-ups open for '{name}'.{closing} Use 'as' to switch users, then 'register {name}'.")
 
@@ -567,7 +586,7 @@ class WinningTicketCLI(cmd.Cmd):
         print(f"Withdrew {parts[1]}.")
 
     def do_regclose(self, arg: str) -> None:
-        "Close sign-ups and draw the bracket, optionally overriding how it's seeded. For a 5v5 event, --lobbies picks how many lobbies (the proposal if left out): regclose <name> [--seeding standard|slide|random] [--lobbies N] [--spread tier|balanced|random]"
+        "Close sign-ups and draw the bracket, optionally overriding how it's seeded (brackets only). For a 5v5 event, --lobbies picks how many lobbies (the proposal if left out): regclose <name> [--seeding standard|slide|random] [--lobbies N] [--spread tier|balanced|random]"
         arg, lobby_count = take_option(arg, "--lobbies")
         arg, spread = take_option(arg, "--spread")
         name, seeding = take_option(arg, "--seeding")
@@ -577,6 +596,9 @@ class WinningTicketCLI(cmd.Cmd):
         if tournament is None:
             return
         if tournament["format"] == "lobbies":
+            if seeding is not None:
+                print("5v5 events aren't seeded: leave out --seeding, and use --spread for how players are spread.")
+                return
             self._close_lobbies(tournament, lobby_count, spread)
             return
         seeding = seeding or tournament["seeding_mode"]

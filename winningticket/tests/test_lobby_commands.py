@@ -46,7 +46,7 @@ def _event(tmp_path, players=12, captains=4):
         sim = await Simulation.create(tmp_path / "test.db")
         organizer = sim.add_user(1, "Organizer", organizer=True)
         users = [sim.add_user(100 + n, f"Player{n}") for n in range(1, players + 1)]
-        await sim.run(organizer, "registration open", name="Duel", format="lobbies", starts_in_hours=24.0)
+        await sim.run(organizer, "registration open5v5", name="Duel", starts_in_hours=24.0)
         announcement = _post_with(sim, "Sign-ups are open")
         for n, user in enumerate(users, start=1):
             await _sign_up_by_button(sim, user, announcement, "want" if n <= captains else "no")
@@ -145,7 +145,7 @@ def test_whole_event_from_close_to_result(tmp_path):
         between = asyncio.run(sim.submit_fields(captain_a, first, ["9"] * 5)).sent
         second = asyncio.run(sim.click(captain_a, between, _buttons(between)[0])).response.modal
         sent = asyncio.run(sim.submit_fields(captain_a, second, ["2"] * 5)).sent
-        assert "other captain has been asked" in sent.content
+        assert "Sent to the other captain" in sent.content
         report_post = _post_with(sim, "reported the points")
         assert [u.id for u in report_post.allowed_mentions.users] == [captain_b.id]
         assert "Only the other" in asyncio.run(sim.click(captain_a, report_post, "Confirm")).sent.content
@@ -170,5 +170,28 @@ def test_bracket_commands_refuse_a_5v5_event(tmp_path):
         asyncio.run(sim.click(organizer, preview, "Create Lobbies"))
         reply = asyncio.run(sim.run(users[0], "tournament bracket", name="Duel")).sent
         assert "5v5 event" in reply.content
+    finally:
+        asyncio.run(sim.close())
+
+
+def test_signup_reply_and_post_show_the_captain_option(tmp_path):
+    sim, organizer, users, announcement = _event(tmp_path, players=1, captains=1)
+    try:
+        newcomer = sim.add_user(500, "Late")
+        conn = db.get_connection()
+        db.record_agreement(conn, GUILD_ID, 500)
+        conn.close()
+        reply = asyncio.run(sim.run(newcomer, "register", tournament="Duel", captain="no")).sent
+        assert "captain:<your choice>" in reply.content and "entered so far" not in reply.content
+        assert "captain:<your choice>" in announcement.content
+    finally:
+        asyncio.run(sim.close())
+
+
+def test_closing_a_5v5_event_refuses_seeding(tmp_path):
+    sim, organizer, users, announcement = _event(tmp_path, players=10, captains=2)
+    try:
+        reply = asyncio.run(sim.run(organizer, "registration close", name="Duel", seeding="slide")).sent
+        assert "aren't seeded" in reply.content
     finally:
         asyncio.run(sim.close())
