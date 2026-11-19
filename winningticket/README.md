@@ -124,7 +124,7 @@ points wins, and a tie is settled on a tiebreaker track before anyone reports.
    split (such as "5v5 + 5v4, 3 waitlisted") to accept or change, then draws the lobbies.
    One post in the channel shows every lobby and the waitlist, and carries the event's
    buttons from then on. Teams are balanced on each player's 5v5 contribution, two opposing captains per lobby. Late
-   sign-ups join the end of the waitlist, and a dropout's spot goes to the first one waiting.
+   sign-ups fill the smallest team with room (up to 5) or join the end of the waitlist, and a dropout's spot goes to the first one waiting.
 3. **Start Check-In** on that post (or `/lobby startcheckin`) pings everyone to check in.
    When it ends, no-shows are replaced in place by checked-in players from the waitlist.
 4. A captain creates the room at https://drafter.uma.guide/host and presses **Submit Room

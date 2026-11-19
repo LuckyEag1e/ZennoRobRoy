@@ -94,7 +94,7 @@ def test_whole_event_from_close_to_result(tmp_path):
         assert len([m for m in _public(sim) if "🎌" in (m.content or "")]) == 1
         assert "Lobby 1" in event_post.content and "Waitlist, in order" in event_post.content
         assert len(event_post.allowed_mentions.users) == 12
-        assert "Register" in _buttons(announcement)  # late sign-ups join the waitlist
+        assert "Register" in _buttons(announcement)  # late sign-ups are still taken
 
         # Only organizers can start check-in.
         refused = asyncio.run(sim.click(users[0], event_post, "Start Check-In")).sent

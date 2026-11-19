@@ -523,8 +523,8 @@ class RegistrationCog(commands.Cog):
                 lobby_db.set_captain_pref(conn, tournament_row["id"], team_id, captain)
                 note += f" Captain choice: {lobby_flow.CAPTAIN_CHOICES[captain]}."
             if late:
-                place = lobby_db.join_waitlist(conn, tournament_row["id"], team_id)
-                note = f" The lobbies are drawn, so they're #{place} on the waitlist.{note}"
+                lobby_db.place_late_signup(conn, tournament_row["id"], team_id)
+                note = f" {lobby_flow.late_signup_line(conn, tournament_row['id'], team_id, False)}{note}"
             who = f"{entrant_name} ({user.mention})" if linked else entrant_name
             await reply(f"✅ Signed up {who} for **{tournament}** ({db.entrant_count(conn, tournament_row['id'])} "
                         f"entered so far).{note}")

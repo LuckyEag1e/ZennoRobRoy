@@ -217,3 +217,11 @@ def test_replace_in_place_fills_a_missing_captain():
     prefs[7] = "can"
     replacement = replace_in_place([1, 2, 3, 4, 5], None, 2, prefs, [6, 7])
     assert (replacement.newcomer, replacement.captain) == (7, 7)
+
+
+def test_open_spot_fills_the_smallest_team_with_room():
+    from lobbies import TeamRoom, open_spot
+    teams = [TeamRoom(1, "A", 5, 9), TeamRoom(1, "B", 4, 9), TeamRoom(2, "A", 4, 8), TeamRoom(2, "B", 4, 8)]
+    assert open_spot(teams) == TeamRoom(2, "A", 4, 8)
+    assert open_spot([TeamRoom(1, "A", 4, 7), TeamRoom(1, "B", 3, 7)]) == TeamRoom(1, "B", 3, 7)
+    assert open_spot([TeamRoom(1, "A", 5, 10), TeamRoom(1, "B", 5, 10)]) is None

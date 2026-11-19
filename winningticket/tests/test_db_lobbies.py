@@ -209,3 +209,23 @@ def test_upgrade_from_version_8_keeps_tournaments(tmp_path):
     assert db.get_tournament_by_name(conn, 1, "Old Cup")["format"] == "single_elim"
     assert conn.execute("PRAGMA user_version").fetchone()[0] == db.SCHEMA_VERSION
     assert open_event(conn, "New Cup")
+
+
+def test_a_late_signup_fills_a_team_with_room_before_the_waitlist(conn):
+    tournament_id = event_with(conn, 7, captains=2)
+    close_lobby_registration(conn, tournament_id, rng=random.Random(1))
+    lobby = lobby_db.get_lobbies(conn, tournament_id)[0]
+    small = min("AB", key=lambda side: len(lobby.teams[side].players))
+    before = {side: list(lobby.teams[side].players) for side in "AB"}
+    late = sign_up(conn, tournament_id, 50)
+    assert lobby_db.place_late_signup(conn, tournament_id, late) is not None
+    lobby = lobby_db.get_lobby(conn, lobby.id)
+    assert lobby.teams[small].players == before[small] + [late]
+    other = "B" if small == "A" else "A"
+    assert lobby.teams[other].players == before[other]
+    # Now 4v4, then 5v4, then 5v5: the next two play, and the one after waits.
+    for user_id in (51, 52):
+        assert lobby_db.place_late_signup(conn, tournament_id, sign_up(conn, tournament_id, user_id)) is not None
+    waiting = sign_up(conn, tournament_id, 53)
+    assert lobby_db.place_late_signup(conn, tournament_id, waiting) is None
+    assert lobby_db.get_waitlist(conn, tournament_id) == [waiting]

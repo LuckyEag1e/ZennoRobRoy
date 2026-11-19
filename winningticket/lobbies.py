@@ -222,3 +222,21 @@ def replace_in_place(team: list[int], captain: Optional[int], leaving: int, pref
     if newcomer is not None:
         return Replacement(newcomer, newcomer)
     return Replacement(first_waiting, None)
+
+
+@dataclass(frozen=True)
+class TeamRoom:
+    """How full one team of a drawn lobby is, for placing a late sign-up."""
+    lobby_number: int
+    side: str
+    team_size: int
+    lobby_size: int
+
+
+def open_spot(teams: list[TeamRoom]) -> Optional[TeamRoom]:
+    """Where a late sign-up plays: the smallest team with room (a team holds MAX_LOBBY // 2),
+    in the emptiest lobby, then the first lobby. None if every team is full, so they wait."""
+    with_room = [team for team in teams if team.team_size < MAX_LOBBY // 2]
+    if not with_room:
+        return None
+    return min(with_room, key=lambda team: (team.team_size, team.lobby_size, team.lobby_number, team.side))

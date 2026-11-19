@@ -586,7 +586,8 @@ class WinningTicketCLI(cmd.Cmd):
         if tournament["format"] == "lobbies":
             lobby_db.set_captain_pref(self.conn, tournament["id"], team_id, captain)
         if late:
-            note = f" The lobbies are drawn, so they're #{lobby_db.join_waitlist(self.conn, tournament['id'], team_id)} on the waitlist."
+            lobby_db.place_late_signup(self.conn, tournament["id"], team_id)
+            note = " " + lobby_flow.late_signup_line(self.conn, tournament["id"], team_id, False).replace("**", "")
         print(f"Signed up {entrant_name} ({len(db.get_entrants(self.conn, tournament['id']))} entered so far).{note}")
 
     def do_regremove(self, arg: str) -> None:

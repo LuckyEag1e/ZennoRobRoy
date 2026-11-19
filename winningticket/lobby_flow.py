@@ -50,7 +50,8 @@ def split_label(split: lobbies.Split) -> str:
 
 
 def takes_late_signups(tournament: sqlite3.Row) -> bool:
-    """After the draw, sign-ups join the waitlist until check-in is over."""
+    """After the draw, sign-ups still go in (to a team with room, or the waitlist) until
+    check-in is over."""
     return tournament["status"] == "in_progress" and not tournament["checkin_finished"]
 
 
@@ -65,10 +66,21 @@ def signup_reply(conn: sqlite3.Connection, tournament: sqlite3.Row, team_id: int
     if tournament["status"] == "registration":
         where = f"✅ You're signed up for **{name}**. Captain choice: {choice}."
     else:
-        place = lobby_db.get_waitlist(conn, tournament["id"]).index(team_id) + 1
         checked = " You're checked in already." if lobby_db.checkin_running(tournament) else ""
-        where = f"✅ You're **#{place} on the waitlist** for **{name}**. Captain choice: {choice}.{checked}"
+        where = (f"✅ You're signed up for **{name}**. {late_signup_line(conn, tournament['id'], team_id, True)} "
+                 f"Captain choice: {choice}.{checked}")
     return where + f"\nTo change your captain choice, run {register_command(name)} again."
+
+
+def late_signup_line(conn: sqlite3.Connection, tournament_id: int, team_id: int, you: bool) -> str:
+    """Where a sign-up from after the draw was placed, told to them (`you`) or to the
+    organizer who added them."""
+    who = "You're" if you else "They're"
+    lobby = lobby_db.find_lobby_of(conn, tournament_id, team_id)
+    if lobby is None:
+        return f"{who} **#{lobby_db.get_waitlist(conn, tournament_id).index(team_id) + 1} on the waitlist**."
+    names = Names(conn, tournament_id, str)
+    return f"{who} in lobby {lobby.number}, on **{team_name(lobby, lobby.side_of(team_id), names)}**."
 
 
 def captain_problem(pref: str, linked: bool, by_organizer: bool) -> Optional[str]:
@@ -107,7 +119,7 @@ def sign_up(conn: sqlite3.Connection, tournament: sqlite3.Row, name: str, user_i
     team_id, _ = entrant
     lobby_db.set_captain_pref(conn, tournament["id"], team_id, pref)
     if tournament["status"] != "registration":
-        lobby_db.join_waitlist(conn, tournament["id"], team_id)
+        lobby_db.place_late_signup(conn, tournament["id"], team_id)
     reply = signup_reply(conn, db.get_tournament(conn, tournament["id"]), team_id, pref)
     return reply if linked else f"{reply}\n{OPTED_OUT_NOTE}"
 
@@ -143,7 +155,7 @@ def check_in(conn: sqlite3.Connection, tournament: sqlite3.Row, user_id: int) ->
     name = tournament["name"]
     team_id = db.get_entrant_team_id(conn, tournament["id"], user_id)
     if team_id is None:
-        return f"You aren't signed up for **{name}**. {register_command(name)} adds you to the waitlist."
+        return f"You aren't signed up for **{name}**. {register_command(name)} signs you up."
     if not lobby_db.checkin_running(tournament):
         if tournament["checkin_ends_at"] is None:
             return f"Check-in for **{name}** hasn't opened yet. You'll be pinged when it does."
@@ -372,8 +384,8 @@ def lobby_signups_message(tournament: sqlite3.Row, entrants: int) -> str:
                 f"{register_command(name)}) and say whether you'll captain. Lobbies and teams are drawn ahead of "
                 f"time, and everyone is pinged here with their lobby or their place on the waitlist. {count}")
     if takes_late_signups(tournament):
-        return (f"📝 The lobbies for **{name}** are drawn: see the post below. Pressing **Register** now adds you to "
-                f"the end of the waitlist. {count}")
+        return (f"📝 The lobbies for **{name}** are drawn: see the post below. Pressing **Register** now puts you on a "
+                f"team that has room, or on the waitlist if none does. {count}")
     return f"📝 Sign-ups for **{name}** are closed."
 
 
