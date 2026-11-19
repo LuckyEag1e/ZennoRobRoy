@@ -516,6 +516,9 @@ class WinningTicketCLI(cmd.Cmd):
         "Withdraw the current user: unregister <name>"
         found = self._require_tournament(arg.strip(), needs_bracket=False, formats=db.FORMATS)
         if found is not None and found["format"] == "lobbies" and found["status"] != "registration":
+            if not lobby_flow.takes_late_signups(found):
+                print(lobby_flow.signups_over(found["name"], by_organizer=False).replace("**", ""))
+                return
             self.do_dropout(arg)
             return
         tournament = self._require_registration(arg.strip())
@@ -596,12 +599,21 @@ class WinningTicketCLI(cmd.Cmd):
         if len(parts) != 2:
             print("usage: regremove <name> <entrant>")
             return
-        tournament = self._require_registration(parts[0])
+        found = self._require_tournament(parts[0], needs_bracket=False, formats=db.FORMATS)
+        drawn = found is not None and found["format"] == "lobbies" and found["status"] != "registration"
+        if drawn and not lobby_flow.takes_late_signups(found):
+            print(lobby_flow.signups_over(found["name"], by_organizer=True).replace("**", ""))
+            return
+        tournament = found if drawn else self._require_registration(parts[0])
         if tournament is None:
             return
         team = db.get_team_by_name(self.conn, tournament["id"], parts[1])
         if team is None:
             print(f"No entrant named '{parts[1]}'.")
+            return
+        if drawn:
+            # The lobbies are drawn, so the spot is filled in place from the waitlist.
+            print(lobby_flow.dropout(self.conn, tournament, team["id"], "withdrawn", self.user_id))
             return
         db.delete_team(self.conn, team["id"])
         print(f"Withdrew {parts[1]}.")

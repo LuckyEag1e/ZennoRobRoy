@@ -55,6 +55,16 @@ def takes_late_signups(tournament: sqlite3.Row) -> bool:
     return tournament["status"] == "in_progress" and not tournament["checkin_finished"]
 
 
+def signups_over(name: str, by_organizer: bool) -> str:
+    """Why the sign-up commands no longer change a 5v5 event once check-in is over, and
+    what to use instead: a dropout, filled from the checked-in waitlist."""
+    if by_organizer:
+        return (f"Check-in for **{name}** is over, so sign-ups are closed. To take a player out, use `/admin "
+                f"withdraw`: their spot goes to the next checked-in player on the waitlist.")
+    return (f"Check-in for **{name}** is over, so sign-ups are closed. To give up your spot, run `/match dropout "
+            f"tournament:{name}`.")
+
+
 def signup_reply(conn: sqlite3.Connection, tournament: sqlite3.Row, team_id: int, pref: str,
                  changed: bool = False) -> str:
     """What a player is told once they're signed up, or have changed their captain choice.

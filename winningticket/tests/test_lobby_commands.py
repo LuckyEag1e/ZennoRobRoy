@@ -292,3 +292,33 @@ def test_an_organizer_can_add_to_the_waitlist_after_the_draw(tmp_path):
         assert "Late1" in _post_with(sim, "🎌").content
     finally:
         asyncio.run(sim.close())
+
+
+def test_registration_commands_work_until_check_in_ends_then_point_to_dropouts(tmp_path):
+    sim, organizer, users, announcement = _event(tmp_path, players=11, captains=2)
+    try:
+        preview = asyncio.run(sim.run(organizer, "registration close", name="Duel")).sent
+        asyncio.run(sim.click(organizer, preview, "Create Lobbies"))
+        conn = db.get_connection()
+        tournament = db.get_tournament_by_name(conn, GUILD_ID, "Duel")
+        lobby = lobby_db.get_lobbies(conn, tournament["id"])[0]
+        waiting = lobby_db.get_waitlist(conn, tournament["id"])
+        leaving = next(p for p in lobby.players if p not in lobby.captains)
+        name = next(s.name for s in lobby_db.get_signups(conn, tournament["id"]) if s.team_id == leaving)
+        conn.close()
+        # After the draw, removing a player fills their spot in place from the waitlist.
+        reply = asyncio.run(sim.run(organizer, "registration remove", tournament="Duel", entrant=name)).sent
+        assert "takes the spot in lobby 1" in reply.content
+        conn = db.get_connection()
+        assert lobby_db.get_lobby(conn, lobby.id).players == [waiting[0] if p == leaving else p for p in lobby.players]
+        conn.execute("UPDATE tournaments SET checkin_ends_at = ?, checkin_finished = 1 WHERE id = ?",
+                     (db.to_db_time(datetime.now(timezone.utc)), tournament["id"]))
+        conn.commit()
+        conn.close()
+        # Once check-in is over, they're refused with what to use instead.
+        reply = asyncio.run(sim.run(organizer, "registration remove", tournament="Duel", entrant="Player2")).sent
+        assert "/admin withdraw" in reply.content
+        reply = asyncio.run(sim.run(users[0], "unregister", tournament="Duel")).sent
+        assert "/match dropout" in reply.content
+    finally:
+        asyncio.run(sim.close())

@@ -247,7 +247,9 @@ async def leave_event(interaction: discord.Interaction, conn: sqlite3.Connection
     spot goes to the waitlist."""
     name = tournament["name"]
     team_id = db.get_entrant_team_id(conn, tournament["id"], interaction.user.id)
-    if team_id is None:
+    if tournament["status"] != "registration" and not lobby_flow.takes_late_signups(tournament):
+        reply = lobby_flow.signups_over(name, by_organizer=False)
+    elif team_id is None:
         reply = (f"You aren't signed up for **{name}** under your account. If you opted out when signing up, ask an "
                  f"organizer to withdraw you.")
     elif tournament["status"] == "registration":

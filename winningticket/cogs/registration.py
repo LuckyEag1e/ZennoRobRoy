@@ -19,13 +19,13 @@ from common import (
     bot_plays_for_testing,
     edit_signups_message,
     load_bracket_embed,
+    playing_entrant_autocomplete,
     refuse_taken_name,
     registration_name_autocomplete,
-    signup_name_autocomplete,
     requires_manage_server,
     resolve_tournament,
+    signup_name_autocomplete,
     signups_message,
-    team_name_autocomplete,
     tournament_name_autocomplete,
 )
 from embeds import EMBED_DESCRIPTION_LIMIT, mention
@@ -536,19 +536,33 @@ class RegistrationCog(commands.Cog):
 
     @group.command(name="remove", description="Withdraw an entrant from a tournament")
     @app_commands.describe(tournament="Tournament name", entrant="Entrant to withdraw")
-    @app_commands.autocomplete(tournament=registration_name_autocomplete, entrant=team_name_autocomplete)
+    @app_commands.autocomplete(tournament=signup_name_autocomplete, entrant=playing_entrant_autocomplete)
     @requires_manage_server
     async def remove(self, interaction: discord.Interaction, tournament: str, entrant: str) -> None:
         conn = db.get_connection()
         try:
             tournament_row = await resolve_tournament(interaction, conn, tournament, needs_bracket=False, formats=db.FORMATS)
-            if tournament_row is None or not await _require_registration(interaction, tournament_row):
+            if tournament_row is None:
+                return
+            drawn = tournament_row["format"] == "lobbies" and tournament_row["status"] != "registration"
+            if drawn and not lobby_flow.takes_late_signups(tournament_row):
+                await interaction.response.send_message(lobby_flow.signups_over(tournament, by_organizer=True),
+                                                        ephemeral=True)
+                return
+            if not drawn and not await _require_registration(interaction, tournament_row):
                 return
             team = db.get_team_by_name(conn, tournament_row["id"], entrant)
             if team is None:
                 await interaction.response.send_message(
                     f"No entrant named '{entrant}' in **{tournament}**.", ephemeral=True
                 )
+                return
+            if drawn:
+                # The lobbies are drawn, so the spot is filled in place from the waitlist.
+                reply = lobby_flow.dropout(conn, tournament_row, team["id"], "withdrawn", interaction.user.id)
+                await interaction.response.send_message(reply, ephemeral=True)
+                await self._refresh_signups_message(conn, tournament_row["id"])
+                await sync_posts(interaction.client, conn, tournament_row["id"])
                 return
             db.delete_team(conn, team["id"])
             await interaction.response.send_message(f"Withdrew {entrant} from **{tournament}**.", ephemeral=True)
