@@ -77,14 +77,16 @@ def rejoin(conn: sqlite3.Connection, tournament_id: int, team_id: int, pref: str
 
 def place_late_signup(conn: sqlite3.Connection, tournament_id: int, team_id: int) -> Optional[Lobby]:
     """Put a sign-up from after the draw on the smallest team with room (lobbies.open_spot),
-    taking the captaincy if that team has none and they can captain, or else at the end of
+    taking the captaincy if that team has none and they can captain (such a team is filled
+    first by someone who can), or else at the end of
     the waitlist. Nobody already placed moves. They count as checked in if check-in has
     started. Returns the lobby they joined, or None if they're waiting."""
     with conn:
         playing = [lobby for lobby in get_lobbies(conn, tournament_id) if get_result(conn, lobby.id) is None]
+        signup = next(s for s in get_signups(conn, tournament_id) if s.team_id == team_id)
         spot = lobbies.open_spot([lobbies.TeamRoom(lobby.number, side, len(lobby.teams[side].players),
-                                                   len(lobby.players))
-                                  for lobby in playing for side in SIDES])
+                                                   len(lobby.players), lobby.teams[side].captain is not None)
+                                  for lobby in playing for side in SIDES], signup.can_captain)
         if spot is None:
             conn.execute(
                 """INSERT INTO lobby_waitlist (team_id, tournament_id, position)
@@ -98,7 +100,6 @@ def place_late_signup(conn: sqlite3.Connection, tournament_id: int, team_id: int
                    SELECT ?, ?, COALESCE(MAX(spot), -1) + 1, ? FROM lobby_players WHERE lobby_id = ? AND side = ?""",
                 (lobby.id, spot.side, team_id, lobby.id, spot.side),
             )
-            signup = next(s for s in get_signups(conn, tournament_id) if s.team_id == team_id)
             if lobby.teams[spot.side].captain is None and signup.can_captain:
                 conn.execute("UPDATE lobby_sides SET captain_team_id = ? WHERE lobby_id = ? AND side = ?",
                              (team_id, lobby.id, spot.side))

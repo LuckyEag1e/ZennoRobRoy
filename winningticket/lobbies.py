@@ -231,12 +231,15 @@ class TeamRoom:
     side: str
     team_size: int
     lobby_size: int
+    has_captain: bool = True
 
 
-def open_spot(teams: list[TeamRoom]) -> Optional[TeamRoom]:
+def open_spot(teams: list[TeamRoom], can_captain: bool = False) -> Optional[TeamRoom]:
     """Where a late sign-up plays: the smallest team with room (a team holds MAX_LOBBY // 2),
-    in the emptiest lobby, then the first lobby. None if every team is full, so they wait."""
+    in the emptiest lobby, then the first lobby. Someone who can captain goes to a team
+    with no captain first. None if every team is full, so they wait."""
     with_room = [team for team in teams if team.team_size < MAX_LOBBY // 2]
     if not with_room:
         return None
-    return min(with_room, key=lambda team: (team.team_size, team.lobby_size, team.lobby_number, team.side))
+    return min(with_room, key=lambda team: (not (can_captain and not team.has_captain), team.team_size,
+                                            team.lobby_size, team.lobby_number, team.side))

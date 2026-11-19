@@ -346,3 +346,39 @@ def test_someone_who_left_after_the_draw_can_sign_up_again(tmp_path):
         conn.close()
     finally:
         asyncio.run(sim.close())
+
+
+def test_a_team_left_without_a_captain_says_so_and_takes_the_next_one(tmp_path):
+    sim, organizer, users, announcement = _event(tmp_path, players=7, captains=2)
+    try:
+        preview = asyncio.run(sim.run(organizer, "registration close", name="Duel")).sent
+        asyncio.run(sim.click(organizer, preview, "Create Lobbies"))
+        asyncio.run(sim.run(users[0], "unregister", tournament="Duel"))
+        _loop(sim)
+        assert "has no captain. The next player who can captain" in _post_with(sim, "🎌").content
+        newcomer = sim.add_user(500, "NewCaptain")
+        conn = db.get_connection()
+        db.record_agreement(conn, GUILD_ID, 500)
+        conn.close()
+        asyncio.run(sim.run(newcomer, "register", tournament="Duel", captain="want"))
+        conn = db.get_connection()
+        tournament = db.get_tournament_by_name(conn, GUILD_ID, "Duel")
+        lobby = lobby_db.get_lobbies(conn, tournament["id"])[0]
+        assert db.get_entrant_team_id(conn, tournament["id"], 500) in lobby.captains and len(lobby.captains) == 2
+        conn.close()
+        _loop(sim)
+        assert "has no captain" not in _post_with(sim, "🎌").content
+    finally:
+        asyncio.run(sim.close())
+
+
+def test_starting_check_in_warns_the_organizer_about_a_team_without_a_captain(tmp_path):
+    sim, organizer, users, announcement = _event(tmp_path, players=7, captains=2)
+    try:
+        preview = asyncio.run(sim.run(organizer, "registration close", name="Duel")).sent
+        asyncio.run(sim.click(organizer, preview, "Create Lobbies"))
+        asyncio.run(sim.run(users[0], "unregister", tournament="Duel"))
+        reply = asyncio.run(sim.run(organizer, "lobby startcheckin", tournament="Duel", minutes=5)).sent
+        assert "No captain yet" in reply.content and "/admin setcaptain" in reply.content
+    finally:
+        asyncio.run(sim.close())

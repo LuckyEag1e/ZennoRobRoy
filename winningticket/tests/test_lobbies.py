@@ -225,3 +225,10 @@ def test_open_spot_fills_the_smallest_team_with_room():
     assert open_spot(teams) == TeamRoom(2, "A", 4, 8)
     assert open_spot([TeamRoom(1, "A", 4, 7), TeamRoom(1, "B", 3, 7)]) == TeamRoom(1, "B", 3, 7)
     assert open_spot([TeamRoom(1, "A", 5, 10), TeamRoom(1, "B", 5, 10)]) is None
+
+
+def test_open_spot_sends_someone_who_can_captain_to_a_team_without_one():
+    from lobbies import TeamRoom, open_spot
+    teams = [TeamRoom(1, "A", 3, 7), TeamRoom(1, "B", 4, 7, has_captain=False)]
+    assert open_spot(teams, can_captain=True) == teams[1]
+    assert open_spot(teams, can_captain=False) == teams[0]

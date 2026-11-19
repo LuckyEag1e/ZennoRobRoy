@@ -10,6 +10,7 @@ from datetime import datetime, timedelta
 from typing import Callable, Optional
 
 import db
+import lobbies
 import lobby_db
 from lobby_db import SIDES, Lobby
 
@@ -40,6 +41,7 @@ class PostState:
     audience: list[tuple[str, int]] = field(default_factory=list)
 
 
+MAX_TEAM = lobbies.MAX_LOBBY // 2
 # Discord's limit on a message's length.
 MESSAGE_LIMIT = 2000
 
@@ -104,6 +106,22 @@ def team_lines(lobby: Lobby, names: Names, show_checkin: bool, points: Optional[
     return lines
 
 
+def missing_captain_lines(lobby: Lobby, names: Names, signups_open: bool) -> list[str]:
+    """A warning for each team with no captain, which happens when its captain leaves and
+    nobody left on it can captain, saying how it gets one."""
+    lines = []
+    for side in SIDES:
+        team = lobby.teams[side]
+        if team.captain is not None:
+            continue
+        if signups_open and len(team.players) < MAX_TEAM:
+            lines.append(f"⚠️ {team_name(lobby, side, names)} has no captain. The next player who can captain and "
+                         f"signs up before check-in ends joins it; otherwise an organizer will pick one.")
+        else:
+            lines.append(f"⚠️ {team_name(lobby, side, names)} has no captain: an organizer will pick one.")
+    return lines
+
+
 def _lobby_status(conn: sqlite3.Connection, lobby: Lobby, names: Names, player_label: Callable[[int], str]
                   ) -> tuple[list[str], Optional[lobby_db.Report]]:
     """A lobby's team lines and where it's up to once check-in is over, and its report
@@ -122,9 +140,9 @@ def _lobby_status(conn: sqlite3.Connection, lobby: Lobby, names: Names, player_l
         return lines + [f"📋 {answer}: press **{CONFIRM}** or **{DISPUTE}** on these points. They're accepted "
                         f"{_when(report_due_at(report))} otherwise."], report
     lines = team_lines(lobby, names, False)
-    missing = [team_name(lobby, side, names) for side in SIDES if lobby.teams[side].captain is None]
+    missing = missing_captain_lines(lobby, names, signups_open=False)
     if missing:
-        lines.append(f"⚠️ {' and '.join(missing)} needs a captain: an organizer will pick one")
+        lines += missing
     elif lobby.room_code is None:
         lines.append("Waiting for a captain to create the room")
     else:
@@ -150,7 +168,7 @@ def describe_event(conn: sqlite3.Connection, tournament: sqlite3.Row, player_lab
             if report is not None:
                 reports.append((lobby, report))
         else:
-            lines += team_lines(lobby, names, running)
+            lines += team_lines(lobby, names, running) + missing_captain_lines(lobby, names, signups_open=True)
     waiting = [names(t) + ((" ✅" if names.checked_in(t) else " ⏳") if running else "") for t in waitlist]
     done = tournament["status"] in ("completed", "concluded")
     if waiting and not done:
