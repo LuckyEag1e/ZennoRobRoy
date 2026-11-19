@@ -478,11 +478,13 @@ class RegistrationCog(commands.Cog):
                 )
                 return
             team_id, entrant_name = entrant
-            if tournament_row["format"] == "lobbies":
-                lobby_db.set_captain_pref(conn, tournament_row["id"], team_id, captain)
-            who = f"{entrant_name} ({user.mention})" if linked else entrant_name
             note = (" They haven't agreed to link their data to their account, so they're entered by name only."
                     if user is not None and not linked else "")
+            if tournament_row["format"] == "lobbies":
+                pref, captain_note = lobby_flow.added_captain_pref(captain, linked)
+                lobby_db.set_captain_pref(conn, tournament_row["id"], team_id, pref)
+                note += captain_note
+            who = f"{entrant_name} ({user.mention})" if linked else entrant_name
             await interaction.response.send_message(
                 f"✅ Signed up {who} for **{tournament}** ({db.entrant_count(conn, tournament_row['id'])} entered so far).{note}",
                 ephemeral=True,

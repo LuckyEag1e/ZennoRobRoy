@@ -151,7 +151,7 @@ python cli.py
 ```
 
 Commands mirror the slash commands: `create <name> <csv>`, `regopen <name> [--closes-in HOURS]`, `register <name>`,
-`unregister <name>`, `entrants <name>`, `regadd <name> <entrant> [user_id]`, `regremove <name> <entrant>`,
+`unregister <name>`, `entrants <name>`, `regadd <name> <entrant> [user_id] [--captain want|can|no]`, `regremove <name> <entrant>`,
 `regclose <name>`, `open <name>`, `predict <name>`,
 `lock <name>`, `conclude <name>`, `matchresult <name>`, `matchstats <name>`, `mypicks <name>`, `bracket <name>`,
 `leaderboard <name>`, `tournaments`, `history`, `history_bracket <name>`, `history_seeding <name>`,

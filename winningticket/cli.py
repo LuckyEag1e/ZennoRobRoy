@@ -540,10 +540,11 @@ class WinningTicketCLI(cmd.Cmd):
             print(line)
 
     def do_regadd(self, arg: str) -> None:
-        "Sign up someone else, or an entrant with no account if no user_id: regadd <name> <entrant> [user_id]"
+        "Sign up someone else, or an entrant with no account if no user_id. For a 5v5 event, --captain says whether they'll captain: regadd <name> <entrant> [user_id] [--captain want|can|no]"
+        arg, captain = take_option(arg, "--captain")
         parts = shlex.split(arg)
-        if len(parts) not in (2, 3):
-            print("usage: regadd <name> <entrant> [user_id]")
+        if len(parts) not in (2, 3) or (captain is not None and captain not in lobby_flow.CAPTAIN_CHOICES):
+            print("usage: regadd <name> <entrant> [user_id] [--captain want|can|no]")
             return
         tournament = self._require_registration(parts[0])
         if tournament is None:
@@ -566,8 +567,12 @@ class WinningTicketCLI(cmd.Cmd):
             link_hint = " Use 'admin_linkplayer' to link them to it." if user_id is not None else ""
             print(f"'{parts[0]}' already has an entrant named '{parts[1]}'.{link_hint}")
             return
-        _, entrant_name = entrant
-        print(f"Signed up {entrant_name} ({len(db.get_entrants(self.conn, tournament['id']))} entered so far).")
+        team_id, entrant_name = entrant
+        note = ""
+        if tournament["format"] == "lobbies":
+            pref, note = lobby_flow.added_captain_pref(captain or "no", user_id is not None)
+            lobby_db.set_captain_pref(self.conn, tournament["id"], team_id, pref)
+        print(f"Signed up {entrant_name} ({len(db.get_entrants(self.conn, tournament['id']))} entered so far).{note}")
 
     def do_regremove(self, arg: str) -> None:
         "Withdraw any entrant by name: regremove <name> <entrant>"
