@@ -76,6 +76,17 @@ class LobbiesCog(commands.Cog):
     @tend_lobbies.before_loop
     async def _wait_until_ready(self) -> None:
         await self.bot.wait_until_ready()
+        # A sign-ups post is only rewritten when someone joins or leaves, so one posted by
+        # an older version of the bot would keep its old wording and count until then.
+        conn = db.get_connection()
+        try:
+            for tournament in lobby_db.get_tournaments_with_posts(conn):
+                if lobby_flow.takes_late_signups(tournament):
+                    await refresh_signups(self.bot, conn, tournament["id"])
+        except Exception:
+            log.exception("Couldn't refresh the 5v5 sign-ups posts")
+        finally:
+            conn.close()
 
     @app_commands.command(name="checkin", description="Check in for a 5v5 event once check-in is open")
     @app_commands.describe(tournament="Event name")
