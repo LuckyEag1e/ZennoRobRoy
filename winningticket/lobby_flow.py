@@ -19,6 +19,7 @@ from lobby_db import SIDES, Lobby
 from lobby_posts import (
     DRAFTER_HOST_URL,
     REPORT_RESULT,
+    SUBMIT_ROOM_CODE,
     register_command,
     report_due_at,
     team_lines,
@@ -392,6 +393,9 @@ def report_problem(conn: sqlite3.Connection, tournament: sqlite3.Row, lobby: Lob
         return "Only this lobby's captains or an organizer can report its points."
     if not tournament["checkin_finished"]:
         return "Points are reported after the races, once check-in is over."
+    if lobby.room_code is None and lobby_db.get_result(conn, lobby.id) is None:
+        return (f"Lobby {lobby.number} has no room yet, so there are no races to report. Create the room at "
+                f"{DRAFTER_HOST_URL}, then press **{SUBMIT_ROOM_CODE}**.")
     if not all(lobby.teams[side].players for side in SIDES):
         return "One of this lobby's teams has nobody left on it, so an organizer has to sort the lobby out first."
     if lobby_db.get_result(conn, lobby.id) is not None and not role.organizer:

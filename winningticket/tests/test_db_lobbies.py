@@ -157,6 +157,9 @@ def test_report_confirm_and_completion(conn):
     tied = lobby_flow.parse_points(lobby, {p: "5" for p in lobby.players})
     assert isinstance(tied, str) and "tiebreaker" in tied
     points = lobby_flow.parse_points(lobby, {p: str(10 if p in lobby.teams["A"].players else 3) for p in lobby.players})
+    assert "has no room yet" in lobby_flow.submit_report(conn, tournament, lobby, role_a, captain_a, points)
+    lobby_flow.submit_room_code(conn, tournament, lobby, role_a, captain_a, "ROOM1")
+    lobby = lobby_db.get_lobbies(conn, tournament_id)[0]
     lobby_flow.submit_report(conn, tournament, lobby, role_a, captain_a, points)
     assert "Only the other" in lobby_flow.confirm_report(conn, lobby, role_a, captain_a)
     role_b = lobby_flow.role_in(conn, lobby, captain_b, organizer=False)

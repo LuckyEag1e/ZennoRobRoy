@@ -291,6 +291,8 @@ class LobbyEventRun:
                 await self.sim.click(outsider.user, post, "Get Room Code")  # refused
             await self.sim.click(self.rng.choice(players).user, post, "Get Room Code")  # not in yet
             if self.rng.random() < 0.3:
+                await self.sim.click(host.user, post, "Report Result")  # refused: no room yet
+            if self.rng.random() < 0.3:
                 # The host's room is set up by an organizer, who gives the code by command.
                 await self.sim.run(self.organizer.user, "lobby roomcode", tournament=NAME, code=f"ORG{lobby.number}",
                                    lobby=lobby.number)
