@@ -540,3 +540,16 @@ def test_an_organizer_can_call_off_check_in_and_check_someone_in(tmp_path):
         assert "isn't open" in reply.content
     finally:
         asyncio.run(sim.close())
+
+
+def test_checking_in_twice_says_so(tmp_path):
+    sim, organizer, users, announcement = _event(tmp_path, players=7, captains=2)
+    try:
+        preview = asyncio.run(sim.run(organizer, "registration close", name="Duel")).sent
+        asyncio.run(sim.click(organizer, preview, "Create Lobbies"))
+        asyncio.run(sim.run(organizer, "lobby startcheckin", tournament="Duel", minutes=5))
+        assert "✅ Checked in for lobby 1" in asyncio.run(sim.click(users[0], _post_with(sim, "🎌"), "Check In")).sent.content
+        again = asyncio.run(sim.click(users[0], _post_with(sim, "🎌"), "Check In")).sent.content
+        assert "You're already checked in for lobby 1" in again
+    finally:
+        asyncio.run(sim.close())

@@ -276,12 +276,13 @@ def check_in(conn: sqlite3.Connection, tournament: sqlite3.Row, user_id: int) ->
     waitlist = lobby_db.get_waitlist(conn, tournament["id"])
     if in_lobby is None and team_id not in waitlist:
         return f"You're no longer playing in **{name}**."
-    lobby_db.check_in(conn, team_id)
+    newly = lobby_db.check_in(conn, team_id)
+    done = "✅ Checked in" if newly else "You're already checked in"
     ends = db.from_db_time(tournament["checkin_ends_at"])
     if in_lobby is not None:
-        return f"✅ Checked in for lobby {in_lobby.number} of **{name}**."
+        return f"{done} for lobby {in_lobby.number} of **{name}**."
     place = waitlist.index(team_id) + 1
-    return (f"✅ Checked in for **{name}**, **#{place} on the waitlist**. Stay around until check-in ends "
+    return (f"{done} for **{name}**, **#{place} on the waitlist**. Stay around until check-in ends "
             f"<t:{int(ends.timestamp())}:R> in case you're brought in.")
 
 
