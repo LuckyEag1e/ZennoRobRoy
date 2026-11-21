@@ -724,7 +724,10 @@ def get_entrant_team_id(conn: sqlite3.Connection, tournament_id: int, user_id: i
 
 
 def entrant_count(conn: sqlite3.Connection, tournament_id: int) -> int:
-    return conn.execute("SELECT COUNT(*) FROM teams WHERE tournament_id = ?", (tournament_id,)).fetchone()[0]
+    """How many entrants are still in. A 5v5 player who leaves after the draw keeps their
+    row, marked withdrawn, so they're left out here."""
+    return conn.execute("SELECT COUNT(*) FROM teams WHERE tournament_id = ? AND withdrawn IS NULL",
+                        (tournament_id,)).fetchone()[0]
 
 
 def get_entrants(conn: sqlite3.Connection, tournament_id: int) -> list[sqlite3.Row]:
