@@ -311,6 +311,10 @@ async def _start_checkin(interaction, conn, tournament, lobby) -> None:
     if not is_organizer(interaction):
         await interaction.response.send_message("Only organizers can start check-in.", ephemeral=True)
         return
+    problem = lobby_flow.checkin_start_problem(conn, tournament)
+    if problem is not None:
+        await interaction.response.send_message(problem, ephemeral=True)
+        return
     await interaction.response.send_modal(CheckInLengthForm(tournament["id"]))
 
 

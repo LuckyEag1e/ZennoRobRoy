@@ -312,6 +312,20 @@ def start_checkin(conn: sqlite3.Connection, tournament_id: int, ends_at: str) ->
         ).rowcount > 0
 
 
+def cancel_checkin(conn: sqlite3.Connection, tournament_id: int) -> bool:
+    """Call off a check-in that's still open, clearing everyone's check-in so a new one
+    starts afresh. False if none is open."""
+    with conn:
+        cancelled = conn.execute(
+            """UPDATE tournaments SET checkin_ends_at = NULL
+               WHERE id = ? AND checkin_ends_at IS NOT NULL AND checkin_finished = 0""",
+            (tournament_id,),
+        ).rowcount > 0
+        if cancelled:
+            conn.execute("UPDATE lobby_signups SET checked_in_at = NULL WHERE tournament_id = ?", (tournament_id,))
+    return cancelled
+
+
 def check_in(conn: sqlite3.Connection, team_id: int) -> bool:
     """False if they'd already checked in."""
     with conn:

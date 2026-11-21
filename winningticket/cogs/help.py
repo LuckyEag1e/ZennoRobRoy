@@ -127,6 +127,7 @@ class HelpCog(commands.Cog):
             ("/admin setcaptain tournament:<name> entrant:<name>", "5v5: make a player (with a linked account) captain of their team, such as when a team has none."),
             ("/admin lobbyswap tournament:<name> leaving:<name> joining:<name>", "5v5: put a waitlisted player in someone's spot. The player leaving goes to the front of the waitlist."),
             ("/admin lobbymove tournament:<name> entrant:<name>", "5v5: move a player to the other team in their lobby, such as to give a team with no captain one. Their old spot is filled from the waitlist."),
+            ("/admin checkin tournament:<name> entrant:<name>", "5v5: check a player in on their behalf while check-in is open."),
             ("/admin feedback [page:<n>]", "Read anonymous feedback, newest first. `/admin deletefeedback number:<n>` removes one."),
             ("/admin ban user:<member> [reason:<text>]", "Block a member from using the bot. `/admin unban` undoes it, and `/admin bans` lists everyone banned."),
         ])
@@ -157,7 +158,8 @@ class HelpCog(commands.Cog):
             ("Organizers",
              "`/registration open5v5 name:<name> starts_in_hours:<hours>`, then `/registration close` "
              "(ideally a day before) to preview and create the lobbies. Start check-in with the button on the "
-             "event's post or `/lobby startcheckin`. `/lobby report lobby:<n>` records points directly, and "
+             "event's post or `/lobby startcheckin`, once every team has a captain; `/lobby cancelcheckin` calls it "
+             "off. `/lobby report lobby:<n>` records points directly, and "
              "`/tournament conclude` posts how each lobby went."),
         ])
         await interaction.response.send_message(embed=embed, ephemeral=True)

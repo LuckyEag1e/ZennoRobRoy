@@ -119,6 +119,21 @@ class LobbiesCog(commands.Cog):
         if event is not None:
             await start_checkin(interaction, event["id"], minutes)
 
+    @group.command(name="cancelcheckin", description="Call off a 5v5 event's check-in, clearing everyone's check-in")
+    @app_commands.describe(tournament="Event name")
+    @app_commands.autocomplete(tournament=tournament_name_autocomplete)
+    @requires_manage_server
+    async def cancelcheckin(self, interaction: discord.Interaction, tournament: str) -> None:
+        conn = db.get_connection()
+        try:
+            event = await _resolve_event(interaction, conn, tournament)
+            if event is None:
+                return
+            await interaction.response.send_message(lobby_flow.cancel_checkin(conn, event), ephemeral=True)
+            await sync_posts(self.bot, conn, event["id"])
+        finally:
+            conn.close()
+
     @group.command(name="roomcode", description="Give the bot your lobby's drafter room code")
     @app_commands.describe(tournament="Event name", code="The room code from the drafter site", lobby=LOBBY_OPTION_HELP)
     @app_commands.autocomplete(tournament=tournament_name_autocomplete)

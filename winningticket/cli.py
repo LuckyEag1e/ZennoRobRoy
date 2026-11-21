@@ -1259,6 +1259,12 @@ class WinningTicketCLI(cmd.Cmd):
             return
         self._say(lobby_flow.start_checkin(self.conn, tournament, int(minutes), datetime.now(timezone.utc)))
 
+    def do_lobby_cancelcheckin(self, arg: str) -> None:
+        "Call off a 5v5 event's check-in, clearing everyone's check-in (organizers): lobby_cancelcheckin <name>"
+        tournament = self._require_event(arg.strip())
+        if tournament is not None:
+            self._say(lobby_flow.cancel_checkin(self.conn, tournament))
+
     def do_checkin(self, arg: str) -> None:
         "Check in for a 5v5 event: checkin <name>"
         tournament = self._require_event(arg.strip())
@@ -1361,6 +1367,18 @@ class WinningTicketCLI(cmd.Cmd):
             return
         tournament, team = found
         self._say(lobby_flow.move_player(self.conn, tournament, team["id"]))
+
+    def do_admin_checkin(self, arg: str) -> None:
+        "Check a 5v5 player in on their behalf: admin_checkin <name> <entrant>"
+        parts = shlex.split(arg)
+        if len(parts) != 2:
+            print("usage: admin_checkin <name> <entrant>")
+            return
+        found = self._require_entrant(*parts, ("in_progress",), ("lobbies",))
+        if found is None:
+            return
+        tournament, team = found
+        self._say(lobby_flow.check_in_for(self.conn, tournament, team["id"]))
 
     def do_features(self, arg: str) -> None:
         "What the bot can be used for, and what's coming."

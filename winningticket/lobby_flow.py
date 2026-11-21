@@ -78,7 +78,7 @@ def move_player(conn: sqlite3.Connection, tournament: sqlite3.Row, team_id: int)
 
 def captain_fix_lines(conn: sqlite3.Connection, tournament: sqlite3.Row) -> list[str]:
     """For an organizer: each team with no captain, and how to give it one. Check-in can't
-    finish until every team has one."""
+    start, or finish, until every team has one."""
     name = tournament["name"]
     names = Names(conn, tournament["id"], str)
     prefs = lobby_db.captain_prefs(list(names.signups.values()))
@@ -96,7 +96,8 @@ def captain_fix_lines(conn: sqlite3.Connection, tournament: sqlite3.Row) -> list
         line += " Or make a player on it with a linked account captain with `/admin setcaptain`."
         lines.append(line)
     if lines and takes_late_signups(tournament):
-        lines.append("Check-in can't finish until every team has a captain.")
+        stage = "finish" if lobby_db.checkin_running(tournament) else "start"
+        lines.append(f"Check-in can't {stage} until every team has a captain.")
     return lines
 
 
@@ -232,14 +233,34 @@ def dropout(conn: sqlite3.Connection, tournament: sqlite3.Row, team_id: int, rea
     return reply
 
 
-def start_checkin(conn: sqlite3.Connection, tournament: sqlite3.Row, minutes: int, now: datetime) -> str:
+def checkin_start_problem(conn: sqlite3.Connection, tournament: sqlite3.Row) -> Optional[str]:
+    """Why an organizer can't start check-in now, or None if they can."""
+    name = tournament["name"]
     if tournament["status"] != "in_progress" or tournament["format"] != "lobbies":
-        return f"**{tournament['name']}** has no lobbies waiting for check-in."
+        return f"**{name}** has no lobbies waiting for check-in."
+    if tournament["checkin_ends_at"] is not None:
+        return f"Check-in for **{name}** has already started."
+    missing = captain_fix_lines(conn, tournament)
+    return "\n".join(missing) if missing else None
+
+
+def start_checkin(conn: sqlite3.Connection, tournament: sqlite3.Row, minutes: int, now: datetime) -> str:
+    problem = checkin_start_problem(conn, tournament)
+    if problem is not None:
+        return problem
     ends = now + timedelta(minutes=minutes)
     if not lobby_db.start_checkin(conn, tournament["id"], db.to_db_time(ends)):
         return f"Check-in for **{tournament['name']}** has already started."
-    reply = f"✅ Check-in for **{tournament['name']}** is open for {minutes} minutes."
-    return "\n".join([reply] + captain_fix_lines(conn, db.get_tournament(conn, tournament["id"])))
+    return f"✅ Check-in for **{tournament['name']}** is open for {minutes} minutes."
+
+
+def cancel_checkin(conn: sqlite3.Connection, tournament: sqlite3.Row) -> str:
+    name = tournament["name"]
+    if not lobby_db.cancel_checkin(conn, tournament["id"]):
+        if tournament["checkin_finished"]:
+            return f"Check-in for **{name}** is already over."
+        return f"Check-in for **{name}** isn't open."
+    return f"✅ Check-in for **{name}** is called off, and everyone's check-in is cleared. Start it again when you're ready."
 
 
 def check_in(conn: sqlite3.Connection, tournament: sqlite3.Row, user_id: int) -> str:
@@ -262,6 +283,22 @@ def check_in(conn: sqlite3.Connection, tournament: sqlite3.Row, user_id: int) ->
     place = waitlist.index(team_id) + 1
     return (f"✅ Checked in for **{name}**, **#{place} on the waitlist**. Stay around until check-in ends "
             f"<t:{int(ends.timestamp())}:R> in case you're brought in.")
+
+
+def check_in_for(conn: sqlite3.Connection, tournament: sqlite3.Row, team_id: int) -> str:
+    """An organizer checking a player in on their behalf. Returns the organizer's reply."""
+    name = tournament["name"]
+    who = Names(conn, tournament["id"], str).plain(team_id)
+    if not lobby_db.checkin_running(tournament):
+        return f"Check-in for **{name}** isn't open."
+    in_lobby = lobby_db.find_lobby_of(conn, tournament["id"], team_id)
+    waitlist = lobby_db.get_waitlist(conn, tournament["id"])
+    if in_lobby is None and team_id not in waitlist:
+        return f"{who} is no longer playing in **{name}**."
+    if not lobby_db.check_in(conn, team_id):
+        return f"{who} is already checked in."
+    where = f"lobby {in_lobby.number}" if in_lobby is not None else f"#{waitlist.index(team_id) + 1} on the waitlist"
+    return f"✅ Checked in {who} ({where})."
 
 
 def finish_due_checkins(conn: sqlite3.Connection) -> list[int]:

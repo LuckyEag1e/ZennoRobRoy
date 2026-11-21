@@ -398,11 +398,33 @@ def test_a_team_without_a_captain_holds_its_spot_for_one(tmp_path):
         asyncio.run(sim.close())
 
 
-def test_check_in_waits_until_every_team_has_a_captain(tmp_path):
+def test_check_in_cant_start_until_every_team_has_a_captain(tmp_path):
     sim, organizer, users, tournament_id = _drawn_without_a_captain(tmp_path)
     try:
         reply = asyncio.run(sim.run(organizer, "lobby startcheckin", tournament="Duel", minutes=5)).sent
-        assert "has no captain" in reply.content and "Check-in can't finish" in reply.content
+        assert "has no captain" in reply.content and "Check-in can't start" in reply.content
+        click = asyncio.run(sim.click(organizer, _post_with(sim, "🎌"), "Start Check-In"))
+        assert click.response.modal is None and "Check-in can't start" in click.sent.content
+        asyncio.run(sim.run(_newcomer(sim, 501, "NewCaptain"), "register", tournament="Duel", captain="want"))
+        reply = asyncio.run(sim.run(organizer, "lobby startcheckin", tournament="Duel", minutes=5)).sent
+        assert "is open for 5 minutes" in reply.content
+    finally:
+        asyncio.run(sim.close())
+
+
+def test_check_in_waits_when_a_captain_leaves_during_it(tmp_path):
+    sim, organizer, users, announcement = _event(tmp_path, players=7, captains=2)
+    try:
+        preview = asyncio.run(sim.run(organizer, "registration close", name="Duel")).sent
+        asyncio.run(sim.click(organizer, preview, "Create Lobbies"))
+        asyncio.run(sim.run(organizer, "lobby startcheckin", tournament="Duel", minutes=5))
+        tournament_id = _tournament_id()
+        lobby = _lobby(tournament_id)
+        conn = db.get_connection()
+        user_of = {team_id: members[0] for team_id, members in db.get_members_by_team(conn, tournament_id).items()}
+        conn.close()
+        leaving = next(u for u in users if u.id == user_of[lobby.captains[0]])
+        asyncio.run(sim.run(leaving, "unregister", tournament="Duel"))
         conn = db.get_connection()
         conn.execute("UPDATE tournaments SET checkin_ends_at = ? WHERE id = ?",
                      (db.to_db_time(datetime.now(timezone.utc) - timedelta(seconds=1)), tournament_id))
@@ -476,5 +498,45 @@ def test_waiting_while_a_team_without_a_captain_has_room_says_why(tmp_path):
                 break
         assert "#1 on the waitlist" in reply.content
         assert "room, but only for a player who can captain, since it has no captain" in reply.content
+    finally:
+        asyncio.run(sim.close())
+
+
+
+def _tournament_id():
+    conn = db.get_connection()
+    try:
+        return db.get_tournament_by_name(conn, GUILD_ID, "Duel")["id"]
+    finally:
+        conn.close()
+
+
+def test_an_organizer_can_call_off_check_in_and_check_someone_in(tmp_path):
+    sim, organizer, users, announcement = _event(tmp_path, players=7, captains=2)
+    try:
+        preview = asyncio.run(sim.run(organizer, "registration close", name="Duel")).sent
+        asyncio.run(sim.click(organizer, preview, "Create Lobbies"))
+        reply = asyncio.run(sim.run(organizer, "admin checkin", tournament="Duel", entrant="Player3")).sent
+        assert "isn't open" in reply.content
+        asyncio.run(sim.run(organizer, "lobby startcheckin", tournament="Duel", minutes=5))
+        asyncio.run(sim.run(users[3], "lobby cancelcheckin", tournament="Duel"))  # not an organizer
+        conn = db.get_connection()
+        assert lobby_db.checkin_running(db.get_tournament(conn, _tournament_id()))
+        conn.close()
+        reply = asyncio.run(sim.run(organizer, "admin checkin", tournament="Duel", entrant="Player3")).sent
+        assert "Checked in Player3 (lobby 1)" in reply.content
+        reply = asyncio.run(sim.run(organizer, "admin checkin", tournament="Duel", entrant="Player3")).sent
+        assert "already checked in" in reply.content
+        reply = asyncio.run(sim.run(organizer, "lobby cancelcheckin", tournament="Duel")).sent
+        assert "called off" in reply.content
+        conn = db.get_connection()
+        tournament = db.get_tournament(conn, _tournament_id())
+        assert tournament["checkin_ends_at"] is None
+        assert not any(s.checked_in for s in lobby_db.get_signups(conn, tournament["id"]) if s.user_id is not None)
+        conn.close()
+        _loop(sim)
+        assert "Start Check-In" in _buttons(_post_with(sim, "🎌"))
+        reply = asyncio.run(sim.run(organizer, "lobby cancelcheckin", tournament="Duel")).sent
+        assert "isn't open" in reply.content
     finally:
         asyncio.run(sim.close())

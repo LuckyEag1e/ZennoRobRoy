@@ -126,7 +126,10 @@ points wins, and a tie is settled on a tiebreaker track before anyone reports.
    buttons from then on. Teams are balanced on each player's 5v5 contribution, two opposing captains per lobby. Late
    sign-ups fill the smallest team with room (up to 5) or join the end of the waitlist, and a dropout's spot goes to the first one waiting.
 3. **Start Check-In** on that post (or `/lobby startcheckin`) pings everyone to check in.
-   When it ends, no-shows are replaced in place by checked-in players from the waitlist.
+   It can't start while a team has no captain, and if a captain leaves during it, it stays
+   open until the team has one again. When it ends, no-shows are replaced in place by
+   checked-in players from the waitlist. `/lobby cancelcheckin` calls it off and clears
+   everyone's check-in, and `/admin checkin` checks a player in on their behalf.
 4. A captain creates the room at https://drafter.uma.guide/host and presses **Submit Room
    Code**. Players press **Get Room Code** for a private copy, and the host is told who has no
    linked account and needs the code passed on by hand.
@@ -159,8 +162,9 @@ Commands mirror the slash commands: `create <name> <csv>`, `regopen <name> [--cl
 `admin_editteam`, `admin_setresult`, `admin_clearresult`, `admin_clearpredictions`, `admin_feedback`,
 `admin_deletefeedback`, `admin_ban`, `admin_unban`, `admin_bans`, `admin_linkplayer`, `admin_unlinkplayer`.
 5v5 events use `regopen5v5 <name> --starts-in HOURS [--spread tier|balanced|random]`, `register <name> --captain want|can|no`,
-`regclose <name> [--lobbies N] [--spread tier|balanced|random]`, `lobby_startcheckin`, `checkin`, `lobby_roomcode`,
-`lobby_code`, `lobby_report`, `lobby_confirm`, `lobby_dispute`, `admin_setcaptain`, `admin_lobbyswap` and `admin_lobbymove`.
+`regclose <name> [--lobbies N] [--spread tier|balanced|random]`, `lobby_startcheckin`, `lobby_cancelcheckin`, `checkin`,
+`lobby_roomcode`, `lobby_code`, `lobby_report`, `lobby_confirm`, `lobby_dispute`, `admin_setcaptain`, `admin_lobbyswap`,
+`admin_lobbymove` and `admin_checkin`.
 Use `as <user_id> <name>` to switch which simulated user you're acting as (so you can
 submit multiple different predictions and see the leaderboard play out). Commands that
 take more than one argument (like `create`) need quotes around a multi-word name;

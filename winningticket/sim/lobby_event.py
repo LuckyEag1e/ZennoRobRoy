@@ -204,12 +204,24 @@ class LobbyEventRun:
         event_post = self._event_post()
         outsider = self.rng.choice(self.players)
         await self.sim.click(outsider.user, event_post, "Start Check-In")  # only organizers can
+        if self._query(lambda conn: lobby_db.teams_without_captain(conn, self.tournament_id)):
+            # Refused until every team has a captain, so the organizer gives them one first.
+            await self.sim.click(self.organizer.user, event_post, "Start Check-In")
+            await self._give_teams_captains()
+            event_post = self._event_post()
         click = await self.sim.click(self.organizer.user, event_post, "Start Check-In")
         if click is None or click.response.modal is None:
             self.sim._problem("Start Check-In didn't open its form")
             return
         await self.sim.submit_fields(self.organizer.user, click.response.modal, ["15"])
         await self._tend()
+        await self.sim.run(outsider.user, "lobby cancelcheckin", tournament=NAME)  # only organizers can
+        if self.rng.random() < 0.3:
+            # Started too early: the organizer calls it off and starts it again.
+            await self.sim.run(self.organizer.user, "lobby cancelcheckin", tournament=NAME)
+            await self._tend()
+            await self.sim.run(self.organizer.user, "lobby startcheckin", tournament=NAME)
+            await self._tend()
         user_of = self._user_of()
         lobbies = self._lobbies()
         waitlist = self._query(lambda conn: lobby_db.get_waitlist(conn, self.tournament_id))
@@ -218,6 +230,12 @@ class LobbyEventRun:
         missing = set(self.rng.sample(captains, 1))
         others = [p for lobby in lobbies for p in lobby.players if p not in captains]
         missing |= set(self.rng.sample(others, min(2, len(others))))
+        names = self._query(lambda conn: {t: row["name"] for t, row in db.get_teams(conn, self.tournament_id).items()})
+        if others and self.rng.random() < 0.5:
+            # A player says in chat they're here but can't press the button: an organizer checks them in.
+            helped = self.rng.choice(others)
+            await self.sim.run(self.organizer.user, "admin checkin", tournament=NAME, entrant=names[helped])
+            missing.discard(helped)
         for lobby in lobbies:
             post = self._event_post()
             for player in lobby.players:
@@ -232,8 +250,9 @@ class LobbyEventRun:
         await self._give_teams_captains()
 
     async def _give_teams_captains(self) -> None:
-        """Check-in waits until every team has a captain, so the organizer gives one to any
-        team left without: moving a spare captain over, or making a linked player captain."""
+        """Check-in can't start or finish while a team has no captain, so the organizer gives
+        one to any team left without: moving a spare captain over, or making a linked player
+        captain."""
         org = self.organizer.user
         for _ in range(5):
             missing = self._query(lambda conn: lobby_db.teams_without_captain(conn, self.tournament_id))
