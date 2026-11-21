@@ -464,3 +464,17 @@ def test_starting_up_brings_an_old_sign_ups_post_up_to_date(tmp_path):
         assert "**6** signed up so far" in _post_with(sim, "📝").content
     finally:
         asyncio.run(sim.close())
+
+
+def test_waiting_while_a_team_without_a_captain_has_room_says_why(tmp_path):
+    sim, organizer, users, tournament_id = _drawn_without_a_captain(tmp_path)
+    try:
+        for n in range(1, 4):
+            reply = asyncio.run(sim.run(organizer, "registration add", tournament="Duel", name=f"Late{n}",
+                                        captain="no")).sent
+            if "waitlist" in reply.content:
+                break
+        assert "#1 on the waitlist" in reply.content
+        assert "room, but only for a player who can captain, since it has no captain" in reply.content
+    finally:
+        asyncio.run(sim.close())

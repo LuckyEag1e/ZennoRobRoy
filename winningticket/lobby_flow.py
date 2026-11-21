@@ -132,9 +132,18 @@ def late_signup_line(conn: sqlite3.Connection, tournament_id: int, team_id: int,
     organizer who added them."""
     who = "You're" if you else "They're"
     lobby = lobby_db.find_lobby_of(conn, tournament_id, team_id)
-    if lobby is None:
-        return f"{who} **#{lobby_db.get_waitlist(conn, tournament_id).index(team_id) + 1} on the waitlist**."
     names = Names(conn, tournament_id, str)
+    if lobby is None:
+        place = f"{who} **#{lobby_db.get_waitlist(conn, tournament_id).index(team_id) + 1} on the waitlist**"
+        # Every team with a captain is full, or they'd have been placed. Any room left is a
+        # spot held for a captain, which is worth saying since the lobby isn't full.
+        held = [f"{team_name(held_lobby, side, names)} in lobby {held_lobby.number}"
+                for held_lobby, side in lobby_db.teams_without_captain(conn, tournament_id)
+                if len(held_lobby.teams[side].players) < lobbies.MAX_LOBBY // 2]
+        if not held:
+            return f"{place}."
+        return (f"{place}: {' and '.join(held)} {'has' if len(held) == 1 else 'have'} room, but only for a player "
+                f"who can captain, since {'it has' if len(held) == 1 else 'they have'} no captain.")
     return f"{who} in lobby {lobby.number}, on **{team_name(lobby, lobby.side_of(team_id), names)}**."
 
 
