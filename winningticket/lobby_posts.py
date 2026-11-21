@@ -81,6 +81,14 @@ class Names:
     def checked_in(self, team_id: int) -> bool:
         return team_id in self.signups and self.signups[team_id].checked_in
 
+    def checkin_mark(self, team_id: int) -> str:
+        """✅ or ⏳ after a player's name during check-in. Players with no account are left
+        unmarked: they can't press the button, so they count as checked in without it."""
+        signup = self.signups.get(team_id)
+        if signup is None or signup.user_id is None:
+            return ""
+        return " ✅" if signup.checked_in else " ⏳"
+
 
 def team_name(lobby: Lobby, side: str, names: Names) -> str:
     captain = lobby.teams[side].captain
@@ -98,7 +106,7 @@ def team_lines(lobby: Lobby, names: Names, show_checkin: bool, points: Optional[
         for player in team.players:
             crown = " (captain)" if player == team.captain else ""
             score = f" {points.get(player, 0)}" if points is not None else ""
-            mark = (" ✅" if names.checked_in(player) else " ⏳") if show_checkin else ""
+            mark = names.checkin_mark(player) if show_checkin else ""
             players.append(f"{names(player)}{crown}{score}{mark}")
         lines.append(f"{team_name(lobby, side, names)}{total}: {', '.join(players) or 'nobody'}")
     return lines
@@ -166,7 +174,7 @@ def describe_event(conn: sqlite3.Connection, tournament: sqlite3.Row, player_lab
                 reports.append((lobby, report))
         else:
             lines += team_lines(lobby, names, running) + missing_captain_lines(lobby, names, signups_open=True)
-    waiting = [names(t) + ((" ✅" if names.checked_in(t) else " ⏳") if running else "") for t in waitlist]
+    waiting = [names(t) + (names.checkin_mark(t) if running else "") for t in waitlist]
     done = tournament["status"] in ("completed", "concluded")
     if waiting and not done:
         label = "Waitlist, in case a spot opens" if finished else "Waitlist, in order"

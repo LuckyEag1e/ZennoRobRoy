@@ -553,3 +553,20 @@ def test_checking_in_twice_says_so(tmp_path):
         assert "You're already checked in for lobby 1" in again
     finally:
         asyncio.run(sim.close())
+
+
+def test_check_in_marks_only_players_who_can_check_in(tmp_path):
+    sim, organizer, users, announcement = _event(tmp_path, players=6, captains=2)
+    try:
+        asyncio.run(sim.run(organizer, "registration add", tournament="Duel", name="Dummy1", captain="no"))
+        preview = asyncio.run(sim.run(organizer, "registration close", name="Duel")).sent
+        asyncio.run(sim.click(organizer, preview, "Create Lobbies"))
+        asyncio.run(sim.run(organizer, "lobby startcheckin", tournament="Duel", minutes=5))
+        post = _post_with(sim, "🎌").content
+        assert "**Dummy1**" in post and "**Dummy1** ✅" not in post and "**Dummy1** ⏳" not in post
+        assert f"<@{users[0].id}> (captain) ⏳" in post
+        asyncio.run(sim.click(users[0], _post_with(sim, "🎌"), "Check In"))
+        _loop(sim)
+        assert f"<@{users[0].id}> (captain) ✅" in _post_with(sim, "🎌").content
+    finally:
+        asyncio.run(sim.close())
