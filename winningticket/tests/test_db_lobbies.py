@@ -141,54 +141,99 @@ def test_finish_checkin_replaces_no_shows_with_checked_in_waiters(conn):
     assert lobby_db.get_waitlist(conn, tournament_id) == [waiting_first]
 
 
-def test_report_confirm_and_completion(conn):
+def _playing(conn, seed):
+    """A drawn 5v5 lobby past check-in, with its room set up: (tournament, lobby, captain
+    A's user id and role, captain B's user id and role)."""
     tournament_id = event_with(conn, 10, captains=2)
-    close_lobby_registration(conn, tournament_id, rng=random.Random(6))
+    close_lobby_registration(conn, tournament_id, rng=random.Random(seed))
     tournament = db.get_tournament(conn, tournament_id)
     lobby_flow.start_checkin(conn, tournament, 15, datetime.now(timezone.utc) - timedelta(minutes=20))
-    lobby = lobby_db.get_lobbies(conn, tournament_id)[0]
-    for player in lobby.players:
-        lobby_db.check_in(conn, player)
     lobby_db.finish_checkin(conn, tournament_id)
     tournament = db.get_tournament(conn, tournament_id)
+    lobby = lobby_db.get_lobbies(conn, tournament_id)[0]
     users = {team_id: users[0] for team_id, users in db.get_members_by_team(conn, tournament_id).items()}
     captain_a, captain_b = users[lobby.teams["A"].captain], users[lobby.teams["B"].captain]
     role_a = lobby_flow.role_in(conn, lobby, captain_a, organizer=False)
-
-    tied = lobby_flow.parse_points(lobby, {p: "5" for p in lobby.players})
-    assert isinstance(tied, str) and "tiebreaker" in tied
-    points = lobby_flow.parse_points(lobby, {p: str(10 if p in lobby.teams["A"].players else 3) for p in lobby.players})
-    assert "has no room yet" in lobby_flow.submit_report(conn, tournament, lobby, role_a, captain_a, points)
-    lobby_flow.submit_room_code(conn, tournament, lobby, role_a, captain_a, "ROOM1")
-    lobby = lobby_db.get_lobbies(conn, tournament_id)[0]
-    lobby_flow.submit_report(conn, tournament, lobby, role_a, captain_a, points)
-    assert "Only the other" in lobby_flow.confirm_report(conn, lobby, role_a, captain_a)
     role_b = lobby_flow.role_in(conn, lobby, captain_b, organizer=False)
-    assert "Confirmed" in lobby_flow.confirm_report(conn, lobby, role_b, captain_b)
+    assert "has no room yet" in lobby_flow.finish(conn, tournament, lobby, role_a, captain_a)
+    lobby_flow.submit_room_code(conn, tournament, lobby, role_a, captain_a, "ROOM1")
+    return tournament, lobby_db.get_lobby(conn, lobby.id), (captain_a, role_a), (captain_b, role_b)
+
+
+def _points(lobby, a_scores=10, b_scores=3):
+    return {p: (a_scores if p in lobby.teams["A"].players else b_scores) for p in lobby.players}
+
+
+def test_both_captains_finish_then_matching_points_are_final(conn):
+    tournament, lobby, (captain_a, role_a), (captain_b, role_b) = _playing(conn, 6)
+    points = _points(lobby)
+    assert "both captains press" in lobby_flow.enter_points(conn, tournament, lobby, role_a, "A", captain_a, points)
+    assert "Waiting for" in lobby_flow.finish(conn, tournament, lobby, role_a, captain_a)
+    assert "already pressed" in lobby_flow.finish(conn, tournament, lobby, role_a, captain_a)
+    assert lobby_db.get_post(conn, tournament["id"], lobby_db.results_post_key(lobby.id)) is None
+    assert "results post" in lobby_flow.finish(conn, tournament, lobby, role_b, captain_b)
+    assert lobby_db.get_post(conn, tournament["id"], lobby_db.results_post_key(lobby.id)) is not None
+    assert "This button is for" in lobby_flow.enter_points(conn, tournament, lobby, role_a, "B", captain_a, points)
+    assert "They're final once" in lobby_flow.enter_points(conn, tournament, lobby, role_a, "A", captain_a, points)
+    assert "result is in" in lobby_flow.enter_points(conn, tournament, lobby, role_b, "B", captain_b, points)
     assert lobby_db.get_result(conn, lobby.id).winning_side == "A"
-    assert db.get_tournament(conn, tournament_id)["status"] == "completed"
+    assert db.get_tournament(conn, tournament["id"])["status"] == "completed"
 
 
-def test_unanswered_report_is_accepted_and_a_dispute_holds(conn):
-    tournament_id = event_with(conn, 10, captains=2)
-    close_lobby_registration(conn, tournament_id, rng=random.Random(7))
-    tournament = db.get_tournament(conn, tournament_id)
-    lobby_flow.start_checkin(conn, tournament, 15, datetime.now(timezone.utc) - timedelta(minutes=20))
-    # Nobody checked in, but nobody is waiting to replace them, so they all keep their spots.
-    assert lobby_db.finish_checkin(conn, tournament_id) == []
-    lobby = lobby_db.get_lobbies(conn, tournament_id)[0]
-    assert len(lobby.players) == 10
-    points = {p: (7 if p in lobby.teams["B"].players else 1) for p in lobby.players}
-    lobby_db.submit_report(conn, lobby.id, 1, "A", points)
-    report = lobby_db.get_report(conn, lobby.id)
-    lobby_flow.accept_due_reports(conn, datetime.now(timezone.utc))
+def test_one_captains_points_are_accepted_when_the_other_enters_none(conn):
+    tournament, lobby, (captain_a, role_a), (captain_b, role_b) = _playing(conn, 7)
+    organizer = lobby_flow.Role(None, None, False, True)
+    assert "Finished lobby" in lobby_flow.finish(conn, tournament, lobby, organizer, ORGANIZER)
+    lobby_flow.enter_points(conn, tournament, lobby, role_b, "B", captain_b, _points(lobby, 1, 7))
+    lobby_flow.accept_due_entries(conn, datetime.now(timezone.utc))
     assert lobby_db.get_result(conn, lobby.id) is None
-    lobby_db.dispute_report(conn, report)
-    lobby_flow.accept_due_reports(conn, datetime.now(timezone.utc) + timedelta(hours=1))
-    assert lobby_db.get_result(conn, lobby.id) is None
-    lobby_db.submit_report(conn, lobby.id, 1, "A", points)  # a new report clears the dispute
-    lobby_flow.accept_due_reports(conn, datetime.now(timezone.utc) + timedelta(hours=1))
+    lobby_flow.accept_due_entries(conn, datetime.now(timezone.utc) + timedelta(minutes=11))
     assert lobby_db.get_result(conn, lobby.id).winning_side == "B"
+
+
+def test_points_that_dont_match_wait_until_corrected_or_finalized(conn):
+    tournament, lobby, (captain_a, role_a), (captain_b, role_b) = _playing(conn, 8)
+    lobby_flow.finish(conn, tournament, lobby, role_a, captain_a)
+    lobby_flow.finish(conn, tournament, lobby, role_b, captain_b)
+    points = _points(lobby)
+    lobby_flow.enter_points(conn, tournament, lobby, role_a, "A", captain_a, points)
+    wrong = dict(points)
+    first = lobby.players[0]
+    wrong[first] = 2
+    reply = lobby_flow.enter_points(conn, tournament, lobby, role_b, "B", captain_b, wrong)
+    first_name = db.get_teams(conn, tournament["id"])[first]["name"]
+    assert "don't match" in reply and first_name in reply
+    post = lobby_posts.describe_results(conn, lobby, lambda user_id: f"<@{user_id}>")
+    assert "The points don't match" in post.text and lobby_posts.FINALIZE in [b.label for b in post.buttons]
+    assert {user_id for _, user_id in post.audience} == {captain_a, captain_b}
+    # Mismatched points never time out; the captain who was wrong corrects theirs.
+    lobby_flow.accept_due_entries(conn, datetime.now(timezone.utc) + timedelta(hours=1))
+    assert lobby_db.get_result(conn, lobby.id) is None
+    assert lobby_flow.points_defaults(conn, lobby, "B") == wrong
+    assert first not in lobby_flow.points_defaults(conn, lobby, None)
+    assert "result is in" in lobby_flow.enter_points(conn, tournament, lobby, role_b, "B", captain_b, points)
+    post = lobby_posts.describe_results(conn, lobby, lambda user_id: f"<@{user_id}>")
+    assert "wins!" in post.text and post.buttons == []
+
+
+def test_an_organizer_finalizes_points_that_dont_match(conn):
+    tournament, lobby, (captain_a, role_a), (captain_b, role_b) = _playing(conn, 9)
+    lobby_flow.finish(conn, tournament, lobby, role_a, captain_a)
+    lobby_flow.finish(conn, tournament, lobby, role_b, captain_b)
+    lobby_flow.enter_points(conn, tournament, lobby, role_a, "A", captain_a, _points(lobby))
+    lobby_flow.enter_points(conn, tournament, lobby, role_b, "B", captain_b, _points(lobby, 1, 7))
+    assert "Only organizers" in lobby_flow.finalize(conn, tournament, lobby, role_a, captain_a, _points(lobby))
+    organizer = lobby_flow.Role(None, None, False, True)
+    assert "final points" in lobby_flow.finalize(conn, tournament, lobby, organizer, ORGANIZER, _points(lobby, 1, 7))
+    assert lobby_db.get_result(conn, lobby.id).winning_side == "B"
+
+
+def test_a_captain_who_is_an_organizer_can_finish_for_both(conn):
+    tournament, lobby, (captain_a, role_a), (captain_b, role_b) = _playing(conn, 10)
+    both = lobby_flow.Role(role_a.team_id, role_a.side, True, True)
+    assert "press **Finish** again" in lobby_flow.finish(conn, tournament, lobby, both, captain_a)
+    assert "Finished lobby" in lobby_flow.finish(conn, tournament, lobby, both, captain_a)
+    assert lobby_db.races_over(lobby, lobby_db.get_finished_sides(conn, lobby.id))
 
 
 def test_history_feeds_contribution_into_the_next_draw(conn):
@@ -235,27 +280,8 @@ def test_a_late_signup_fills_a_team_with_room_before_the_waitlist(conn):
     assert lobby_db.get_waitlist(conn, tournament_id) == [waiting]
 
 
-def test_the_captain_who_disputed_can_confirm_after_all(conn):
-    tournament_id = event_with(conn, 10, captains=2)
-    close_lobby_registration(conn, tournament_id, rng=random.Random(6))
-    tournament = db.get_tournament(conn, tournament_id)
-    lobby_flow.start_checkin(conn, tournament, 15, datetime.now(timezone.utc) - timedelta(minutes=20))
-    lobby_db.finish_checkin(conn, tournament_id)
-    tournament = db.get_tournament(conn, tournament_id)
-    lobby = lobby_db.get_lobbies(conn, tournament_id)[0]
-    users = {team_id: users[0] for team_id, users in db.get_members_by_team(conn, tournament_id).items()}
-    captain_a, captain_b = users[lobby.teams["A"].captain], users[lobby.teams["B"].captain]
-    role_a = lobby_flow.role_in(conn, lobby, captain_a, organizer=False)
-    role_b = lobby_flow.role_in(conn, lobby, captain_b, organizer=False)
-    lobby_flow.submit_room_code(conn, tournament, lobby, role_a, captain_a, "ROOM1")
-    lobby = lobby_db.get_lobbies(conn, tournament_id)[0]
-    points = lobby_flow.parse_points(lobby, {p: str(10 if p in lobby.teams["A"].players else 3) for p in lobby.players})
-    lobby_flow.submit_report(conn, tournament, lobby, role_a, captain_a, points)
-    reply = lobby_flow.dispute_report(conn, lobby, role_b)
-    reporter = db.get_teams(conn, tournament_id)[lobby.teams["A"].captain]["name"]
-    assert f"Tell {reporter} what's wrong" in reply and "**Confirm**" in reply
-    post = lobby_posts.describe_event(conn, db.get_tournament(conn, tournament_id), lambda user_id: f"<@{user_id}>")
-    assert f"<@{captain_b}> disputed these points. <@{captain_a}>: correct them with **Report Result**" in post.text
-    assert any(why.startswith("dispute:") and user_id == captain_a for why, user_id in post.audience)
-    assert "settles the dispute" in lobby_flow.confirm_report(conn, lobby, role_b, captain_b)
-    assert lobby_db.get_result(conn, lobby.id).winning_side == "A"
+def test_upgrading_drops_the_old_reports_table(conn):
+    conn.execute("CREATE TABLE lobby_reports (lobby_id INTEGER PRIMARY KEY)")
+    db.init_db(conn)
+    assert conn.execute("SELECT 1 FROM sqlite_master WHERE name = 'lobby_reports'").fetchone() is None
+    assert conn.execute("SELECT 1 FROM sqlite_master WHERE name = 'lobby_entries'").fetchone() is not None

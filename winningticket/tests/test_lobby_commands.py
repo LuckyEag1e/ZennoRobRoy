@@ -1,5 +1,5 @@
 """5v5 events through the real cogs: sign-up buttons with the captain question, the close
-preview, check-in, room codes and the captains' report."""
+preview, check-in, room codes, finishing and the captains' points."""
 
 import asyncio
 import os
@@ -10,6 +10,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import db
 import lobby_db
+import lobby_posts
 from sim.harness import GUILD_ID, Simulation
 
 
@@ -138,18 +139,37 @@ def test_whole_event_from_close_to_result(tmp_path):
         player = by_id[user_of[next(p for p in lobby.players if p not in lobby.captains)]]
         assert "ABC123" in asyncio.run(sim.click(player, _post_with(sim, "hosted by"), "Get Room Code")).sent.content
 
-        # Captain A reports, in two forms, and captain B confirms.
+        # Both captains press Finish, then each enters everyone's points, in two forms.
         post = _post_with(sim, "hosted by")
-        first = asyncio.run(sim.click(captain_a, post, "Report Result")).response.modal
-        between = asyncio.run(sim.submit_fields(captain_a, first, ["9"] * 5)).sent
-        second = asyncio.run(sim.click(captain_a, between, _buttons(between)[0])).response.modal
-        sent = asyncio.run(sim.submit_fields(captain_a, second, ["2"] * 5)).sent
-        assert "Sent to the other captain" in sent.content
-        report_post = _post_with(sim, "on these points")
-        assert [u.id for u in report_post.allowed_mentions.users] == [captain_b.id]
-        assert "Only the other" in asyncio.run(sim.click(captain_a, report_post, "Confirm")).sent.content
-        asyncio.run(sim.click(captain_b, report_post, "Confirm"))
+        assert "Waiting for" in asyncio.run(sim.click(captain_a, post, "Finish")).sent.content
+        reminder = _post_with(sim, "pressed **Finish**")
+        assert [u.id for u in reminder.allowed_mentions.users] == [captain_b.id]
+        assert "results post" in asyncio.run(sim.click(captain_b, reminder, "Finish")).sent.content
         _loop(sim)
+        results = _post_with(sim, "Lobby 1 results")
+        assert {u.id for u in results.allowed_mentions.users} == {captain_a.id, captain_b.id}
+        labels = _buttons(results)
+        assert len(labels) == 2 and all(label.endswith("'s Results") for label in labels)
+
+        def enter(captain, label, a_points, b_points):
+            first = asyncio.run(sim.click(captain, _post_with(sim, "Lobby 1 results"), label)).response.modal
+            between = asyncio.run(sim.submit_fields(captain, first, [a_points] * 5)).sent
+            second = asyncio.run(sim.click(captain, between, _buttons(between)[0])).response.modal
+            return asyncio.run(sim.submit_fields(captain, second, [b_points] * 5)).sent
+
+        conn = db.get_connection()
+        name_of = {side: db.get_teams(conn, tournament["id"])[lobby.teams[side].captain]["name"] for side in "AB"}
+        conn.close()
+        label_a, label_b = (lobby_posts.points_button_label(name_of[side]) for side in "AB")
+        assert "This button is for" in asyncio.run(
+            sim.click(captain_a, _post_with(sim, "Lobby 1 results"), label_b)).sent.content
+        assert "They're final once" in enter(captain_a, label_a, "9", "2").content
+        assert "don't match" in enter(captain_b, label_b, "9", "3").content
+        _loop(sim)
+        assert "Finalize Scores" in _buttons(_post_with(sim, "The points don't match"))
+        assert "result is in" in enter(captain_b, label_b, "9", "2").content
+        _loop(sim)
+        assert "wins!" in _post_with(sim, "Lobby 1 results").content
         assert "wins" in _post_with(sim, "Every lobby has finished").content
 
         conn = db.get_connection()

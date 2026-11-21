@@ -1,6 +1,6 @@
-"""The Discord side of 5v5 events: the buttons on their public post, the private menus and
-forms those buttons open, and keeping the post up to date (lobby_posts says what it should
-show). lobby_flow holds the rules and replies, shared with the CLI."""
+"""The Discord side of 5v5 events: the buttons on their public posts, the private menus and
+forms those buttons open, and keeping the posts up to date (lobby_posts says what each
+should show). lobby_flow holds the rules and replies, shared with the CLI."""
 
 from __future__ import annotations
 
@@ -25,24 +25,20 @@ log = logging.getLogger("winningticket")
 # Discord's limit on a form field's label.
 FIELD_LABEL_LIMIT = 45
 
-# What each post button does, by the name lobby_posts gives it. The id in a button's
-# custom_id is the tournament's.
-BUTTON_ACTIONS = {
-    lobby_posts.START_CHECKIN: ("startcheckin", discord.ButtonStyle.primary),
-    lobby_posts.CHECK_IN: ("checkin", discord.ButtonStyle.success),
-    lobby_posts.SUBMIT_ROOM_CODE: ("submitcode", discord.ButtonStyle.secondary),
-    lobby_posts.GET_ROOM_CODE: ("getcode", discord.ButtonStyle.primary),
-    lobby_posts.REPORT_RESULT: ("report", discord.ButtonStyle.primary),
-    lobby_posts.CONFIRM: ("confirm", discord.ButtonStyle.success),
-    lobby_posts.DISPUTE: ("dispute", discord.ButtonStyle.danger),
+STYLES = {
+    "register": discord.ButtonStyle.success, "unregister": discord.ButtonStyle.secondary,
+    "startcheckin": discord.ButtonStyle.primary, "checkin": discord.ButtonStyle.success,
+    "submitcode": discord.ButtonStyle.secondary, "getcode": discord.ButtonStyle.primary,
+    "finish": discord.ButtonStyle.success, "pointsa": discord.ButtonStyle.primary,
+    "pointsb": discord.ButtonStyle.primary, "finalize": discord.ButtonStyle.danger,
 }
+# The id in a button's custom_id is the tournament's, except on a results post, where it's
+# the lobby's.
 EVENT_ACTIONS = {"register", "unregister", "startcheckin", "checkin"}
 # Buttons that act on one lobby: the presser's own, or for an organizer, one they pick.
-LOBBY_ACTIONS = {"submitcode", "getcode", "report", "confirm", "dispute"}
-LABELS = {action: label for label, (action, _) in BUTTON_ACTIONS.items()} | {"register": "Register",
-                                                                           "unregister": "Unregister"}
-STYLES = {action: style for action, style in BUTTON_ACTIONS.values()} | {
-    "register": discord.ButtonStyle.success, "unregister": discord.ButtonStyle.secondary}
+LOBBY_ACTIONS = {"submitcode", "getcode", "finish"}
+RESULTS_ACTIONS = {"pointsa", "pointsb", "finalize"}
+SIGNUP_BUTTONS = [lobby_posts.PostButton("Register", "register"), lobby_posts.PostButton("Unregister", "unregister")]
 
 
 def is_organizer(interaction: discord.Interaction) -> bool:
@@ -50,27 +46,39 @@ def is_organizer(interaction: discord.Interaction) -> bool:
 
 
 class LobbyButton(discord.ui.DynamicItem[discord.ui.Button], template=r"lobby:(?P<action>[a-z]+):(?P<id>\d+)"):
-    """Every button on a 5v5 event's sign-ups post and event post. They're rebuilt from
-    their custom_id after a restart (bot.add_dynamic_items), so posts keep working across
-    deploys."""
+    """Every button on a 5v5 event's sign-ups post, event post and results posts. They're
+    rebuilt from their custom_id after a restart (bot.add_dynamic_items), so posts keep
+    working across deploys; the label only matters when the button is first sent."""
 
-    def __init__(self, action: str, tournament_id: int) -> None:
-        super().__init__(discord.ui.Button(label=LABELS[action], style=STYLES[action],
-                                           custom_id=f"lobby:{action}:{tournament_id}"))
+    def __init__(self, action: str, target_id: int, label: str = "") -> None:
+        super().__init__(discord.ui.Button(label=label or action, style=STYLES.get(action, discord.ButtonStyle.secondary),
+                                           custom_id=f"lobby:{action}:{target_id}"))
         self.action = action
-        self.tournament_id = tournament_id
+        self.target_id = target_id
 
     @classmethod
     async def from_custom_id(cls, interaction: discord.Interaction, item: discord.ui.Button, match) -> LobbyButton:
-        return cls(match["action"], int(match["id"]))
+        return cls(match["action"], int(match["id"]), item.label or "")
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         return not await turn_away_if_banned(interaction)
 
     async def callback(self, interaction: discord.Interaction) -> None:
+        if self.action not in HANDLERS:
+            # A button from an older version, on a post that hasn't been brought up to date yet.
+            await interaction.response.send_message("That button is out of date. Use the event's latest post.",
+                                                    ephemeral=True)
+            return
         conn = db.get_connection()
         try:
-            tournament = db.get_tournament(conn, self.tournament_id)
+            if self.action in RESULTS_ACTIONS:
+                lobby = lobby_db.get_lobby(conn, self.target_id)
+                if lobby is None:
+                    await interaction.response.send_message("That lobby no longer exists.", ephemeral=True)
+                    return
+                await HANDLERS[self.action](interaction, conn, db.get_tournament(conn, lobby.tournament_id), lobby)
+                return
+            tournament = db.get_tournament(conn, self.target_id)
             if tournament is None or tournament["format"] != "lobbies":
                 await interaction.response.send_message("That event no longer exists.", ephemeral=True)
                 return
@@ -108,11 +116,12 @@ async def _for_a_lobby(interaction: discord.Interaction, conn: sqlite3.Connectio
 
 def _lobbies_to_act_on(conn: sqlite3.Connection, tournament: sqlite3.Row, action: str) -> list[lobby_db.Lobby]:
     """The lobbies an organizer might mean by pressing `action`: those still being played,
-    and for Confirm and Dispute, those with a report waiting."""
+    and for Finish, those whose races aren't over yet."""
     playing = [lobby for lobby in lobby_db.get_lobbies(conn, tournament["id"])
                if lobby_db.get_result(conn, lobby.id) is None]
-    if action in ("confirm", "dispute"):
-        return [lobby for lobby in playing if lobby_db.get_report(conn, lobby.id) is not None]
+    if action == "finish":
+        return [lobby for lobby in playing
+                if not lobby_db.races_over(lobby, lobby_db.get_finished_sides(conn, lobby.id))]
     return playing
 
 
@@ -141,17 +150,19 @@ class LobbyPicker(BotView):
             conn.close()
 
 
-def event_view(tournament_id: int, actions: list[str]) -> BotView:
+def event_view(target_id: int, buttons: list[lobby_posts.PostButton]) -> BotView:
     view = BotView(timeout=None)
-    for action in actions:
-        view.add_item(LobbyButton(action, tournament_id))
+    for button in buttons:
+        view.add_item(LobbyButton(button.action, target_id, button.label))
     return view
 
 
-def _post_view(state: lobby_posts.PostState, tournament_id: int) -> Optional[BotView]:
+def _post_view(state: lobby_posts.PostState, post: sqlite3.Row) -> Optional[BotView]:
     if not state.buttons:
         return None
-    return event_view(tournament_id, [BUTTON_ACTIONS[name][0] for name in state.buttons])
+    key = post["post_key"]
+    target_id = post["tournament_id"] if key == lobby_db.EVENT_POST else int(key.rsplit(":", 1)[1])
+    return event_view(target_id, state.buttons)
 
 
 # -- signing up --------------------------------------------------------------------------
@@ -367,8 +378,10 @@ class TeamPointsForm(BotModal):
         self.side = side
         self.fields: dict[int, discord.ui.TextInput] = {}
         for player in flow.lobby.teams[side].players:
+            default = flow.defaults.get(player)
             field = discord.ui.TextInput(label=flow.player_names[player][:FIELD_LABEL_LIMIT], max_length=3,
-                                         placeholder="Points, including the tiebreaker if played")
+                                         placeholder="Points, including the tiebreaker if played",
+                                         default=str(default) if default is not None else None)
             self.fields[player] = field
             self.add_item(field)
 
@@ -383,14 +396,18 @@ class TeamPointsForm(BotModal):
 
 
 class PointsEntry:
-    """Entering a lobby's points takes two forms, one per team, since a form holds at most
-    five fields. Discord won't open a form straight from another, so a button sits between."""
+    """Entering everyone's points in a lobby takes two forms, one per team, since a form
+    holds at most five fields. Discord won't open a form straight from another, so a button
+    sits between. `side` is the captain's whose points these are, or None for an
+    organizer's final points."""
 
-    def __init__(self, conn: sqlite3.Connection, lobby: lobby_db.Lobby) -> None:
+    def __init__(self, conn: sqlite3.Connection, lobby: lobby_db.Lobby, side: Optional[str]) -> None:
         self.lobby = lobby
+        self.side = side
         names = lobby_posts.Names(conn, lobby.tournament_id, str)
-        self.team_names = {side: lobby_posts.team_name(lobby, side, names) for side in lobby_db.SIDES}
+        self.team_names = {s: lobby_posts.team_name(lobby, s, names) for s in lobby_db.SIDES}
         self.player_names = {player: names.plain(player) for player in lobby.players}
+        self.defaults = lobby_flow.points_defaults(conn, lobby, side)
         self.entered: dict[int, str] = {}
 
     def next_step_view(self) -> BotView:
@@ -410,7 +427,7 @@ class PointsEntry:
             lobby = lobby_db.get_lobby(conn, self.lobby.id)
             if lobby is None or lobby.players != self.lobby.players:
                 await interaction.response.send_message(
-                    "The lobby's players changed while you were entering points. Press Report Result again.",
+                    "The lobby's players changed while you were entering points. Press the button again.",
                     ephemeral=True)
                 return
             tournament = db.get_tournament(conn, lobby.tournament_id)
@@ -419,38 +436,47 @@ class PointsEntry:
                 await interaction.response.send_message(points, ephemeral=True)
                 return
             role = lobby_flow.role_in(conn, lobby, interaction.user.id, is_organizer(interaction))
-            reply = lobby_flow.submit_report(conn, tournament, lobby, role, interaction.user.id, points)
+            if self.side is None:
+                reply = lobby_flow.finalize(conn, tournament, lobby, role, interaction.user.id, points)
+            else:
+                reply = lobby_flow.enter_points(conn, tournament, lobby, role, self.side, interaction.user.id, points)
             await interaction.response.send_message(reply, ephemeral=True)
             await sync_posts(interaction.client, conn, tournament["id"])
         finally:
             conn.close()
 
 
-async def open_report(interaction: discord.Interaction, conn: sqlite3.Connection, tournament: sqlite3.Row,
-                      lobby: lobby_db.Lobby) -> None:
+async def open_points(interaction: discord.Interaction, conn: sqlite3.Connection, tournament: sqlite3.Row,
+                      lobby: lobby_db.Lobby, side: Optional[str]) -> None:
+    """Open the points forms: for `side`'s captain, or with no side for an organizer's final points."""
     role = lobby_flow.role_in(conn, lobby, interaction.user.id, is_organizer(interaction))
-    problem = lobby_flow.report_problem(conn, tournament, lobby, role)
+    if side is None:
+        problem = lobby_flow.finalize_problem(conn, tournament, lobby, role)
+    else:
+        problem = lobby_flow.points_problem(conn, tournament, lobby, role, side)
     if problem is not None:
         await interaction.response.send_message(problem, ephemeral=True)
         return
-    await interaction.response.send_modal(TeamPointsForm(PointsEntry(conn, lobby), "A"))
+    await interaction.response.send_modal(TeamPointsForm(PointsEntry(conn, lobby, side), "A"))
 
 
-async def _report(interaction, conn, tournament, lobby) -> None:
-    await open_report(interaction, conn, tournament, lobby)
-
-
-async def _confirm(interaction, conn, tournament, lobby) -> None:
+async def _finish(interaction, conn, tournament, lobby) -> None:
     role = lobby_flow.role_in(conn, lobby, interaction.user.id, is_organizer(interaction))
-    await interaction.response.send_message(lobby_flow.confirm_report(conn, lobby, role, interaction.user.id),
+    await interaction.response.send_message(lobby_flow.finish(conn, tournament, lobby, role, interaction.user.id),
                                             ephemeral=True)
     await sync_posts(interaction.client, conn, tournament["id"])
 
 
-async def _dispute(interaction, conn, tournament, lobby) -> None:
-    role = lobby_flow.role_in(conn, lobby, interaction.user.id, is_organizer(interaction))
-    await interaction.response.send_message(lobby_flow.dispute_report(conn, lobby, role), ephemeral=True)
-    await sync_posts(interaction.client, conn, tournament["id"])
+async def _points_a(interaction, conn, tournament, lobby) -> None:
+    await open_points(interaction, conn, tournament, lobby, "A")
+
+
+async def _points_b(interaction, conn, tournament, lobby) -> None:
+    await open_points(interaction, conn, tournament, lobby, "B")
+
+
+async def _finalize(interaction, conn, tournament, lobby) -> None:
+    await open_points(interaction, conn, tournament, lobby, None)
 
 
 HANDLERS = {
@@ -460,26 +486,22 @@ HANDLERS = {
     "checkin": _check_in,
     "submitcode": _submit_code,
     "getcode": _get_code,
-    "report": _report,
-    "confirm": _confirm,
-    "dispute": _dispute,
+    "finish": _finish,
+    "pointsa": _points_a,
+    "pointsb": _points_b,
+    "finalize": _finalize,
 }
 
 
 # -- keeping posts up to date ------------------------------------------------------------
 
 async def sync_posts(client: discord.Client, conn: sqlite3.Connection, tournament_id: int) -> None:
-    """Bring the event's post up to date."""
+    """Bring the event's posts up to date."""
     for post in lobby_db.get_posts(conn, tournament_id):
         try:
             await _sync_post(client, conn, post)
         except Exception:
             log.exception("Couldn't update post %s of tournament %s", post["post_key"], tournament_id)
-
-
-def _shown(state: lobby_posts.PostState) -> str:
-    """What's recorded as shown, so a change to the buttons alone still edits the post."""
-    return state.text + "\n" + "|".join(state.buttons)
 
 
 async def _sync_post(client: discord.Client, conn: sqlite3.Connection, post: sqlite3.Row) -> None:
@@ -496,29 +518,29 @@ async def _sync_post(client: discord.Client, conn: sqlite3.Connection, post: sql
             return  # something else is sending it right now
         pinged, notify = note if note is not None else (post["pinged"], [])
         message = await send_public(client.get_channel(post["channel_id"]), state.text,
-                                    view=_post_view(state, tournament_id), notify=notify)
+                                    view=_post_view(state, post), notify=notify)
         if message is None:
             lobby_db.release_post_send(conn, tournament_id, key)
             return
-        if not lobby_db.take_over_post(conn, tournament_id, key, claim, message.id, _shown(state), pinged):
+        if not lobby_db.take_over_post(conn, tournament_id, key, claim, message.id, lobby_posts.shown(state), pinged):
             old = message.id  # the claim was given up as stuck, so this message isn't wanted
         else:
             old = post["message_id"]
         if old is not None and not await delete_message(client, post["channel_id"], old):
             db.keep_replaced_match_post(conn, post["channel_id"], old)
         return
-    if _shown(state) == post["shown"]:
+    if lobby_posts.shown(state) == post["shown"]:
         return
     channel = client.get_channel(post["channel_id"])
     if channel is None:
         return
     try:
         await channel.get_partial_message(post["message_id"]).edit(
-            content=state.text, view=_post_view(state, tournament_id))
+            content=state.text, view=_post_view(state, post))
     except discord.NotFound:
         lobby_db.mark_post_unsent(conn, tournament_id, key, post["message_id"])
         return
     except discord.HTTPException:
         log.exception("Couldn't update post %s of tournament %s", key, tournament_id)
         return
-    lobby_db.set_post_shown(conn, tournament_id, key, post["message_id"], _shown(state))
+    lobby_db.set_post_shown(conn, tournament_id, key, post["message_id"], lobby_posts.shown(state))

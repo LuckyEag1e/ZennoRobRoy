@@ -31,7 +31,7 @@ from common import (
 from embeds import EMBED_DESCRIPTION_LIMIT, mention
 from labels import CONSENT_NOTICE, OPTED_OUT_NOTE, draw_description, entrant_lines, join_within, name_held_message
 from lobby_flow import split_label
-from lobby_posting import CaptainChoice, event_view, leave_event, refresh_signups, start_signup, sync_posts
+from lobby_posting import SIGNUP_BUTTONS, CaptainChoice, event_view, leave_event, refresh_signups, start_signup, sync_posts
 from posting import MATCH_SLOTS_HELP, match_slots_problem
 from tournament_builder import (
     MAX_CLOSES_IN_HOURS,
@@ -377,7 +377,7 @@ class RegistrationCog(commands.Cog):
             announcement = signups_message(db.get_tournament(conn, tournament_id), 0)
             if five_v_five:
                 await interaction.response.send_message(announcement,
-                                                        view=event_view(tournament_id, ["register", "unregister"]))
+                                                        view=event_view(tournament_id, SIGNUP_BUTTONS))
             else:
                 await interaction.response.send_message(announcement)
             message = await interaction.original_response()

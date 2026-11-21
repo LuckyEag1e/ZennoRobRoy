@@ -1,5 +1,5 @@
 """What players, captains and organizers can do in a 5v5 event, and the private reply each
-gets: signing up, dropping out, check-in, room codes, and reporting points. The checks
+gets: signing up, dropping out, check-in, room codes, finishing, and entering points. The checks
 and wording live here so the bot and the CLI behave and read the same. Public posts are
 lobby_posts.py's job; every change here shows up on them."""
 
@@ -18,11 +18,11 @@ from labels import OPTED_OUT_NOTE, name_held_message
 from lobby_db import SIDES, Lobby
 from lobby_posts import (
     DRAFTER_HOST_URL,
-    CONFIRM,
-    REPORT_RESULT,
+    FINALIZE,
+    FINISH,
     SUBMIT_ROOM_CODE,
+    entry_due_at,
     register_command,
-    report_due_at,
     team_lines,
     team_name,
     Names,
@@ -388,20 +388,69 @@ def get_room_code(conn: sqlite3.Connection, tournament: sqlite3.Row, lobby: Lobb
     return text
 
 
-def report_problem(conn: sqlite3.Connection, tournament: sqlite3.Row, lobby: Lobby, role: Role) -> Optional[str]:
-    """Why someone can't report `lobby`'s points, or None if they can."""
-    if not role.captain and not role.organizer:
-        return "Only this lobby's captains or an organizer can report its points."
+def _playing_problem(conn: sqlite3.Connection, tournament: sqlite3.Row, lobby: Lobby) -> Optional[str]:
+    """Why `lobby`'s races can't be over yet, or None if they can be."""
     if not tournament["checkin_finished"]:
-        return "Points are reported after the races, once check-in is over."
-    if lobby.room_code is None and lobby_db.get_result(conn, lobby.id) is None:
-        return (f"Lobby {lobby.number} has no room yet, so there are no races to report. Create the room at "
+        return "The races start once check-in is over."
+    if lobby.room_code is None:
+        return (f"Lobby {lobby.number} has no room yet, so there are no races to finish. Create the room at "
                 f"{DRAFTER_HOST_URL}, then press **{SUBMIT_ROOM_CODE}**.")
     if not all(lobby.teams[side].players for side in SIDES):
         return "One of this lobby's teams has nobody left on it, so an organizer has to sort the lobby out first."
-    if lobby_db.get_result(conn, lobby.id) is not None and not role.organizer:
-        return "This lobby's result is already in. Ask an organizer if it needs correcting."
     return None
+
+
+def finish(conn: sqlite3.Connection, tournament: sqlite3.Row, lobby: Lobby, role: Role, user_id: int) -> str:
+    """A captain pressing Finish once the races are over; the lobby's results post goes up
+    once both have. An organizer's press finishes the lobby straight away, and so does a
+    second press from a captain who's also an organizer."""
+    if not role.captain and not role.organizer:
+        return "Only this lobby's captains or an organizer can finish it."
+    if lobby_db.get_result(conn, lobby.id) is not None:
+        return f"Lobby {lobby.number}'s result is already in."
+    problem = _playing_problem(conn, tournament, lobby)
+    if problem is not None:
+        return problem
+    finished = lobby_db.get_finished_sides(conn, lobby.id)
+    if lobby_db.races_over(lobby, finished):
+        return f"Lobby {lobby.number} is already finished: enter the points on its results post."
+    names = Names(conn, tournament["id"], str)
+    waiting = [lobby.teams[side].captain for side in SIDES
+               if side != role.side and side not in finished and lobby.teams[side].captain is not None]
+    if not role.captain or role.side in finished:
+        if not role.organizer:
+            return f"You've already pressed **{FINISH}**. Waiting for {' and '.join(names.plain(c) for c in waiting)}."
+        lobby_db.finish(conn, lobby.id, list(SIDES), user_id)
+        return f"✅ Finished lobby {lobby.number}. Its captains enter the points on its results post."
+    if lobby_db.finish(conn, lobby.id, [role.side], user_id):
+        return f"✅ Finished. Enter the points on lobby {lobby.number}'s results post."
+    reply = f"✅ Finished. Waiting for {' and '.join(names.plain(c) for c in waiting)} to press **{FINISH}** too."
+    if role.organizer:
+        reply += f" You're also an organizer: press **{FINISH}** again to finish the lobby without waiting."
+    return reply
+
+
+def points_problem(conn: sqlite3.Connection, tournament: sqlite3.Row, lobby: Lobby, role: Role, side: str
+                   ) -> Optional[str]:
+    """Why someone can't enter `side`'s captain's points for `lobby`, or None if they can."""
+    captain = lobby.teams[side].captain
+    if not role.captain or role.side != side:
+        name = Names(conn, tournament["id"], str).plain(captain) if captain is not None else "this team's captain"
+        hint = f" Organizers enter the final points with **{FINALIZE}** if the captains' don't match." \
+            if role.organizer else ""
+        return f"This button is for {name}.{hint}"
+    if lobby_db.get_result(conn, lobby.id) is not None:
+        return f"Lobby {lobby.number}'s result is already in. Ask an organizer if it needs correcting."
+    if not lobby_db.races_over(lobby, lobby_db.get_finished_sides(conn, lobby.id)):
+        return f"Points are entered once both captains press **{FINISH}**."
+    return None
+
+
+def finalize_problem(conn: sqlite3.Connection, tournament: sqlite3.Row, lobby: Lobby, role: Role) -> Optional[str]:
+    """Why someone can't record `lobby`'s final points, or None if they can."""
+    if not role.organizer:
+        return "Only organizers can finalize the points."
+    return _playing_problem(conn, tournament, lobby)
 
 
 def parse_points(lobby: Lobby, entered: dict[int, str]) -> dict[int, int] | str:
@@ -413,79 +462,68 @@ def parse_points(lobby: Lobby, entered: dict[int, str]) -> dict[int, int] | str:
             return "Enter each player's points as a whole number (0 if they scored none)."
         points[player] = int(text)
     if lobby_db.winning_side(lobby, points) is None:
-        return ("The teams are level on points. Play the tiebreaker track first, then report everyone's points with "
+        return ("The teams are level on points. Play the tiebreaker track first, then enter everyone's points with "
                 "the tiebreaker's included.")
     return points
 
 
-def submit_report(conn: sqlite3.Connection, tournament: sqlite3.Row, lobby: Lobby, role: Role, user_id: int,
-                  points: dict[int, int]) -> str:
-    """Save a captain's report for the other captain to confirm, or record an organizer's
-    at once."""
-    problem = report_problem(conn, tournament, lobby, role)
+def enter_points(conn: sqlite3.Connection, tournament: sqlite3.Row, lobby: Lobby, role: Role, side: str,
+                 user_id: int, points: dict[int, int]) -> str:
+    """A captain entering everyone's points. They're final when they match the other
+    captain's, or when the other team has no captain to enter any."""
+    problem = points_problem(conn, tournament, lobby, role, side)
     if problem is not None:
         return problem
-    if role.organizer and not role.captain:
-        lobby_db.record_result(conn, lobby.id, points, user_id)
-        return f"✅ Recorded the points for lobby {lobby.number}."
-    other = "B" if role.side == "A" else "A"
-    if lobby.teams[other].captain is None:
-        lobby_db.record_result(conn, lobby.id, points, user_id)
-        return (f"✅ Recorded the points for lobby {lobby.number}. The other team has no captain to confirm them, "
-                f"so an organizer can correct them if needed.")
-    lobby_db.submit_report(conn, lobby.id, user_id, role.side, points)
-    report = lobby_db.get_report(conn, lobby.id)
-    return (f"✅ Sent to the other captain. To correct the points before they're accepted "
-            f"<t:{int(report_due_at(report).timestamp())}:R>, press **{REPORT_RESULT}** again.")
+    if lobby_db.enter_points(conn, lobby.id, side, user_id, points):
+        return f"✅ Lobby {lobby.number}'s result is in."
+    names = Names(conn, tournament["id"], str)
+    other = names.plain(lobby.teams["B" if side == "A" else "A"].captain)
+    entries = lobby_db.get_entries(conn, lobby.id)
+    mismatched = lobby_db.mismatched_players(entries)
+    if mismatched:
+        return (f"Saved, but your points don't match {other}'s for {', '.join(names.plain(p) for p in mismatched)}. "
+                f"Check with them; whoever's wrong presses their button again to correct theirs.")
+    return (f"✅ Saved. They're final once {other}'s match, or <t:{int(entry_due_at(entries[side]).timestamp())}:R> "
+            f"if {other} doesn't enter any.")
 
 
-def _answerable_report(conn: sqlite3.Connection, lobby: Lobby, role: Role) -> lobby_db.Report | str:
-    report = lobby_db.get_report(conn, lobby.id)
-    if report is None:
-        return "There's no report waiting for an answer in this lobby."
-    if not role.organizer and (not role.captain or role.side == report.reporting_side):
-        return "Only the other team's captain can answer this report."
-    return report
+def finalize(conn: sqlite3.Connection, tournament: sqlite3.Row, lobby: Lobby, role: Role, user_id: int,
+             points: dict[int, int]) -> str:
+    """An organizer's points, final at once, whatever the captains entered."""
+    problem = finalize_problem(conn, tournament, lobby, role)
+    if problem is not None:
+        return problem
+    lobby_db.record_result(conn, lobby.id, points, user_id)
+    return f"✅ Recorded the final points for lobby {lobby.number}."
 
 
-def confirm_report(conn: sqlite3.Connection, lobby: Lobby, role: Role, user_id: int) -> str:
-    report = _answerable_report(conn, lobby, role)
-    if isinstance(report, str):
-        return report
-    if not lobby_db.accept_report(conn, report, user_id):
-        return "The report changed while you were looking at it. Check the event's post and answer again."
-    settled = " That settles the dispute." if report.disputed else ""
-    return f"✅ Confirmed. The result for lobby {lobby.number} is in.{settled}"
+def points_defaults(conn: sqlite3.Connection, lobby: Lobby, side: Optional[str]) -> dict[int, int]:
+    """Points to fill the form in with: a captain's own last entry, or for an organizer the
+    points both captains agree on."""
+    entries = lobby_db.get_entries(conn, lobby.id)
+    if side is not None:
+        return entries[side].points if side in entries else {}
+    if len(entries) < 2:
+        return next(iter(entries.values())).points if entries else {}
+    a, b = entries["A"].points, entries["B"].points
+    return {player: value for player, value in a.items() if b.get(player) == value}
 
 
-def dispute_report(conn: sqlite3.Connection, lobby: Lobby, role: Role) -> str:
-    report = _answerable_report(conn, lobby, role)
-    if isinstance(report, str):
-        return report
-    if report.disputed:
-        return "These points are already disputed. An organizer will settle them."
-    if not lobby_db.dispute_report(conn, report):
-        return "The report changed while you were looking at it. Check the event's post and answer again."
-    reporter = Names(conn, lobby.tournament_id, str).plain(lobby.teams[report.reporting_side].captain)
-    return (f"✅ Disputed the points for lobby {lobby.number}. Tell {reporter} what's wrong so they can correct them. "
-            f"If you agree with them after all, press **{CONFIRM}**.")
-
-
-def accept_due_reports(conn: sqlite3.Connection, now: datetime) -> None:
-    """Accept every report the other captain hasn't answered in time."""
-    for report in lobby_db.get_open_reports(conn):
-        if report_due_at(report) <= now:
+def accept_due_entries(conn: sqlite3.Connection, now: datetime) -> None:
+    """Accept one captain's points when the other captain hasn't entered any in time."""
+    for entry in lobby_db.get_lone_entries(conn):
+        if entry_due_at(entry) <= now:
             try:
-                lobby_db.accept_report(conn, report, None)
+                lobby_db.accept_lone_entry(conn, entry)
             except Exception:
-                log.exception("Couldn't accept the report for lobby %s", report.lobby_id)
+                log.exception("Couldn't accept the points for lobby %s", entry.lobby_id)
 
 
 def tend(conn: sqlite3.Connection, now: Optional[datetime] = None) -> list[int]:
-    """The timed steps of every 5v5 event: ending check-in and accepting unanswered
-    reports. Returns the events whose check-in it ended."""
+    """The timed steps of every 5v5 event: ending check-in and accepting one captain's
+    points nobody matched in time. Returns the events whose check-in it ended."""
     finished = finish_due_checkins(conn)
-    accept_due_reports(conn, now or datetime.now(timezone.utc))
+    accept_due_entries(conn, now or datetime.now(timezone.utc))
     return finished
 
 

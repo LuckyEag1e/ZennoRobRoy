@@ -1,6 +1,7 @@
-"""What a 5v5 event's one public post says at each step, and which buttons it carries: every
-lobby's teams, the waitlist, check-in, each lobby's room and points, and the results.
-Shared by the bot and the CLI, which do the posting."""
+"""What a 5v5 event's public posts say at each step, and which buttons they carry. The event
+post holds every lobby's teams, the waitlist, check-in, each lobby's room and its result,
+and each lobby gets a results post once its captains press Finish, where they enter the
+points. Shared by the bot and the CLI, which do the posting."""
 
 from __future__ import annotations
 
@@ -14,8 +15,8 @@ import lobby_db
 from lobby_db import SIDES, Lobby
 
 DRAFTER_HOST_URL = "https://drafter.uma.guide/host"
-# A captain's report is accepted this long after it last changed, unless the other captain
-# answers first. The same 10 minutes a bracket match's vote waits.
+# When only one captain has entered the points, they're accepted this long after their last
+# change. The same 10 minutes a bracket match's vote waits.
 ANSWER_WITHIN = timedelta(minutes=10)
 
 # Button names, each made into a real button by the bot and shown in brackets by the CLI.
@@ -23,15 +24,30 @@ START_CHECKIN = "Start Check-In"
 CHECK_IN = "Check In"
 SUBMIT_ROOM_CODE = "Submit Room Code"
 GET_ROOM_CODE = "Get Room Code"
-REPORT_RESULT = "Report Result"
-CONFIRM = "Confirm"
-DISPUTE = "Dispute"
+FINISH = "Finish"
+FINALIZE = "Finalize Scores"
+
+
+@dataclass(frozen=True)
+class PostButton:
+    label: str
+    action: str  # what the bot's button does (lobby_posting.HANDLERS)
+
+
+EVENT_BUTTONS = {name: PostButton(name, action) for name, action in (
+    (START_CHECKIN, "startcheckin"), (CHECK_IN, "checkin"), (SUBMIT_ROOM_CODE, "submitcode"),
+    (GET_ROOM_CODE, "getcode"), (FINISH, "finish"))}
+
+
+def points_button_label(captain_name: str) -> str:
+    """The results post's button for one captain to enter the points."""
+    return f"{captain_name}'s Results"
 
 
 @dataclass
 class PostState:
     text: str
-    buttons: list[str]
+    buttons: list[PostButton]
     # What the post notifies people about, and who. Each audience entry is (why, user id).
     # When the phase changes, the post is sent afresh notifying the whole audience, since an
     # edit notifies nobody. Within a phase it's sent afresh only for entries that are new,
@@ -49,8 +65,9 @@ def register_command(name: str) -> str:
     return f"`/register tournament:{name} captain:<your choice>`"
 
 
-def report_due_at(report: lobby_db.Report) -> datetime:
-    return db.from_db_time(report.changed_at) + ANSWER_WITHIN
+def entry_due_at(entry: lobby_db.Entry) -> datetime:
+    """When one captain's points are accepted if the other captain enters none."""
+    return db.from_db_time(entry.changed_at) + ANSWER_WITHIN
 
 
 def _when(moment: datetime, style: str = "R") -> str:
@@ -128,35 +145,27 @@ def missing_captain_lines(lobby: Lobby, names: Names, signups_open: bool) -> lis
 
 
 def _lobby_status(conn: sqlite3.Connection, lobby: Lobby, names: Names, player_label: Callable[[int], str]
-                  ) -> tuple[list[str], Optional[lobby_db.Report]]:
-    """A lobby's team lines and where it's up to once check-in is over, and its report
-    if one is waiting for an answer."""
+                  ) -> list[str]:
+    """A lobby's team lines and where it's up to once check-in is over."""
     result = lobby_db.get_result(conn, lobby.id)
     if result is not None:
         winner = result.winning_side
-        return team_lines(lobby, names, False, result.points) + [f"🏆 {team_name(lobby, winner, names)} wins"], None
-    report = lobby_db.get_report(conn, lobby.id)
-    if report is not None:
-        other = lobby.teams["B" if report.reporting_side == "A" else "A"].captain
-        lines = team_lines(lobby, names, False, report.points)
-        if report.disputed:
-            reporter = lobby.teams[report.reporting_side].captain
-            disputer = names(other) if other is not None else "The other captain"
-            return lines + [f"⚠️ {disputer} disputed these points. {names(reporter)}: correct them with "
-                            f"**{REPORT_RESULT}**. {disputer}: press **{CONFIRM}** if you agree after all. Organizers: "
-                            f"**{CONFIRM}** accepts these points, and **{REPORT_RESULT}** enters the right ones."], report
-        answer = names(other) if other is not None else "The other captain"
-        return lines + [f"📋 {answer}: press **{CONFIRM}** or **{DISPUTE}** on these points. They're accepted "
-                        f"{_when(report_due_at(report))} otherwise."], report
+        return team_lines(lobby, names, False, result.points) + [f"🏆 {team_name(lobby, winner, names)} wins"]
     lines = team_lines(lobby, names, False)
+    finished = lobby_db.get_finished_sides(conn, lobby.id)
     missing = missing_captain_lines(lobby, names, signups_open=False)
+    if lobby_db.races_over(lobby, finished):
+        return lines + ["🏁 Races over: the captains enter the points on the lobby's results post below"]
     if missing:
-        lines += missing
-    elif lobby.room_code is None:
-        lines.append("Waiting for a captain to create the room")
-    else:
-        lines.append(f"🎮 Room ready, hosted by {player_label(lobby.host_user_id)}")
-    return lines, None
+        return lines + missing
+    if lobby.room_code is None:
+        return lines + ["Waiting for a captain to create the room"]
+    lines.append(f"🎮 Room ready, hosted by {player_label(lobby.host_user_id)}")
+    waiting = [lobby.teams[side].captain for side in SIDES if side not in finished]
+    if finished:
+        lines.append(f"🏁 {' and '.join(names(c) for c in lobby.captains if lobby.side_of(c) in finished)} pressed "
+                     f"**{FINISH}**. Waiting for {' and '.join(names(c) for c in waiting)}.")
+    return lines
 
 
 def describe_event(conn: sqlite3.Connection, tournament: sqlite3.Row, player_label: Callable[[int], str]) -> PostState:
@@ -168,14 +177,10 @@ def describe_event(conn: sqlite3.Connection, tournament: sqlite3.Row, player_lab
     finished = bool(tournament["checkin_finished"])
     starts = _start_line(tournament) if not finished else ""
     lines = [f"🎌 **{name}**{starts}"]
-    reports = []
     for lobby in drawn:
         lines += ["", f"**Lobby {lobby.number}**"]
         if finished:
-            status, report = _lobby_status(conn, lobby, names, player_label)
-            lines += status
-            if report is not None:
-                reports.append((lobby, report))
+            lines += _lobby_status(conn, lobby, names, player_label)
         else:
             lines += team_lines(lobby, names, running) + missing_captain_lines(lobby, names, signups_open=True)
     waiting = [names(t) + (names.checkin_mark(t) if running else "") for t in waitlist]
@@ -191,20 +196,20 @@ def describe_event(conn: sqlite3.Connection, tournament: sqlite3.Row, player_lab
     if done:
         return PostState(_fit(lines + ["", "🏁 Every lobby has finished. Thanks for playing!"]), [])
     if finished:
-        playing = [lobby for lobby in drawn if lobby_db.get_result(conn, lobby.id) is None]
+        playing = [lobby for lobby in drawn if lobby_db.get_result(conn, lobby.id) is None
+                   and not lobby_db.races_over(lobby, lobby_db.get_finished_sides(conn, lobby.id))]
         if any(lobby.room_code is None for lobby in playing):
             lines += ["", f"**Captains:** create the room at {DRAFTER_HOST_URL}, then press **{SUBMIT_ROOM_CODE}**."]
-        lines += ["", f"**Everyone:** press **{GET_ROOM_CODE}** once your room is ready. After the races, a captain "
-                      f"presses **{REPORT_RESULT}** (if the teams are level on points, play the tiebreaker first)."]
-        buttons = [SUBMIT_ROOM_CODE, GET_ROOM_CODE, REPORT_RESULT] + ([CONFIRM, DISPUTE] if reports else [])
-        answering = [(f"report:{lobby.id}:{report.changed_at}", user_id) for lobby, report in reports
-                     if not report.disputed
-                     for user_id in names.user_ids([c for c in lobby.captains if lobby.side_of(c) != report.reporting_side])]
-        # A dispute pings the captain who reported, so they know to correct the points.
-        disputes = [(f"dispute:{lobby.id}:{report.changed_at}", user_id) for lobby, report in reports
-                    if report.disputed
-                    for user_id in names.user_ids([lobby.teams[report.reporting_side].captain])]
-        return PostState(_fit(lines), buttons, "play", everyone + answering + disputes)
+        if playing:
+            lines += ["", f"**Everyone:** press **{GET_ROOM_CODE}** once your room is ready.",
+                      f"**Captains:** when the races are over (play the tiebreaker first if the teams are level on "
+                      f"points), both press **{FINISH}**. You'll each enter the points on your lobby's results post."]
+        buttons = [EVENT_BUTTONS[SUBMIT_ROOM_CODE], EVENT_BUTTONS[GET_ROOM_CODE]] + (
+            [EVENT_BUTTONS[FINISH]] if playing else [])
+        # Once one captain presses Finish, the other is pinged to press it too.
+        finishing = [(f"finish:{lobby.id}", user_id) for lobby in playing
+                     for user_id in _waiting_to_finish(conn, lobby, names)]
+        return PostState(_fit(lines), buttons, "play", everyone + finishing)
     if running:
         ends = db.from_db_time(tournament["checkin_ends_at"])
         if ends <= datetime.now(timezone.utc) and lobby_db.teams_without_captain(conn, tournament["id"]):
@@ -213,10 +218,62 @@ def describe_event(conn: sqlite3.Connection, tournament: sqlite3.Row, player_lab
             when = f"is open until {_when(ends, 't')} ({_when(ends)})"
         lines += ["", f"✅ **Check-in {when}**: press **{CHECK_IN}**. Anyone in a lobby who hasn't checked in by "
                       f"then is replaced by the next checked-in player on the waitlist."]
-        return PostState(_fit(lines), [CHECK_IN], "checkin", everyone + waiters)
+        return PostState(_fit(lines), [EVENT_BUTTONS[CHECK_IN]], "checkin", everyone + waiters)
     lines += ["", f"Check-in opens before the start, and you'll be pinged here. Can't make it? "
                   f"`/match dropout tournament:{name}`"]
-    return PostState(_fit(lines), [START_CHECKIN], "formed", everyone + waiters)
+    return PostState(_fit(lines), [EVENT_BUTTONS[START_CHECKIN]], "formed", everyone + waiters)
+
+
+def _waiting_to_finish(conn: sqlite3.Connection, lobby: Lobby, names: Names) -> list[int]:
+    """The captains still to press Finish once the other one has."""
+    finished = lobby_db.get_finished_sides(conn, lobby.id)
+    if not finished:
+        return []
+    return names.user_ids([lobby.teams[side].captain for side in SIDES
+                           if side not in finished and lobby.teams[side].captain is not None])
+
+
+def describe_results(conn: sqlite3.Connection, lobby: Lobby, player_label: Callable[[int], str]) -> PostState:
+    """A lobby's results post: each captain enters everyone's points, and matching points
+    are final. Points that don't match are shown so the captains can correct theirs, or an
+    organizer can finalize them."""
+    tournament = db.get_tournament(conn, lobby.tournament_id)
+    names = Names(conn, lobby.tournament_id, player_label)
+    title = f"📋 **{tournament['name']} · Lobby {lobby.number} results**"
+    result = lobby_db.get_result(conn, lobby.id)
+    if result is not None:
+        winner = team_name(lobby, result.winning_side, names)
+        return PostState(_fit([title, ""] + team_lines(lobby, names, False, result.points)
+                              + ["", f"🏆 **{winner} wins!** Congratulations, and thanks for playing."]), [])
+    captains = {side: lobby.teams[side].captain for side in SIDES if lobby.teams[side].captain is not None}
+    entries = lobby_db.get_entries(conn, lobby.id)
+    buttons = [PostButton(points_button_label(names.plain(captain)), f"points{side.lower()}")
+               for side, captain in captains.items()]
+    lines = [title, "", f"{' and '.join(names(c) for c in captains.values())}: each press the button with your name "
+                        f"and enter every player's points, including the tiebreaker if one was played. Points you "
+                        f"both enter the same are final."]
+    mismatched = lobby_db.mismatched_players(entries)
+    if mismatched:
+        a, b = (names.plain(lobby.teams[side].captain) for side in SIDES)
+        lines += ["", "⚠️ **The points don't match** for: " + "; ".join(
+            f"{names(p)} ({a}: {entries['A'].points[p]}, {b}: {entries['B'].points.get(p)})" for p in mismatched),
+            "**Captains:** check with each other, and the one who's wrong presses their button to correct theirs. "
+            "Once they match, they're final.",
+            f"**Organizers:** press **{FINALIZE}** to enter the right points."]
+        audience = [(f"mismatch:{entries['A'].changed_at}:{entries['B'].changed_at}", user_id)
+                    for user_id in names.user_ids(list(captains.values()))]
+        return PostState(_fit(lines), buttons + [PostButton(FINALIZE, "finalize")], "points",
+                         [("points", u) for u in names.user_ids(list(captains.values()))] + audience)
+    lines.append("")
+    for side, captain in captains.items():
+        lines.append(f"✅ {names(captain)} has entered points" if side in entries
+                     else f"⏳ Waiting for {names(captain)}")
+    if len(entries) == 1 and len(captains) == 2:
+        [entry] = entries.values()
+        other = next(c for side, c in captains.items() if side != entry.side)
+        lines.append(f"If {names(other)} doesn't enter theirs, {names.plain(captains[entry.side])}'s are accepted "
+                     f"{_when(entry_due_at(entry))}.")
+    return PostState(_fit(lines), buttons, "points", [("points", u) for u in names.user_ids(list(captains.values()))])
 
 
 def _fit(lines: list[str]) -> str:
@@ -238,9 +295,20 @@ def _start_line(tournament: sqlite3.Row) -> str:
 
 def describe(conn: sqlite3.Connection, post: sqlite3.Row, player_label: Callable[[int], str]) -> Optional[PostState]:
     """What `post` should show now, or None for a post that's no longer used."""
-    if post["post_key"] != lobby_db.EVENT_POST:
-        return None
-    return describe_event(conn, db.get_tournament(conn, post["tournament_id"]), player_label)
+    key = post["post_key"]
+    if key == lobby_db.EVENT_POST:
+        return describe_event(conn, db.get_tournament(conn, post["tournament_id"]), player_label)
+    prefix = lobby_db.results_post_key(0)[:-1]
+    if key.startswith(prefix) and key[len(prefix):].isdigit():
+        lobby = lobby_db.get_lobby(conn, int(key[len(prefix):]))
+        if lobby is not None:
+            return describe_results(conn, lobby, player_label)
+    return None
+
+
+def shown(state: PostState) -> str:
+    """What's recorded as a post's content, so a change to the buttons alone still edits it."""
+    return state.text + "\n" + "|".join(button.label for button in state.buttons)
 
 
 def parse_pinged(pinged: Optional[str]) -> tuple[Optional[str], set[str]]:

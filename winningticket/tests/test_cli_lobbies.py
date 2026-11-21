@@ -58,14 +58,22 @@ def test_a_5v5_event_from_the_cli(repl, capsys, monkeypatch):
     repl.onecmd("lobby_roomcode Duel XYZ")
     assert "Saved room code XYZ" in capsys.readouterr().out
 
-    answers = iter(["8" if player in lobby.teams["A"].players else "1" for player in lobby.players])
+    repl.onecmd("lobby_finish Duel")
+    assert "Waiting for" in capsys.readouterr().out
+    repl.onecmd(f"as {captain_b} CaptainB")
+    repl.onecmd("lobby_finish Duel")
+    out = capsys.readouterr().out
+    assert "results post" in out and "Lobby 1 results" in out
+
+    scores = ["8" if player in lobby.teams["A"].players else "1" for player in lobby.players]
+    answers = iter(scores * 2)
     monkeypatch.setattr("builtins.input", lambda prompt="": next(answers))
     repl.onecmd("lobby_report Duel")
-    assert "Sent to the other captain" in capsys.readouterr().out
-    repl.onecmd(f"as {captain_b} CaptainB")
-    repl.onecmd("lobby_confirm Duel")
+    assert "They're final once" in capsys.readouterr().out
+    repl.onecmd(f"as {captain_a} CaptainA")
+    repl.onecmd("lobby_report Duel")
     out = capsys.readouterr().out
-    assert "Confirmed" in out and "Every lobby has finished" in out
+    assert "result is in" in out and "Every lobby has finished" in out
 
     repl.onecmd("as 1 tester")
     repl.onecmd("conclude Duel")

@@ -13,6 +13,7 @@ import re
 import shlex
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Optional
 
 import csv_import
 import coordination
@@ -203,12 +204,12 @@ class WinningTicketCLI(cmd.Cmd):
         if state is None:
             return
         note = lobby_posts.notification(state, post["pinged"])
-        shown = state.text + "\n" + "|".join(state.buttons)
+        shown = lobby_posts.shown(state)
         fresh = post["message_id"] is None or note is not None
         if not fresh and shown == post["shown"]:
             return
         notified = f" notifying {', '.join(user_label(u) for u in note[1])}" if note and note[1] else ""
-        buttons = "".join(f" [{name}]" for name in state.buttons)
+        buttons = "".join(f" [{button.label}]" for button in state.buttons)
         print(f"(5v5 post{'' if fresh else ' edited'}{notified}) {state.text}{buttons}".replace("**", ""))
         key = post["post_key"]
         if fresh:
@@ -1289,37 +1290,49 @@ class WinningTicketCLI(cmd.Cmd):
             tournament, lobby, role = found
             print(lobby_flow.get_room_code(self.conn, tournament, lobby, role).replace("**", ""))
 
+    def do_lobby_finish(self, arg: str) -> None:
+        "Say your lobby's races are over (captains and organizers): lobby_finish <name> [lobby]"
+        found = self._lobby_and_role(shlex.split(arg))
+        if found is not None:
+            tournament, lobby, role = found
+            self._say(lobby_flow.finish(self.conn, tournament, lobby, role, self.user_id))
+
     def do_lobby_report(self, arg: str) -> None:
-        "Report everyone's points in a lobby (captains and organizers), asked player by player: lobby_report <name> [lobby]"
+        "Enter everyone's points in your lobby as its captain, asked player by player: lobby_report <name> [lobby]"
         found = self._lobby_and_role(shlex.split(arg))
         if found is None:
             return
         tournament, lobby, role = found
-        problem = lobby_flow.report_problem(self.conn, tournament, lobby, role)
+        side = role.side if role.captain else None
+        if side is None:
+            print("Only a lobby's captains enter its points. Organizers use lobby_finalize.")
+            return
+        points = self._ask_points(tournament, lobby, lobby_flow.points_problem(self.conn, tournament, lobby, role, side))
+        if points is not None:
+            self._say(lobby_flow.enter_points(self.conn, tournament, lobby, role, side, self.user_id, points))
+
+    def do_lobby_finalize(self, arg: str) -> None:
+        "Enter a lobby's final points (organizers), asked player by player: lobby_finalize <name> [lobby]"
+        found = self._lobby_and_role(shlex.split(arg))
+        if found is None:
+            return
+        tournament, lobby, role = found
+        points = self._ask_points(tournament, lobby, lobby_flow.finalize_problem(self.conn, tournament, lobby, role))
+        if points is not None:
+            self._say(lobby_flow.finalize(self.conn, tournament, lobby, role, self.user_id, points))
+
+    def _ask_points(self, tournament, lobby, problem: Optional[str]) -> Optional[dict[int, int]]:
+        """Everyone's points, asked player by player, or None after saying why not."""
         if problem is not None:
             print(problem.replace("**", ""))
-            return
+            return None
         names = lobby_posts.Names(self.conn, tournament["id"], user_label)
         entered = {player: input(f"{names.plain(player)}'s points: ") for player in lobby.players}
         points = lobby_flow.parse_points(lobby, entered)
         if isinstance(points, str):
             print(points)
-            return
-        self._say(lobby_flow.submit_report(self.conn, tournament, lobby, role, self.user_id, points))
-
-    def do_lobby_confirm(self, arg: str) -> None:
-        "Confirm the other captain's report: lobby_confirm <name> [lobby]"
-        found = self._lobby_and_role(shlex.split(arg))
-        if found is not None:
-            _, lobby, role = found
-            self._say(lobby_flow.confirm_report(self.conn, lobby, role, self.user_id))
-
-    def do_lobby_dispute(self, arg: str) -> None:
-        "Dispute the other captain's report: lobby_dispute <name> [lobby]"
-        found = self._lobby_and_role(shlex.split(arg))
-        if found is not None:
-            _, lobby, role = found
-            self._say(lobby_flow.dispute_report(self.conn, lobby, role))
+            return None
+        return points
 
     def do_admin_setcaptain(self, arg: str) -> None:
         "Make an entrant captain of their 5v5 team: admin_setcaptain <name> <entrant>"

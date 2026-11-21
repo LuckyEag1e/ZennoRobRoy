@@ -301,18 +301,28 @@ CREATE TABLE IF NOT EXISTS lobby_waitlist (
 );
 -- A captain's report of everyone's points, waiting for the other captain. `points` is
 -- JSON, entrant id to points.
-CREATE TABLE IF NOT EXISTS lobby_reports (
-    lobby_id        INTEGER PRIMARY KEY REFERENCES lobbies(id) ON DELETE CASCADE,
-    reported_by     INTEGER NOT NULL,
-    reporting_side  TEXT NOT NULL,
+-- A captain pressing Finish once their lobby's races are over (an organizer's press fills in
+-- both sides). Points are entered once both have.
+CREATE TABLE IF NOT EXISTS lobby_finishes (
+    lobby_id        INTEGER NOT NULL REFERENCES lobbies(id) ON DELETE CASCADE,
+    side            TEXT NOT NULL,
+    finished_by     INTEGER NOT NULL,
+    finished_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    PRIMARY KEY (lobby_id, side)
+);
+-- Each captain's own entry of everyone's points in their lobby. Matching entries are the result.
+CREATE TABLE IF NOT EXISTS lobby_entries (
+    lobby_id        INTEGER NOT NULL REFERENCES lobbies(id) ON DELETE CASCADE,
+    side            TEXT NOT NULL,
     points          TEXT NOT NULL,
+    entered_by      INTEGER NOT NULL,
     changed_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
-    disputed_at     TEXT
+    PRIMARY KEY (lobby_id, side)
 );
 CREATE TABLE IF NOT EXISTS lobby_results (
     lobby_id        INTEGER PRIMARY KEY REFERENCES lobbies(id) ON DELETE CASCADE,
     winning_side    TEXT NOT NULL,
-    recorded_by     INTEGER,  -- NULL when a report was accepted for want of an answer
+    recorded_by     INTEGER,  -- NULL when one captain's points were accepted for want of the other's
     recorded_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );
 CREATE TABLE IF NOT EXISTS lobby_points (
@@ -321,9 +331,10 @@ CREATE TABLE IF NOT EXISTS lobby_points (
     points          INTEGER NOT NULL,
     PRIMARY KEY (lobby_id, team_id)
 );
--- A 5v5 event's one public post (`post_key` 'event'; other keys are from older versions,
--- which had a post per lobby, and are skipped). It's edited as things change, and sent
--- afresh when someone needs notifying, like match_posts.
+-- A 5v5 event's public posts: the event's own (`post_key` 'event'), and each lobby's results
+-- post ('results:<lobby id>') once its races are over. Other keys are from older versions and
+-- are skipped. Each is edited as things change, and sent afresh when someone needs
+-- notifying, like match_posts.
 CREATE TABLE IF NOT EXISTS lobby_posts (
     tournament_id   INTEGER NOT NULL REFERENCES tournaments(id) ON DELETE CASCADE,
     post_key        TEXT NOT NULL,
@@ -392,6 +403,9 @@ def init_db(conn: sqlite3.Connection) -> None:
         _add_column_if_missing(conn, "teams", "withdrawn_at", "TEXT")
         _add_column_if_missing(conn, "match_results", "walkover", "INTEGER NOT NULL DEFAULT 0")
         _move_report_posts(conn)
+        # One captain's report that the other confirmed or disputed, which each captain
+        # entering the points (lobby_entries) replaced before any release.
+        conn.execute("DROP TABLE IF EXISTS lobby_reports")
     conn.commit()
 
 

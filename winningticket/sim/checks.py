@@ -153,8 +153,9 @@ def _lobby_problems(conn: sqlite3.Connection, tournament: sqlite3.Row) -> list[s
                 problems.append(f"'{name}' lobby {lobby.number} team {side}'s captain isn't on the team")
             elif team.captain is not None and signups[team.captain].user_id is None:
                 problems.append(f"'{name}' lobby {lobby.number} team {side}'s captain has no account")
-        if lobby_db.get_result(conn, lobby.id) is not None and lobby_db.get_report(conn, lobby.id) is not None:
-            problems.append(f"'{name}' lobby {lobby.number} still has a report waiting after its result")
+        entries = lobby_db.get_entries(conn, lobby.id)
+        if entries and not lobby_db.races_over(lobby, lobby_db.get_finished_sides(conn, lobby.id)):
+            problems.append(f"'{name}' lobby {lobby.number} has points entered before both captains finished")
     finished = bool(drawn) and all(lobby_db.get_result(conn, lobby.id) is not None for lobby in drawn)
     if tournament["status"] == "in_progress" and finished:
         problems.append(f"'{name}' has every lobby's result but is still in_progress")

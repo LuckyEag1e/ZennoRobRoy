@@ -1,7 +1,7 @@
 """A simulated 5v5 event, played through the real cogs from sign-ups to the conclude post.
 Players sign up by button or command, one drops out, a guest is disqualified, some miss
-check-in, captains host and report (sometimes tied or disputed), and organizers fix lobbies
-by hand."""
+check-in, captains host, finish and enter the points (sometimes tied, mismatched or left to
+one captain), and organizers fix lobbies by hand."""
 
 from __future__ import annotations
 
@@ -68,6 +68,9 @@ class LobbyEventRun:
     def _event_post(self):
         return self._post(f"🎌 **{NAME}**")
 
+    def _results_post(self, lobby: lobby_db.Lobby):
+        return self._post(f"📋 **{NAME} · Lobby {lobby.number} results**")
+
     async def _tend(self) -> None:
         cog = self.sim.cogs["LobbiesCog"]
         await self.sim.run_background("5v5 check", lambda: cog.tend_lobbies.coro(cog))
@@ -118,7 +121,7 @@ class LobbyEventRun:
             if self.status() != "in_progress":
                 break
             await self._settle_disputes()
-            self._shift("UPDATE lobby_reports SET changed_at = strftime('%Y-%m-%dT%H:%M:%fZ', changed_at, '-11 minutes') "
+            self._shift("UPDATE lobby_entries SET changed_at = strftime('%Y-%m-%dT%H:%M:%fZ', changed_at, '-11 minutes') "
                         "WHERE lobby_id IN (SELECT id FROM lobbies WHERE tournament_id = ?)")
             await self._tend()
         await self.sim.run(org, "tournament conclude", name=NAME)
@@ -291,7 +294,7 @@ class LobbyEventRun:
                 await self.sim.click(outsider.user, post, "Get Room Code")  # refused
             await self.sim.click(self.rng.choice(players).user, post, "Get Room Code")  # not in yet
             if self.rng.random() < 0.3:
-                await self.sim.click(host.user, post, "Report Result")  # refused: no room yet
+                await self.sim.click(host.user, post, lobby_posts.FINISH)  # refused: no room yet
             if self.rng.random() < 0.3:
                 # The host's room is set up by an organizer, who gives the code by command.
                 await self.sim.run(self.organizer.user, "lobby roomcode", tournament=NAME, code=f"ORG{lobby.number}",
@@ -307,65 +310,98 @@ class LobbyEventRun:
             post = self._event_post() or post
             for player in players:
                 await self.sim.click(player.user, post, "Get Room Code")
-            await self._report(host, other, lobby)
+            await self._finish(host, other, lobby)
+            await self._enter_results(host, other, lobby)
 
     def _points(self, lobby: lobby_db.Lobby, tied: bool = False) -> dict[int, str]:
         if tied:
             return {p: "5" for p in lobby.players}
         return {p: str(self.rng.randint(0, 20)) for p in lobby.players}
 
-    async def _report(self, host: Player, other: Player, lobby: lobby_db.Lobby) -> None:
-        post = self._event_post()
-        tied = self.rng.random() < 0.3
-        points = self._points(lobby, tied)
-        if not tied and lobby_db.winning_side(lobby, {p: int(v) for p, v in points.items()}) is None:
-            points[lobby.players[0]] = str(int(points[lobby.players[0]]) + 1)
-        await self._enter_points(host, post, lobby, points)
-        if tied:
-            points = self._points(lobby)
-            points[lobby.players[0]] = "99"  # the tiebreaker settles it
-            await self._enter_points(host, post, lobby, points)
-        post = self._event_post()
-        if post is None:
-            return
-        answer = self.rng.choice(["Confirm", "Dispute", None])
-        await self.sim.click(host.user, post, "Confirm")  # refused: it's their own report
-        if answer is not None:
-            await self.sim.click(other.user, post, answer)
-        if answer == "Dispute" and self.rng.random() < 0.4:
-            # They talk it over, and the captain who disputed agrees after all.
-            await self.sim.click(other.user, self._event_post(), "Confirm")
+    async def _finish(self, host: Player, other: Player, lobby: lobby_db.Lobby) -> None:
+        """The races are over: the host presses Finish, then the other captain does, or
+        sometimes an organizer finishes the lobby for them."""
+        await self.sim.click(host.user, self._event_post(), lobby_posts.FINISH)
+        await self.sim.click(host.user, self._event_post(), lobby_posts.FINISH)  # already pressed
+        if self.rng.random() < 0.2:
+            await self.sim.run(self.organizer.user, "lobby finish", tournament=NAME, lobby=lobby.number)
+        else:
+            await self.sim.click(other.user, self._event_post(), lobby_posts.FINISH)
+        await self._tend()
 
-    async def _enter_points(self, reporter: Player, post, lobby: lobby_db.Lobby, points: dict[int, str]) -> None:
-        click = await self.sim.click(reporter.user, post, lobby_posts.REPORT_RESULT)
+    def _labels(self, lobby: lobby_db.Lobby) -> dict[str, str]:
+        names = self._query(lambda conn: {t: row["name"] for t, row in db.get_teams(conn, self.tournament_id).items()})
+        return {side: lobby_posts.points_button_label(names[lobby.teams[side].captain]) for side in lobby_db.SIDES}
+
+    def _winning_points(self, lobby: lobby_db.Lobby) -> dict[int, str]:
+        points = self._points(lobby)
+        if lobby_db.winning_side(lobby, {p: int(v) for p, v in points.items()}) is None:
+            points[lobby.players[0]] = str(int(points[lobby.players[0]]) + 1)
+        return points
+
+    async def _enter_results(self, host: Player, other: Player, lobby: lobby_db.Lobby) -> None:
+        """Each captain enters everyone's points on the results post: they match, or one is
+        wrong and corrects theirs, or they're left for an organizer, or only one captain
+        enters any and they're accepted when the other's time runs out."""
+        post = self._results_post(lobby)
+        if post is None:
+            self.sim._problem(f"lobby {lobby.number} has no results post after both captains finished")
+            return
+        labels = self._labels(lobby)
+        sides = {player.user.id: side for side in lobby_db.SIDES for player in (host, other)
+                 if self._user_of().get(lobby.teams[side].captain) == player.user.id}
+        await self.sim.click(host.user, post, labels["B" if sides.get(host.user.id) == "A" else "A"])  # not theirs
+        points = self._winning_points(lobby)
+        if self.rng.random() < 0.3:
+            await self._enter_points(host, labels[sides[host.user.id]], lobby, self._points(lobby, tied=True))
+        await self._enter_points(host, labels[sides[host.user.id]], lobby, points)
+        outcome = self.rng.choice(["match", "corrected", "organizer", "alone"])
+        if outcome == "alone":
+            return
+        if outcome == "match":
+            await self._enter_points(other, labels[sides[other.user.id]], lobby, points)
+            return
+        wrong = dict(points)
+        wrong[lobby.players[0]] = str(int(wrong[lobby.players[0]]) + 50)
+        if lobby_db.winning_side(lobby, {p: int(v) for p, v in wrong.items()}) is None:
+            wrong[lobby.players[1]] = str(int(wrong[lobby.players[1]]) + 1)
+        await self._enter_points(other, labels[sides[other.user.id]], lobby, wrong)
+        if outcome == "corrected":
+            await self._enter_points(other, labels[sides[other.user.id]], lobby, points)
+
+    async def _enter_points(self, captain: Player, label: str, lobby: lobby_db.Lobby, points: dict[int, str],
+                            organizer: bool = False) -> None:
+        await self._tend()
+        user = self.organizer.user if organizer else captain.user
+        click = await self.sim.click(user, self._results_post(lobby), label)
         if click is None or click.response.modal is None:
             return
-        first = await self.sim.submit_fields(reporter.user, click.response.modal,
-                                             [points[p] for p in lobby.teams["A"].players])
+        await self._submit_points(user, click.response.modal, lobby, points)
+
+    async def _submit_points(self, user, modal, lobby: lobby_db.Lobby, points: dict[int, str]) -> None:
+        first = await self.sim.submit_fields(user, modal, [points[p] for p in lobby.teams["A"].players])
         between = first.sent if first is not None else None
         if between is None or not _buttons(between):
             return
-        second = await self.sim.click(reporter.user, between, _buttons(between)[0])
-        await self.sim.submit_fields(reporter.user, second.response.modal, [points[p] for p in lobby.teams["B"].players])
+        second = await self.sim.click(user, between, _buttons(between)[0])
+        await self.sim.submit_fields(user, second.response.modal, [points[p] for p in lobby.teams["B"].players])
 
     async def _settle_disputes(self) -> None:
-        """The organizer records the points of disputed lobbies, and of any lobby nobody reported."""
+        """The organizer settles lobbies whose captains' points don't match with Finalize
+        Scores, and records any lobby still without a result by command."""
         for lobby in self._lobbies():
-            settled = self._query(lambda conn: lobby_db.get_result(conn, lobby.id))
-            report = self._query(lambda conn: lobby_db.get_report(conn, lobby.id))
-            if settled is not None or (report is not None and not report.disputed):
+            if self._query(lambda conn: lobby_db.get_result(conn, lobby.id)) is not None:
                 continue
+            post = self._results_post(lobby)
+            points = self._winning_points(lobby)
+            if post is not None and lobby_posts.FINALIZE in _buttons(post):
+                await self._enter_points(self.organizer, lobby_posts.FINALIZE, lobby, points, organizer=True)
+                continue
+            if self.rng.random() < 0.5:
+                continue  # the captains' time to enter theirs hasn't run out yet
             reply = await self.sim.run(self.organizer.user, "lobby report", tournament=NAME, lobby=lobby.number)
-            modal = reply.response.modal
-            if modal is None:
-                continue
-            points = self._points(lobby)
-            points[lobby.players[0]] = "99"
-            first = await self.sim.submit_fields(self.organizer.user, modal, [points[p] for p in lobby.teams["A"].players])
-            between = first.sent
-            second = await self.sim.click(self.organizer.user, between, _buttons(between)[0])
-            await self.sim.submit_fields(self.organizer.user, second.response.modal,
-                                         [points[p] for p in lobby.teams["B"].players])
+            if reply.response.modal is not None:
+                await self._submit_points(self.organizer.user, reply.response.modal, lobby, points)
 
     def check_final_state(self) -> None:
         self.sim._begin(None, "final checks")

@@ -115,7 +115,7 @@ Everyone:
 
 Up to ten players play in a drafter room as two teams of up to five (5v5, 5v4, 4v4 and so on), with a
 captain each. Each race gives 5, 3 and 1 points for 1st, 2nd and 3rd, the team with more
-points wins, and a tie is settled on a tiebreaker track before anyone reports.
+points wins, and a tie is settled on a tiebreaker track before anyone enters the points.
 
 1. An organizer runs `/registration open5v5 name:<name> starts_in_hours:<hours>
    [spread:tier|balanced|random]`. Players press **Register** on the sign-ups post (or run
@@ -133,8 +133,11 @@ points wins, and a tie is settled on a tiebreaker track before anyone reports.
 4. A captain creates the room at https://drafter.uma.guide/host and presses **Submit Room
    Code**. Players press **Get Room Code** for a private copy, and the host is told who has no
    linked account and needs the code passed on by hand.
-5. After the races, a captain presses **Report Result** and enters everyone's points; the
-   other captain confirms or disputes, and an unanswered report is accepted after 10 minutes.
+5. After the races, both captains press **Finish** (an organizer's press finishes the lobby
+   at once). A results post for the lobby then has a button for each captain, who each
+   enter everyone's points. Matching points are final, and if only one captain enters any,
+   theirs are accepted after 10 minutes. Points that don't match are listed on the post
+   until a captain corrects theirs or an organizer presses **Finalize Scores**.
    `/lobby report lobby:<n>` lets an organizer record points directly. `/tournament conclude`
    posts how each lobby went.
 
@@ -163,7 +166,7 @@ Commands mirror the slash commands: `create <name> <csv>`, `regopen <name> [--cl
 `admin_deletefeedback`, `admin_ban`, `admin_unban`, `admin_bans`, `admin_linkplayer`, `admin_unlinkplayer`.
 5v5 events use `regopen5v5 <name> --starts-in HOURS [--spread tier|balanced|random]`, `register <name> --captain want|can|no`,
 `regclose <name> [--lobbies N] [--spread tier|balanced|random]`, `lobby_startcheckin`, `lobby_cancelcheckin`, `checkin`,
-`lobby_roomcode`, `lobby_code`, `lobby_report`, `lobby_confirm`, `lobby_dispute`, `admin_setcaptain`, `admin_lobbyswap`,
+`lobby_roomcode`, `lobby_code`, `lobby_finish`, `lobby_report`, `lobby_finalize`, `admin_setcaptain`, `admin_lobbyswap`,
 `admin_lobbymove` and `admin_checkin`.
 Use `as <user_id> <name>` to switch which simulated user you're acting as (so you can
 submit multiple different predictions and see the leaderboard play out). Commands that

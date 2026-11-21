@@ -12,7 +12,7 @@ import db
 import lobby_db
 import lobby_flow
 from common import requires_manage_server, resolve_tournament, tournament_name_autocomplete
-from lobby_posting import LobbyButton, open_report, refresh_signups, start_checkin, sync_posts, is_organizer
+from lobby_posting import LobbyButton, open_points, refresh_signups, start_checkin, sync_posts, is_organizer
 
 log = logging.getLogger("winningticket")
 
@@ -167,7 +167,25 @@ class LobbiesCog(commands.Cog):
         finally:
             conn.close()
 
-    @group.command(name="report", description="Report everyone's points in your lobby (captains and organizers)")
+    @group.command(name="finish", description="Say your lobby's races are over (captains and organizers)")
+    @app_commands.describe(tournament="Event name", lobby=LOBBY_OPTION_HELP)
+    @app_commands.autocomplete(tournament=tournament_name_autocomplete)
+    async def finish(self, interaction: discord.Interaction, tournament: str, lobby: Optional[int] = None) -> None:
+        conn = db.get_connection()
+        try:
+            event = await _resolve_event(interaction, conn, tournament)
+            found = event and await _find_lobby(interaction, conn, event, lobby)
+            if not found:
+                return
+            role = lobby_flow.role_in(conn, found, interaction.user.id, is_organizer(interaction))
+            await interaction.response.send_message(lobby_flow.finish(conn, event, found, role, interaction.user.id),
+                                                    ephemeral=True)
+            await sync_posts(self.bot, conn, event["id"])
+        finally:
+            conn.close()
+
+    @group.command(name="report",
+                   description="Enter everyone's points in your lobby (captains), or the final points (organizers)")
     @app_commands.describe(tournament="Event name", lobby=LOBBY_OPTION_HELP)
     @app_commands.autocomplete(tournament=tournament_name_autocomplete)
     async def report(self, interaction: discord.Interaction, tournament: str, lobby: Optional[int] = None) -> None:
@@ -177,7 +195,8 @@ class LobbiesCog(commands.Cog):
             found = event and await _find_lobby(interaction, conn, event, lobby)
             if not found:
                 return
-            await open_report(interaction, conn, event, found)
+            role = lobby_flow.role_in(conn, found, interaction.user.id, is_organizer(interaction))
+            await open_points(interaction, conn, event, found, role.side if role.captain else None)
         finally:
             conn.close()
 

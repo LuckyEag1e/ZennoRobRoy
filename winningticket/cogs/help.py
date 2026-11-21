@@ -151,15 +151,19 @@ class HelpCog(commands.Cog):
              "A captain creates the room at https://drafter.uma.guide/host and presses **Submit Room Code**. "
              "Everyone else presses **Get Room Code** on the event's post, joins, drafts, trains their character "
              "and races. Each race gives 5, 3 and 1 points for 1st, 2nd and 3rd."),
-            ("5. Report",
-             "After the races (and a tiebreaker track if the teams are level), a captain presses **Report "
-             "Result** and enters everyone's points. The other captain confirms or disputes; unanswered, the "
-             "points are accepted after 10 minutes. `/rating` shows your 5v5 contribution."),
+            ("5. Results",
+             "After the races (and a tiebreaker track if the teams are level), both captains press **Finish**. "
+             "A results post for the lobby then asks each captain to enter everyone's points with the button "
+             "named after them. Matching points are final; if only one captain enters any, theirs are accepted "
+             "after 10 minutes. Points that don't match wait for a captain to correct theirs, or for an organizer. "
+             "`/rating` shows your 5v5 contribution."),
             ("Organizers",
              "`/registration open5v5 name:<name> starts_in_hours:<hours>`, then `/registration close` "
              "(ideally a day before) to preview and create the lobbies. Start check-in with the button on the "
              "event's post or `/lobby startcheckin`, once every team has a captain; `/lobby cancelcheckin` calls it "
-             "off. `/lobby report lobby:<n>` records points directly, and "
+             "off. **Finish** (or `/lobby finish lobby:<n>`) finishes a lobby without waiting for its captains, "
+             "**Finalize Scores** on a results post settles points that don't match, `/lobby report lobby:<n>` "
+             "records points directly, and "
              "`/tournament conclude` posts how each lobby went."),
         ])
         await interaction.response.send_message(embed=embed, ephemeral=True)

@@ -1,5 +1,5 @@
 """The SQLite side of 5v5 events: captain choices, lobbies and their teams, the waitlist,
-check-in, room codes, captains' reports and results, and the event's public posts. Like
+check-in, room codes, finishing, captains' points and results, and the event's public posts. Like
 db.py, whose schema and connections it shares, it has no discord.py imports."""
 
 from __future__ import annotations
@@ -231,8 +231,8 @@ def _replace(conn: sqlite3.Connection, tournament_id: int, lobby: Lobby, leaving
         conn.execute("UPDATE lobby_players SET team_id = ? WHERE team_id = ?", (replacement.newcomer, leaving))
     conn.execute("UPDATE lobby_sides SET captain_team_id = ? WHERE lobby_id = ? AND side = ?",
                  (replacement.captain, lobby.id, side))
-    # The players changed, so a report waiting on them is out of date.
-    conn.execute("DELETE FROM lobby_reports WHERE lobby_id = ?", (lobby.id,))
+    # The players changed, so points entered for them are out of date.
+    conn.execute("DELETE FROM lobby_entries WHERE lobby_id = ?", (lobby.id,))
     lost = replacement.captain is None and team.captain is not None
     return Change(leaving, lobby.id, replacement.newcomer, lost)
 
@@ -296,7 +296,7 @@ def bring_in(conn: sqlite3.Connection, tournament_id: int, leaving: int, newcome
                      (leaving, tournament_id))
         conn.execute("UPDATE lobby_sides SET captain_team_id = NULL WHERE lobby_id = ? AND captain_team_id = ?",
                      (lobby.id, leaving))
-        conn.execute("DELETE FROM lobby_reports WHERE lobby_id = ?", (lobby.id,))
+        conn.execute("DELETE FROM lobby_entries WHERE lobby_id = ?", (lobby.id,))
     return True
 
 
@@ -385,82 +385,120 @@ def set_room_code(conn: sqlite3.Connection, lobby_id: int, code: str, user_id: i
         conn.execute("UPDATE lobbies SET room_code = ?, host_user_id = ? WHERE id = ?", (code, user_id, lobby_id))
 
 
-# -- reports and results ---------------------------------------------------------------
+# -- finishing, points and results ---------------------------------------------------
+
+def results_post_key(lobby_id: int) -> str:
+    return f"results:{lobby_id}"
+
+
+def get_finished_sides(conn: sqlite3.Connection, lobby_id: int) -> set[str]:
+    """The sides whose captain has pressed Finish."""
+    return {row["side"] for row in conn.execute("SELECT side FROM lobby_finishes WHERE lobby_id = ?", (lobby_id,))}
+
+
+def finish(conn: sqlite3.Connection, lobby_id: int, sides: list[str], user_id: int) -> bool:
+    """Record `sides` as finished. Once every captain has, the lobby's results post is
+    reserved. Returns whether the races are over."""
+    with conn:
+        conn.executemany("INSERT OR IGNORE INTO lobby_finishes (lobby_id, side, finished_by) VALUES (?, ?, ?)",
+                         [(lobby_id, side, user_id) for side in sides])
+        lobby = get_lobby(conn, lobby_id)
+        over = races_over(lobby, get_finished_sides(conn, lobby_id))
+        if over:
+            conn.execute(
+                """INSERT OR IGNORE INTO lobby_posts (tournament_id, post_key, channel_id)
+                   SELECT tournament_id, ?, channel_id FROM lobby_posts WHERE tournament_id = ? AND post_key = ?""",
+                (results_post_key(lobby_id), lobby.tournament_id, EVENT_POST))
+    return over
+
+
+def races_over(lobby: Lobby, finished_sides: set[str]) -> bool:
+    """Whether every captain has pressed Finish. A team with no captain has nobody to press it."""
+    return all(side in finished_sides for side in SIDES if lobby.teams[side].captain is not None) \
+        and bool(finished_sides)
+
 
 @dataclass(frozen=True)
-class Report:
+class Entry:
+    """One captain's entry of everyone's points in their lobby."""
     lobby_id: int
-    reported_by: int
-    reporting_side: str
+    side: str
     points: dict[int, int]
+    entered_by: int
     changed_at: str
-    disputed: bool
 
 
-def _report(row: sqlite3.Row) -> Report:
+def _entry(row: sqlite3.Row) -> Entry:
     points = {int(team_id): value for team_id, value in json.loads(row["points"]).items()}
-    return Report(row["lobby_id"], row["reported_by"], row["reporting_side"], points, row["changed_at"],
-                  row["disputed_at"] is not None)
+    return Entry(row["lobby_id"], row["side"], points, row["entered_by"], row["changed_at"])
 
 
-def get_report(conn: sqlite3.Connection, lobby_id: int) -> Optional[Report]:
-    row = conn.execute("SELECT * FROM lobby_reports WHERE lobby_id = ?", (lobby_id,)).fetchone()
-    return _report(row) if row is not None else None
+def get_entries(conn: sqlite3.Connection, lobby_id: int) -> dict[str, Entry]:
+    return {row["side"]: _entry(row) for row in conn.execute("SELECT * FROM lobby_entries WHERE lobby_id = ?",
+                                                             (lobby_id,))}
 
 
-def get_open_reports(conn: sqlite3.Connection) -> list[Report]:
-    """Undisputed reports still waiting for the other captain."""
-    return [_report(row) for row in conn.execute("SELECT * FROM lobby_reports WHERE disputed_at IS NULL")]
+def mismatched_players(entries: dict[str, Entry]) -> list[int]:
+    """The players the two captains entered different points for, or [] unless both have."""
+    if len(entries) < 2:
+        return []
+    a, b = entries["A"].points, entries["B"].points
+    return [player for player in a if a[player] != b.get(player)]
 
 
-def submit_report(conn: sqlite3.Connection, lobby_id: int, user_id: int, side: str, points: dict[int, int]) -> None:
-    """Save a captain's report, replacing any earlier one and restarting the other
-    captain's time to answer."""
+def enter_points(conn: sqlite3.Connection, lobby_id: int, side: str, user_id: int, points: dict[int, int]) -> bool:
+    """Save a captain's entry, replacing their earlier one. When it matches the other
+    captain's, or the other team has no captain to enter one, it's recorded as the result.
+    Returns whether it was."""
     with conn:
         conn.execute(
-            f"""INSERT INTO lobby_reports (lobby_id, reported_by, reporting_side, points, changed_at)
+            f"""INSERT INTO lobby_entries (lobby_id, side, points, entered_by, changed_at)
                 VALUES (?, ?, ?, ?, {_NOW})
-                ON CONFLICT (lobby_id) DO UPDATE SET reported_by = excluded.reported_by,
-                    reporting_side = excluded.reporting_side, points = excluded.points,
-                    changed_at = excluded.changed_at, disputed_at = NULL""",
-            (lobby_id, user_id, side, json.dumps(points)),
+                ON CONFLICT (lobby_id, side) DO UPDATE SET points = excluded.points,
+                    entered_by = excluded.entered_by, changed_at = excluded.changed_at""",
+            (lobby_id, side, json.dumps(points), user_id),
         )
+        lobby = get_lobby(conn, lobby_id)
+        other = "B" if side == "A" else "A"
+        entries = get_entries(conn, lobby_id)
+        if lobby.teams[other].captain is not None and (other not in entries or mismatched_players(entries)):
+            return False
+        _record_result(conn, lobby_id, points, user_id)
+    return True
 
 
-def dispute_report(conn: sqlite3.Connection, report: Report) -> bool:
-    """False if the report changed since it was read, or was already disputed."""
+def get_lone_entries(conn: sqlite3.Connection) -> list[Entry]:
+    """Entries the other captain hasn't matched with one of their own yet, in lobbies with no result."""
+    return [_entry(row) for row in conn.execute(
+        """SELECT e.* FROM lobby_entries e WHERE NOT EXISTS (SELECT 1 FROM lobby_entries o
+               WHERE o.lobby_id = e.lobby_id AND o.side != e.side)
+           AND NOT EXISTS (SELECT 1 FROM lobby_results r WHERE r.lobby_id = e.lobby_id)""")]
+
+
+def accept_lone_entry(conn: sqlite3.Connection, entry: Entry) -> bool:
+    """Record one captain's entry as the result, the other captain having entered none in
+    time. Only if it's unchanged and still alone, so a late entry is never overruled."""
     with conn:
-        return conn.execute(
-            f"""UPDATE lobby_reports SET disputed_at = {_NOW}
-                WHERE lobby_id = ? AND changed_at = ? AND disputed_at IS NULL""",
-            (report.lobby_id, report.changed_at),
-        ).rowcount > 0
-
-
-def accept_report(conn: sqlite3.Connection, report: Report, by: Optional[int]) -> bool:
-    """Record a report as the result: confirmed by the other captain or an organizer
-    (`by`), which settles a dispute too, or given for want of an answer (None), which a
-    dispute stops. Only if the points are exactly as they were read, so a change made
-    meanwhile is never overruled."""
-    with conn:
-        still = conn.execute("SELECT 1 FROM lobby_reports WHERE lobby_id = ? AND changed_at = ? "
-                             "AND (disputed_at IS NULL OR ? IS NOT NULL)",
-                             (report.lobby_id, report.changed_at, by)).fetchone()
+        still = conn.execute(
+            """SELECT 1 FROM lobby_entries e WHERE e.lobby_id = ? AND e.side = ? AND e.changed_at = ?
+               AND NOT EXISTS (SELECT 1 FROM lobby_entries o WHERE o.lobby_id = e.lobby_id AND o.side != e.side)
+               AND NOT EXISTS (SELECT 1 FROM lobby_results r WHERE r.lobby_id = e.lobby_id)""",
+            (entry.lobby_id, entry.side, entry.changed_at)).fetchone()
         if still is None:
             return False
-        _record_result(conn, report.lobby_id, report.points, by)
+        _record_result(conn, entry.lobby_id, entry.points, None)
     return True
 
 
 def record_result(conn: sqlite3.Connection, lobby_id: int, points: dict[int, int], by: int) -> None:
-    """An organizer's result, final at once. It replaces any result or report already there."""
+    """An organizer's result, final at once. It replaces any result already there."""
     with conn:
         _record_result(conn, lobby_id, points, by)
 
 
 def winning_side(lobby: Lobby, points: dict[int, int]) -> Optional[str]:
     """The side with more points, or None on a tie (which a tiebreaker settles before
-    anyone reports)."""
+    anyone enters the points)."""
     totals = {side: sum(points.get(player, 0) for player in lobby.teams[side].players) for side in SIDES}
     if totals["A"] == totals["B"]:
         return None
@@ -477,7 +515,6 @@ def _record_result(conn: sqlite3.Connection, lobby_id: int, points: dict[int, in
                  (lobby_id, side, by))
     conn.executemany("INSERT INTO lobby_points (lobby_id, team_id, points) VALUES (?, ?, ?)",
                      [(lobby_id, player, points[player]) for player in lobby.players])
-    conn.execute("DELETE FROM lobby_reports WHERE lobby_id = ?", (lobby_id,))
     finished = conn.execute(
         """SELECT COUNT(*) = 0 FROM lobbies l WHERE l.tournament_id = ?
            AND NOT EXISTS (SELECT 1 FROM lobby_results r WHERE r.lobby_id = l.id)""",
