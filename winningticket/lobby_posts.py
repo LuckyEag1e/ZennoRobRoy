@@ -140,7 +140,11 @@ def _lobby_status(conn: sqlite3.Connection, lobby: Lobby, names: Names, player_l
         other = lobby.teams["B" if report.reporting_side == "A" else "A"].captain
         lines = team_lines(lobby, names, False, report.points)
         if report.disputed:
-            return lines + ["⚠️ Points disputed: an organizer will settle them"], report
+            reporter = lobby.teams[report.reporting_side].captain
+            disputer = names(other) if other is not None else "The other captain"
+            return lines + [f"⚠️ {disputer} disputed these points. {names(reporter)}: correct them with "
+                            f"**{REPORT_RESULT}**. {disputer}: press **{CONFIRM}** if you agree after all. Organizers: "
+                            f"**{CONFIRM}** accepts these points, and **{REPORT_RESULT}** enters the right ones."], report
         answer = names(other) if other is not None else "The other captain"
         return lines + [f"📋 {answer}: press **{CONFIRM}** or **{DISPUTE}** on these points. They're accepted "
                         f"{_when(report_due_at(report))} otherwise."], report
@@ -196,7 +200,11 @@ def describe_event(conn: sqlite3.Connection, tournament: sqlite3.Row, player_lab
         answering = [(f"report:{lobby.id}:{report.changed_at}", user_id) for lobby, report in reports
                      if not report.disputed
                      for user_id in names.user_ids([c for c in lobby.captains if lobby.side_of(c) != report.reporting_side])]
-        return PostState(_fit(lines), buttons, "play", everyone + answering)
+        # A dispute pings the captain who reported, so they know to correct the points.
+        disputes = [(f"dispute:{lobby.id}:{report.changed_at}", user_id) for lobby, report in reports
+                    if report.disputed
+                    for user_id in names.user_ids([lobby.teams[report.reporting_side].captain])]
+        return PostState(_fit(lines), buttons, "play", everyone + answering + disputes)
     if running:
         ends = db.from_db_time(tournament["checkin_ends_at"])
         if ends <= datetime.now(timezone.utc) and lobby_db.teams_without_captain(conn, tournament["id"]):

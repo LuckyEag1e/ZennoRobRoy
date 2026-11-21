@@ -332,6 +332,9 @@ class LobbyEventRun:
         await self.sim.click(host.user, post, "Confirm")  # refused: it's their own report
         if answer is not None:
             await self.sim.click(other.user, post, answer)
+        if answer == "Dispute" and self.rng.random() < 0.4:
+            # They talk it over, and the captain who disputed agrees after all.
+            await self.sim.click(other.user, self._event_post(), "Confirm")
 
     async def _enter_points(self, reporter: Player, post, lobby: lobby_db.Lobby, points: dict[int, str]) -> None:
         click = await self.sim.click(reporter.user, post, lobby_posts.REPORT_RESULT)

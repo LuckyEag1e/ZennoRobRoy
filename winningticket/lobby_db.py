@@ -438,12 +438,14 @@ def dispute_report(conn: sqlite3.Connection, report: Report) -> bool:
 
 
 def accept_report(conn: sqlite3.Connection, report: Report, by: Optional[int]) -> bool:
-    """Record a report as the result: confirmed by the other captain (`by`), or given for
-    want of an answer (None). Only if it's exactly as it was read, so a change made
+    """Record a report as the result: confirmed by the other captain or an organizer
+    (`by`), which settles a dispute too, or given for want of an answer (None), which a
+    dispute stops. Only if the points are exactly as they were read, so a change made
     meanwhile is never overruled."""
     with conn:
-        still = conn.execute("SELECT 1 FROM lobby_reports WHERE lobby_id = ? AND changed_at = ? AND disputed_at IS NULL",
-                             (report.lobby_id, report.changed_at)).fetchone()
+        still = conn.execute("SELECT 1 FROM lobby_reports WHERE lobby_id = ? AND changed_at = ? "
+                             "AND (disputed_at IS NULL OR ? IS NOT NULL)",
+                             (report.lobby_id, report.changed_at, by)).fetchone()
         if still is None:
             return False
         _record_result(conn, report.lobby_id, report.points, by)

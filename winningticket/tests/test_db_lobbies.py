@@ -10,6 +10,7 @@ import pytest
 import db
 import lobby_db
 import lobby_flow
+import lobby_posts
 import lobbies
 from tournament_builder import RegistrationClosedError, close_lobby_registration, lobby_split_options
 
@@ -232,3 +233,29 @@ def test_a_late_signup_fills_a_team_with_room_before_the_waitlist(conn):
     waiting = sign_up(conn, tournament_id, 53)
     assert lobby_db.place_late_signup(conn, tournament_id, waiting) is None
     assert lobby_db.get_waitlist(conn, tournament_id) == [waiting]
+
+
+def test_the_captain_who_disputed_can_confirm_after_all(conn):
+    tournament_id = event_with(conn, 10, captains=2)
+    close_lobby_registration(conn, tournament_id, rng=random.Random(6))
+    tournament = db.get_tournament(conn, tournament_id)
+    lobby_flow.start_checkin(conn, tournament, 15, datetime.now(timezone.utc) - timedelta(minutes=20))
+    lobby_db.finish_checkin(conn, tournament_id)
+    tournament = db.get_tournament(conn, tournament_id)
+    lobby = lobby_db.get_lobbies(conn, tournament_id)[0]
+    users = {team_id: users[0] for team_id, users in db.get_members_by_team(conn, tournament_id).items()}
+    captain_a, captain_b = users[lobby.teams["A"].captain], users[lobby.teams["B"].captain]
+    role_a = lobby_flow.role_in(conn, lobby, captain_a, organizer=False)
+    role_b = lobby_flow.role_in(conn, lobby, captain_b, organizer=False)
+    lobby_flow.submit_room_code(conn, tournament, lobby, role_a, captain_a, "ROOM1")
+    lobby = lobby_db.get_lobbies(conn, tournament_id)[0]
+    points = lobby_flow.parse_points(lobby, {p: str(10 if p in lobby.teams["A"].players else 3) for p in lobby.players})
+    lobby_flow.submit_report(conn, tournament, lobby, role_a, captain_a, points)
+    reply = lobby_flow.dispute_report(conn, lobby, role_b)
+    reporter = db.get_teams(conn, tournament_id)[lobby.teams["A"].captain]["name"]
+    assert f"Tell {reporter} what's wrong" in reply and "**Confirm**" in reply
+    post = lobby_posts.describe_event(conn, db.get_tournament(conn, tournament_id), lambda user_id: f"<@{user_id}>")
+    assert f"<@{captain_b}> disputed these points. <@{captain_a}>: correct them with **Report Result**" in post.text
+    assert any(why.startswith("dispute:") and user_id == captain_a for why, user_id in post.audience)
+    assert "settles the dispute" in lobby_flow.confirm_report(conn, lobby, role_b, captain_b)
+    assert lobby_db.get_result(conn, lobby.id).winning_side == "A"

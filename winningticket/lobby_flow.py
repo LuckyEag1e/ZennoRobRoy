@@ -18,6 +18,7 @@ from labels import OPTED_OUT_NOTE, name_held_message
 from lobby_db import SIDES, Lobby
 from lobby_posts import (
     DRAFTER_HOST_URL,
+    CONFIRM,
     REPORT_RESULT,
     SUBMIT_ROOM_CODE,
     register_command,
@@ -451,11 +452,10 @@ def confirm_report(conn: sqlite3.Connection, lobby: Lobby, role: Role, user_id: 
     report = _answerable_report(conn, lobby, role)
     if isinstance(report, str):
         return report
-    if report.disputed and not role.organizer:
-        return "You disputed these points, so an organizer settles them now."
     if not lobby_db.accept_report(conn, report, user_id):
         return "The report changed while you were looking at it. Check the event's post and answer again."
-    return f"✅ Confirmed. The result for lobby {lobby.number} is in."
+    settled = " That settles the dispute." if report.disputed else ""
+    return f"✅ Confirmed. The result for lobby {lobby.number} is in.{settled}"
 
 
 def dispute_report(conn: sqlite3.Connection, lobby: Lobby, role: Role) -> str:
@@ -466,7 +466,9 @@ def dispute_report(conn: sqlite3.Connection, lobby: Lobby, role: Role) -> str:
         return "These points are already disputed. An organizer will settle them."
     if not lobby_db.dispute_report(conn, report):
         return "The report changed while you were looking at it. Check the event's post and answer again."
-    return f"✅ Disputed the points for lobby {lobby.number}."
+    reporter = Names(conn, lobby.tournament_id, str).plain(lobby.teams[report.reporting_side].captain)
+    return (f"✅ Disputed the points for lobby {lobby.number}. Tell {reporter} what's wrong so they can correct them. "
+            f"If you agree with them after all, press **{CONFIRM}**.")
 
 
 def accept_due_reports(conn: sqlite3.Connection, now: datetime) -> None:
