@@ -262,7 +262,7 @@ class LobbyEventRun:
             if not missing:
                 return
             lobby, side = missing[0]
-            other = "B" if side == "A" else "A"
+            other = lobby_db.other_side(side)
             signups = {s.team_id: s for s in self._query(lambda conn: lobby_db.get_signups(conn, self.tournament_id))}
             spare = [p for p in lobby.teams[other].players
                      if signups[p].can_captain and p != lobby.teams[other].captain]

@@ -457,13 +457,10 @@ class AdminCog(commands.Cog):
                 return
             tournament_row, leaving_team = found
             joining_team = db.get_team_by_name(conn, tournament_row["id"], joining)
-            if joining_team is None or not lobby_db.bring_in(conn, tournament_row["id"], leaving_team["id"],
-                                                             joining_team["id"]):
+            if joining_team is None:
                 reply = f"**{leaving}** has to be in a lobby and **{joining}** on the waitlist."
-            elif lobby_db.get_result(conn, lobby_db.find_lobby_of(conn, tournament_row["id"], joining_team["id"]).id):
-                reply = "Swapped, though that lobby's result was already in."
             else:
-                reply = f"**{joining}** takes **{leaving}**'s spot, and **{leaving}** is first on the waitlist."
+                reply = lobby_flow.swap_in(conn, tournament_row, leaving_team["id"], joining_team["id"])
             await interaction.response.send_message(reply, ephemeral=True)
             await sync_posts(self.bot, conn, tournament_row["id"])
         finally:

@@ -18,6 +18,7 @@ from labels import OPTED_OUT_NOTE, name_held_message
 from lobby_db import SIDES, Lobby
 from lobby_posts import (
     DRAFTER_HOST_URL,
+    DRAFTER_URL,
     FINALIZE,
     FINISH,
     ROOM_EMOJI,
@@ -64,10 +65,11 @@ def move_player(conn: sqlite3.Connection, tournament: sqlite3.Row, team_id: int)
     lobby = lobby_db.find_lobby_of(conn, tournament["id"], team_id)
     if lobby is None:
         return "That player isn't in a lobby."
-    if lobby_db.get_result(conn, lobby.id) is not None:
-        return "That lobby's result is already in."
+    problem = lineup_problem(conn, lobby)
+    if problem is not None:
+        return problem
     names = Names(conn, tournament["id"], str)
-    other = "B" if lobby.side_of(team_id) == "A" else "A"
+    other = lobby_db.other_side(lobby.side_of(team_id))
     change = lobby_db.move_to_other_team(conn, tournament["id"], team_id)
     if change is None:
         return f"{team_name(lobby, other, names)} is full, so there's no spot to move them into."
@@ -79,6 +81,33 @@ def move_player(conn: sqlite3.Connection, tournament: sqlite3.Row, team_id: int)
     return "\n".join([reply] + captain_fix_lines(conn, db.get_tournament(conn, tournament["id"])))
 
 
+def lineup_problem(conn: sqlite3.Connection, lobby: Lobby) -> Optional[str]:
+    """Why `lobby`'s teams can't change any more, or None if they still can. Once its races
+    are over, everyone on it raced, so nobody can be swapped in for the points."""
+    if lobby_db.get_result(conn, lobby.id) is not None:
+        return f"Lobby {lobby.number}'s result is already in, so its teams can't change."
+    if lobby_db.races_over(lobby, lobby_db.get_finished_sides(conn, lobby.id)):
+        return f"Lobby {lobby.number}'s races are over, so its teams can't change."
+    return None
+
+
+def swap_in(conn: sqlite3.Connection, tournament: sqlite3.Row, leaving: int, joining: int) -> str:
+    """An organizer bringing a waitlisted player into someone's spot. Returns their reply."""
+    names = Names(conn, tournament["id"], str)
+    lobby = lobby_db.find_lobby_of(conn, tournament["id"], leaving)
+    if lobby is None or joining not in lobby_db.get_waitlist(conn, tournament["id"]):
+        return f"**{names.plain(leaving)}** has to be in a lobby and **{names.plain(joining)}** on the waitlist."
+    problem = lineup_problem(conn, lobby)
+    if problem is not None:
+        return problem
+    change = lobby_db.bring_in(conn, tournament["id"], leaving, joining)
+    reply = f"✅ **{names.plain(joining)}** takes **{names.plain(leaving)}**'s spot, and **{names.plain(leaving)}** " \
+            f"is first on the waitlist."
+    if change.captain_lost:
+        reply = "\n".join([reply] + captain_fix_lines(conn, db.get_tournament(conn, tournament["id"])))
+    return reply
+
+
 def captain_fix_lines(conn: sqlite3.Connection, tournament: sqlite3.Row) -> list[str]:
     """For an organizer: each team with no captain, and how to give it one. Check-in can't
     start, or finish, until every team has one."""
@@ -87,7 +116,7 @@ def captain_fix_lines(conn: sqlite3.Connection, tournament: sqlite3.Row) -> list
     prefs = lobby_db.captain_prefs(list(names.signups.values()))
     lines = []
     for lobby, side in lobby_db.teams_without_captain(conn, tournament["id"]):
-        other = "B" if side == "A" else "A"
+        other = lobby_db.other_side(side)
         spare = [p for p in lobby.teams[other].players if lobbies.is_candidate(prefs.get(p, "no"))]
         line = f"⚠️ Lobby {lobby.number}'s {team_name(lobby, side, names)} has no captain."
         if len(spare) >= 2:
@@ -121,7 +150,7 @@ def signup_reply(conn: sqlite3.Connection, tournament: sqlite3.Row, team_id: int
     name = tournament["name"]
     choice = CAPTAIN_CHOICES[pref]
     if changed:
-        return f"✅ Your captain choice for **{name}** is now: {choice}."
+        return f"✅ Your captain choice for **{name}** is now: {choice}.{captaincy_line(conn, tournament['id'], team_id)}"
     if tournament["status"] == "registration":
         where = f"✅ You're signed up for **{name}**. Captain choice: {choice}."
     else:
@@ -179,6 +208,38 @@ def captain_problem(pref: str, linked: bool, by_organizer: bool) -> Optional[str
             f"the points. {fix}")
 
 
+def captain_change_problem(conn: sqlite3.Connection, tournament: sqlite3.Row, team_id: int, pref: str
+                           ) -> Optional[str]:
+    """Why a player can't change their captain choice to `pref` now, or None if they can. A
+    captain only steps down when a teammate can take over, since a team with no captain
+    holds up check-in."""
+    lobby = lobby_db.find_lobby_of(conn, tournament["id"], team_id)
+    if lobby is None or lobbies.is_candidate(pref):
+        return None
+    side = lobby.side_of(team_id)
+    if lobby.teams[side].captain != team_id:
+        return None
+    prefs = lobby_db.captain_prefs(lobby_db.get_signups(conn, tournament["id"]))
+    if lobbies.best_candidate([p for p in lobby.teams[side].players if p != team_id], prefs) is None:
+        names = Names(conn, tournament["id"], str)
+        return (f"You captain {team_name(lobby, side, names)} and nobody else on it can, so you can't step down. "
+                f"Ask an organizer if you need to.")
+    return None
+
+
+def captaincy_line(conn: sqlite3.Connection, tournament_id: int, team_id: int) -> str:
+    """Who captains the player's team, for telling them after they change their captain choice."""
+    lobby = lobby_db.find_lobby_of(conn, tournament_id, team_id)
+    if lobby is None:
+        return ""
+    names = Names(conn, tournament_id, str)
+    side = lobby.side_of(team_id)
+    captain = lobby.teams[side].captain
+    if captain == team_id:
+        return f" You captain {team_name(lobby, side, names)}."
+    return f" {names.plain(captain)} captains {team_name(lobby, side, names)}." if captain is not None else ""
+
+
 def sign_up(conn: sqlite3.Connection, tournament: sqlite3.Row, name: str, user_id: int, linked: bool,
             pref: str) -> str:
     """Sign a member up for a 5v5 event with their captain choice, or change the choice
@@ -195,21 +256,23 @@ def sign_up(conn: sqlite3.Connection, tournament: sqlite3.Row, name: str, user_i
         if withdrawn:
             lobby_db.rejoin(conn, tournament["id"], existing, pref)
             return signup_reply(conn, db.get_tournament(conn, tournament["id"]), existing, pref)
-        lobby_db.set_captain_pref(conn, tournament["id"], existing, pref)
+        problem = captain_change_problem(conn, tournament, existing, pref)
+        if problem is not None:
+            return problem
+        lobby_db.change_captain_pref(conn, tournament["id"], existing, pref)
         return signup_reply(conn, tournament, existing, pref, changed=True)
     problem = captain_problem(pref, linked, by_organizer=False)
     if problem is not None:
         return problem
-    entrant = db.register_entrant(conn, tournament["id"], name, user_id if linked else None)
+    place = tournament["status"] != "registration"
+    entrant = db.register_entrant(conn, tournament["id"], name, user_id if linked else None,
+                                  also=lambda team_id: lobby_db.save_signup(conn, tournament["id"], team_id, pref, place))
     if entrant is None:
         if linked:
             return name_held_message(tournament_name, name)
         return (f"Someone is already signed up for **{tournament_name}** as {name}. If that's you, you're in. If "
                 f"not, ask an organizer to add you under another name.")
     team_id, _ = entrant
-    lobby_db.set_captain_pref(conn, tournament["id"], team_id, pref)
-    if tournament["status"] != "registration":
-        lobby_db.place_late_signup(conn, tournament["id"], team_id)
     reply = signup_reply(conn, db.get_tournament(conn, tournament["id"]), team_id, pref)
     return reply if linked else f"{reply}\n{OPTED_OUT_NOTE}"
 
@@ -219,8 +282,9 @@ def dropout(conn: sqlite3.Connection, tournament: sqlite3.Row, team_id: int, rea
     one of db.WITHDRAWAL_REASONS."""
     name = tournament["name"]
     lobby = lobby_db.find_lobby_of(conn, tournament["id"], team_id)
-    if lobby is not None and lobby_db.get_result(conn, lobby.id) is not None:
-        return f"That lobby's result is already in, so there's nothing left to drop out of in **{name}**."
+    problem = lineup_problem(conn, lobby) if lobby is not None else None
+    if problem is not None:
+        return f"{problem} There's nothing left to drop out of in **{name}**."
     change = lobby_db.leave(conn, tournament["id"], team_id, reason, by)
     if change is None:
         return f"That player isn't in a lobby or on the waitlist for **{name}**."
@@ -382,7 +446,7 @@ def get_room_code(conn: sqlite3.Connection, tournament: sqlite3.Row, lobby: Lobb
         return problem
     if lobby.room_code is None:
         return "The room code isn't in yet. You'll be pinged on the event's post as soon as a captain enters it."
-    text = (f"{ROOM_EMOJI} Room code for lobby {lobby.number}: **{lobby.room_code}**\nJoin at https://drafter.uma.guide with that "
+    text = (f"{ROOM_EMOJI} Room code for lobby {lobby.number}: **{lobby.room_code}**\nJoin at {DRAFTER_URL} with that "
             f"code.")
     if role.captain or role.organizer:
         text += _name_only_note(conn, lobby)
@@ -391,6 +455,8 @@ def get_room_code(conn: sqlite3.Connection, tournament: sqlite3.Row, lobby: Lobb
 
 def _playing_problem(conn: sqlite3.Connection, tournament: sqlite3.Row, lobby: Lobby) -> Optional[str]:
     """Why `lobby`'s races can't be over yet, or None if they can be."""
+    if tournament["status"] == "concluded":
+        return f"**{tournament['name']}** is concluded, so its results can't change."
     if not tournament["checkin_finished"]:
         return "The races start once check-in is over."
     if lobby.room_code is None:
@@ -436,6 +502,9 @@ def points_problem(conn: sqlite3.Connection, tournament: sqlite3.Row, lobby: Lob
     if not role.captain:
         hint = f" Organizers press **{FINALIZE}** if the captains' points don't match." if role.organizer else ""
         return f"Only lobby {lobby.number}'s captains enter its points.{hint}"
+    problem = _playing_problem(conn, tournament, lobby)
+    if problem is not None:
+        return problem
     if lobby_db.get_result(conn, lobby.id) is not None:
         return f"Lobby {lobby.number}'s result is already in. Ask an organizer if it needs correcting."
     if not lobby_db.races_over(lobby, lobby_db.get_finished_sides(conn, lobby.id)):
@@ -484,7 +553,7 @@ def enter_points(conn: sqlite3.Connection, tournament: sqlite3.Row, lobby: Lobby
     if not lobby_db.is_complete(lobby, entries[side]):
         return None  # the results post shows which team's points they still have to enter
     names = Names(conn, tournament["id"], str)
-    other = names.plain(lobby.teams["B" if side == "A" else "A"].captain)
+    other = names.plain(lobby.teams[lobby_db.other_side(side)].captain)
     mismatched = lobby_db.mismatched_players(lobby, entries)
     if mismatched:
         return (f"Saved, but your points don't match {other}'s for {', '.join(names.plain(p) for p in mismatched)}. "
@@ -545,7 +614,7 @@ def lobby_summary_lines(conn: sqlite3.Connection, tournament: sqlite3.Row) -> li
             lines.append(f"Lobby {lobby.number}: no result")
             continue
         totals = {side: sum(result.points.get(p, 0) for p in lobby.teams[side].players) for side in SIDES}
-        loser = "B" if result.winning_side == "A" else "A"
+        loser = lobby_db.other_side(result.winning_side)
         best = max(result.points.values())
         top = ", ".join(names.plain(p) for p, value in result.points.items() if value == best)
         lines.append(f"Lobby {lobby.number}: 🏆 {team_name(lobby, result.winning_side, names)} "

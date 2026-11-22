@@ -587,17 +587,16 @@ class WinningTicketCLI(cmd.Cmd):
             line = lobby_flow.late_signup_line(self.conn, tournament["id"], returning, False).replace("**", "")
             print(f"Brought {db.get_teams(self.conn, tournament['id'])[returning]['name']} back in. {line}")
             return
-        entrant = db.register_entrant(self.conn, tournament["id"], parts[1], user_id)
+        also = ((lambda team_id: lobby_db.save_signup(self.conn, tournament["id"], team_id, captain, late))
+                if tournament["format"] == "lobbies" else None)
+        entrant = db.register_entrant(self.conn, tournament["id"], parts[1], user_id, also=also)
         if entrant is None:
             link_hint = " Use 'admin_linkplayer' to link them to it." if user_id is not None else ""
             print(f"'{parts[0]}' already has an entrant named '{parts[1]}'.{link_hint}")
             return
         team_id, entrant_name = entrant
         note = ""
-        if tournament["format"] == "lobbies":
-            lobby_db.set_captain_pref(self.conn, tournament["id"], team_id, captain)
         if late:
-            lobby_db.place_late_signup(self.conn, tournament["id"], team_id)
             note = " " + lobby_flow.late_signup_line(self.conn, tournament["id"], team_id, False).replace("**", "")
         print(f"Signed up {entrant_name} ({len(db.get_entrants(self.conn, tournament['id']))} entered so far).{note}")
 
@@ -1364,10 +1363,10 @@ class WinningTicketCLI(cmd.Cmd):
             return
         tournament, leaving = found
         joining = db.get_team_by_name(self.conn, tournament["id"], parts[2])
-        if joining is None or not lobby_db.bring_in(self.conn, tournament["id"], leaving["id"], joining["id"]):
+        if joining is None:
             print(f"{parts[1]} has to be in a lobby and {parts[2]} on the waitlist.")
             return
-        self._say(f"{parts[2]} takes {parts[1]}'s spot, and {parts[1]} is first on the waitlist.")
+        self._say(lobby_flow.swap_in(self.conn, tournament, leaving["id"], joining["id"]))
 
     def do_admin_lobbymove(self, arg: str) -> None:
         "Move a 5v5 player to the other team in their lobby: admin_lobbymove <name> <entrant>"

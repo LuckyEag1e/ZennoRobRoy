@@ -31,9 +31,10 @@ def open_event(conn, name="Cup", spread="balanced") -> int:
                                 lobby_spread=spread)
 
 
-def sign_up(conn, tournament_id, user_id, pref="no", linked=True) -> int:
-    team_id, _ = db.register_entrant(conn, tournament_id, f"P{user_id}", user_id if linked else None)
-    lobby_db.set_captain_pref(conn, tournament_id, team_id, pref)
+def sign_up(conn, tournament_id, user_id, pref="no", linked=True, place=False) -> int:
+    """Sign a player up; with `place`, after the draw, as a late sign-up."""
+    team_id, _ = db.register_entrant(conn, tournament_id, f"P{user_id}", user_id if linked else None,
+                                     also=lambda team_id: lobby_db.save_signup(conn, tournament_id, team_id, pref, place))
     return team_id
 
 
@@ -297,17 +298,17 @@ def test_a_late_signup_fills_a_team_with_room_before_the_waitlist(conn):
     lobby = lobby_db.get_lobbies(conn, tournament_id)[0]
     small = min("AB", key=lambda side: len(lobby.teams[side].players))
     before = {side: list(lobby.teams[side].players) for side in "AB"}
-    late = sign_up(conn, tournament_id, 50)
-    assert lobby_db.place_late_signup(conn, tournament_id, late) is not None
+    late = sign_up(conn, tournament_id, 50, place=True)
+    assert lobby_db.find_lobby_of(conn, tournament_id, late) is not None
     lobby = lobby_db.get_lobby(conn, lobby.id)
     assert lobby.teams[small].players == before[small] + [late]
-    other = "B" if small == "A" else "A"
+    other = lobby_db.other_side(small)
     assert lobby.teams[other].players == before[other]
     # Now 4v4, then 5v4, then 5v5: the next two play, and the one after waits.
     for user_id in (51, 52):
-        assert lobby_db.place_late_signup(conn, tournament_id, sign_up(conn, tournament_id, user_id)) is not None
-    waiting = sign_up(conn, tournament_id, 53)
-    assert lobby_db.place_late_signup(conn, tournament_id, waiting) is None
+        assert lobby_db.find_lobby_of(conn, tournament_id, sign_up(conn, tournament_id, user_id, place=True)) is not None
+    waiting = sign_up(conn, tournament_id, 53, place=True)
+    assert lobby_db.find_lobby_of(conn, tournament_id, waiting) is None
     assert lobby_db.get_waitlist(conn, tournament_id) == [waiting]
 
 
@@ -316,3 +317,115 @@ def test_upgrading_drops_the_old_reports_table(conn):
     db.init_db(conn)
     assert conn.execute("SELECT 1 FROM sqlite_master WHERE name = 'lobby_reports'").fetchone() is None
     assert conn.execute("SELECT 1 FROM sqlite_master WHERE name = 'lobby_entries'").fetchone() is not None
+
+
+def test_a_concluded_event_takes_no_more_points(conn):
+    tournament, lobby, (captain_a, role_a), (captain_b, role_b) = _playing(conn, 13)
+    organizer = lobby_flow.Role(None, None, False, True)
+    lobby_flow.finish(conn, tournament, lobby, organizer, ORGANIZER)
+    db.set_tournament_status(conn, tournament["id"], "concluded")
+    tournament = db.get_tournament(conn, tournament["id"])
+    assert "is concluded" in lobby_flow.enter_points(conn, tournament, lobby, role_a, captain_a, _points(lobby))
+    assert "is concluded" in lobby_flow.finalize(conn, tournament, lobby, organizer, ORGANIZER, _points(lobby))
+    assert lobby_db.get_result(conn, lobby.id) is None
+
+
+def test_teams_are_fixed_once_the_races_are_over(conn):
+    tournament_id = event_with(conn, 11, captains=2)
+    close_lobby_registration(conn, tournament_id, rng=random.Random(14))
+    tournament = db.get_tournament(conn, tournament_id)
+    lobby_flow.start_checkin(conn, tournament, 15, datetime.now(timezone.utc) - timedelta(minutes=20))
+    for signup in lobby_db.get_signups(conn, tournament_id):
+        lobby_db.check_in(conn, signup.team_id)
+    lobby_db.finish_checkin(conn, tournament_id)
+    tournament = db.get_tournament(conn, tournament_id)
+    lobby = lobby_db.get_lobbies(conn, tournament_id)[0]
+    lobby_flow.submit_room_code(conn, tournament, lobby, lobby_flow.Role(None, None, False, True), ORGANIZER, "R")
+    lobby = lobby_db.get_lobby(conn, lobby.id)
+    lobby_flow.finish(conn, tournament, lobby, lobby_flow.Role(None, None, False, True), ORGANIZER)
+    [waiting] = lobby_db.get_waitlist(conn, tournament_id)
+    player = next(p for p in lobby.players if p not in lobby.captains)
+    assert "races are over" in lobby_flow.swap_in(conn, tournament, player, waiting)
+    assert "races are over" in lobby_flow.dropout(conn, tournament, player, "dropped", None)
+    assert "races are over" in lobby_flow.move_player(conn, tournament, player)
+    assert lobby_db.get_lobby(conn, lobby.id).players == lobby.players
+
+
+def test_swapping_out_a_captain_hands_the_captaincy_on(conn):
+    tournament_id = event_with(conn, 11, captains=2)
+    close_lobby_registration(conn, tournament_id, rng=random.Random(15))
+    tournament = db.get_tournament(conn, tournament_id)
+    lobby = lobby_db.get_lobbies(conn, tournament_id)[0]
+    captain = lobby.teams["A"].captain
+    [waiting] = lobby_db.get_waitlist(conn, tournament_id)
+    teammate = next(p for p in lobby.teams["A"].players if p != captain)
+    lobby_db.change_captain_pref(conn, tournament_id, teammate, "can")
+    assert "takes" in lobby_flow.swap_in(conn, tournament, captain, waiting)
+    assert lobby_db.get_lobby(conn, lobby.id).teams["A"].captain == teammate
+
+
+def test_changing_your_captain_choice_after_the_draw_takes_effect(conn):
+    tournament_id = event_with(conn, 10, captains=2)
+    close_lobby_registration(conn, tournament_id, rng=random.Random(16))
+    tournament = db.get_tournament(conn, tournament_id)
+    lobby = lobby_db.get_lobbies(conn, tournament_id)[0]
+    captain = lobby.teams["A"].captain
+    user_of = {team_id: users[0] for team_id, users in db.get_members_by_team(conn, tournament_id).items()}
+    # The team's only captain candidate can't step down.
+    assert "can't step down" in lobby_flow.sign_up(conn, tournament, "x", user_of[captain], True, "no")
+    assert lobby_db.get_lobby(conn, lobby.id).teams["A"].captain == captain
+    # With a teammate who can captain, they hand it over.
+    teammate = next(p for p in lobby.teams["A"].players if p != captain)
+    lobby_flow.sign_up(conn, tournament, "x", user_of[teammate], True, "can")
+    reply = lobby_flow.sign_up(conn, tournament, "x", user_of[captain], True, "no")
+    assert "captains Team" in reply
+    assert lobby_db.get_lobby(conn, lobby.id).teams["A"].captain == teammate
+
+
+def test_a_player_on_a_team_with_no_captain_takes_it_by_choosing_to_captain(conn):
+    tournament_id = event_with(conn, 10, captains=2)
+    close_lobby_registration(conn, tournament_id, rng=random.Random(17))
+    tournament = db.get_tournament(conn, tournament_id)
+    lobby = lobby_db.get_lobbies(conn, tournament_id)[0]
+    lobby_db.set_captain(conn, lobby.id, "A", None)
+    player = next(p for p in lobby.teams["A"].players if p != lobby.teams["A"].captain)
+    user_of = {team_id: users[0] for team_id, users in db.get_members_by_team(conn, tournament_id).items()}
+    assert "You captain Team" in lobby_flow.sign_up(conn, tournament, "x", user_of[player], True, "want")
+    assert lobby_db.get_lobby(conn, lobby.id).teams["A"].captain == player
+
+
+def test_a_no_show_captain_is_replaced_as_captain_by_a_teammate_who_checked_in(conn):
+    tournament_id = event_with(conn, 11, captains=2)
+    close_lobby_registration(conn, tournament_id, rng=random.Random(18))
+    lobby = lobby_db.get_lobbies(conn, tournament_id)[0]
+    captain = lobby.teams["A"].captain
+    absent, present = [p for p in lobby.teams["A"].players if p != captain][:2]
+    lobby_db.change_captain_pref(conn, tournament_id, absent, "want")
+    lobby_db.change_captain_pref(conn, tournament_id, present, "can")
+    tournament = db.get_tournament(conn, tournament_id)
+    lobby_flow.start_checkin(conn, tournament, 15, datetime.now(timezone.utc) - timedelta(minutes=20))
+    for signup in lobby_db.get_signups(conn, tournament_id):
+        if signup.team_id not in (captain, absent):
+            lobby_db.check_in(conn, signup.team_id)
+    assert lobby_db.finish_checkin(conn, tournament_id) is not None
+    assert lobby_db.get_lobby(conn, lobby.id).teams["A"].captain == present
+
+
+def test_a_sign_up_that_fails_partway_saves_nothing(conn):
+    tournament_id = event_with(conn, 10, captains=2)
+    close_lobby_registration(conn, tournament_id, rng=random.Random(19))
+
+    def fail(team_id):
+        raise RuntimeError("placing failed")
+
+    with pytest.raises(RuntimeError):
+        db.register_entrant(conn, tournament_id, "Late", 77, also=fail)
+    assert db.get_entrant_team_id(conn, tournament_id, 77) is None
+
+
+def test_an_organizers_result_before_finish_still_gets_a_results_post(conn):
+    tournament, lobby, (captain_a, role_a), (captain_b, role_b) = _playing(conn, 20)
+    lobby_db.add_event_post(conn, tournament["id"], 1)
+    organizer = lobby_flow.Role(None, None, False, True)
+    assert "final points" in lobby_flow.finalize(conn, tournament, lobby, organizer, ORGANIZER, _points(lobby))
+    assert lobby_db.get_post(conn, tournament["id"], lobby_db.results_post_key(lobby.id)) is not None

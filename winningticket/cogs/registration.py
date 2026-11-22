@@ -527,8 +527,10 @@ class RegistrationCog(commands.Cog):
             if problem is not None:
                 await reply(problem, keep_menu=True)
                 return
+            also = ((lambda team_id: lobby_db.save_signup(conn, tournament_row["id"], team_id, captain, late))
+                    if five_v_five else None)
             entrant = db.register_entrant(
-                conn, tournament_row["id"], name or user.display_name, user.id if linked else None
+                conn, tournament_row["id"], name or user.display_name, user.id if linked else None, also=also
             )
             if entrant is None:
                 link_hint = ", or link them to it with `/admin linkplayer`" if linked else ""
@@ -539,10 +541,8 @@ class RegistrationCog(commands.Cog):
             note = (" They haven't agreed to link their data to their account, so they're entered by name only."
                     if user is not None and not linked else "")
             if five_v_five:
-                lobby_db.set_captain_pref(conn, tournament_row["id"], team_id, captain)
                 note += f" Captain choice: {lobby_flow.CAPTAIN_CHOICES[captain]}."
             if late:
-                lobby_db.place_late_signup(conn, tournament_row["id"], team_id)
                 note = f" {lobby_flow.late_signup_line(conn, tournament_row['id'], team_id, False)}{note}"
             who = f"{entrant_name} ({user.mention})" if linked else entrant_name
             await reply(f"✅ Signed up {who} for **{tournament}** ({db.entrant_count(conn, tournament_row['id'])} "

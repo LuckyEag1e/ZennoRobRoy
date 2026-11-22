@@ -15,7 +15,8 @@ import db
 import lobby_db
 from lobby_db import SIDES, Lobby
 
-DRAFTER_HOST_URL = "https://drafter.uma.guide/host"
+DRAFTER_URL = "https://drafter.uma.guide"
+DRAFTER_HOST_URL = f"{DRAFTER_URL}/host"
 # When only one captain has entered the points, they're accepted this long after their last
 # change. The same 10 minutes a bracket match's vote waits.
 ANSWER_WITHIN = timedelta(minutes=10)

@@ -55,13 +55,46 @@ def captain_prefs(signups: list[Signup]) -> dict[int, str]:
     return {s.team_id: s.captain_pref if s.user_id is not None else "no" for s in signups}
 
 
-def set_captain_pref(conn: sqlite3.Connection, tournament_id: int, team_id: int, pref: str) -> None:
+def save_signup(conn: sqlite3.Connection, tournament_id: int, team_id: int, pref: str, place: bool) -> None:
+    """A new entrant's captain choice and, with `place` (after the draw), their spot or
+    place on the waitlist. Doesn't commit: it's written with the entrant itself
+    (db.register_entrant's `also`), so a sign-up is never left half saved."""
+    _save_pref(conn, tournament_id, team_id, pref)
+    if place:
+        _place_late_signup(conn, tournament_id, team_id)
+
+
+def _save_pref(conn: sqlite3.Connection, tournament_id: int, team_id: int, pref: str) -> None:
+    conn.execute(
+        """INSERT INTO lobby_signups (team_id, tournament_id, captain_pref) VALUES (?, ?, ?)
+           ON CONFLICT (team_id) DO UPDATE SET captain_pref = excluded.captain_pref""",
+        (team_id, tournament_id, pref),
+    )
+
+
+def change_captain_pref(conn: sqlite3.Connection, tournament_id: int, team_id: int, pref: str) -> None:
+    """A player changing their captain choice. After the draw it takes effect at once: a
+    captain stepping down hands the captaincy to the teammate best placed to take it
+    (lobby_flow.captain_change_problem makes sure there is one), and a player on a team with
+    no captain who can captain takes it. An entrant left unplaced is placed now."""
     with conn:
-        conn.execute(
-            """INSERT INTO lobby_signups (team_id, tournament_id, captain_pref) VALUES (?, ?, ?)
-               ON CONFLICT (team_id) DO UPDATE SET captain_pref = excluded.captain_pref""",
-            (team_id, tournament_id, pref),
-        )
+        _save_pref(conn, tournament_id, team_id, pref)
+        tournament = db.get_tournament(conn, tournament_id)
+        if tournament["status"] == "registration":
+            return
+        lobby = find_lobby_of(conn, tournament_id, team_id)
+        if lobby is None:
+            if team_id not in get_waitlist(conn, tournament_id):
+                _place_late_signup(conn, tournament_id, team_id)
+            return
+        side = lobby.side_of(team_id)
+        captain = lobby.teams[side].captain
+        prefs = captain_prefs(get_signups(conn, tournament_id))
+        if captain == team_id and not lobbies.is_candidate(prefs[team_id]):
+            teammates = [player for player in lobby.teams[side].players if player != team_id]
+            _set_captain(conn, lobby.id, side, lobbies.best_candidate(teammates, prefs))
+        elif captain is None and lobbies.is_candidate(prefs[team_id]):
+            _set_captain(conn, lobby.id, side, team_id)
 
 
 def rejoin(conn: sqlite3.Connection, tournament_id: int, team_id: int, pref: str) -> Optional[Lobby]:
@@ -71,42 +104,52 @@ def rejoin(conn: sqlite3.Connection, tournament_id: int, team_id: int, pref: str
         conn.execute("UPDATE teams SET withdrawn = NULL, withdrawn_by = NULL, withdrawn_at = NULL WHERE id = ?",
                      (team_id,))
         conn.execute("UPDATE lobby_signups SET checked_in_at = NULL WHERE team_id = ?", (team_id,))
-    set_captain_pref(conn, tournament_id, team_id, pref)
-    return place_late_signup(conn, tournament_id, team_id)
-
-
-def place_late_signup(conn: sqlite3.Connection, tournament_id: int, team_id: int) -> Optional[Lobby]:
-    """Put a sign-up from after the draw on the smallest team with room (lobbies.open_spot),
-    taking the captaincy if that team has none and they can captain (such a team is filled
-    first by someone who can), or else at the end of
-    the waitlist. Nobody already placed moves. They count as checked in if check-in has
-    started. Returns the lobby they joined, or None if they're waiting."""
-    with conn:
-        playing = [lobby for lobby in get_lobbies(conn, tournament_id) if get_result(conn, lobby.id) is None]
-        signup = next(s for s in get_signups(conn, tournament_id) if s.team_id == team_id)
-        spot = lobbies.open_spot([lobbies.TeamRoom(lobby.number, side, len(lobby.teams[side].players),
-                                                   len(lobby.players), lobby.teams[side].captain is not None)
-                                  for lobby in playing for side in SIDES], signup.can_captain)
-        if spot is None:
-            conn.execute(
-                """INSERT INTO lobby_waitlist (team_id, tournament_id, position)
-                   SELECT ?, ?, COALESCE(MAX(position), 0) + 1 FROM lobby_waitlist WHERE tournament_id = ?""",
-                (team_id, tournament_id, tournament_id),
-            )
-        else:
-            lobby = next(lobby for lobby in playing if lobby.number == spot.lobby_number)
-            conn.execute(
-                """INSERT INTO lobby_players (lobby_id, side, spot, team_id)
-                   SELECT ?, ?, COALESCE(MAX(spot), -1) + 1, ? FROM lobby_players WHERE lobby_id = ? AND side = ?""",
-                (lobby.id, spot.side, team_id, lobby.id, spot.side),
-            )
-            if lobby.teams[spot.side].captain is None and signup.can_captain:
-                conn.execute("UPDATE lobby_sides SET captain_team_id = ? WHERE lobby_id = ? AND side = ?",
-                             (team_id, lobby.id, spot.side))
-        if db.get_tournament(conn, tournament_id)["checkin_ends_at"] is not None:
-            conn.execute(f"UPDATE lobby_signups SET checked_in_at = {_NOW} WHERE team_id = ?", (team_id,))
+        _save_pref(conn, tournament_id, team_id, pref)
+        _place_late_signup(conn, tournament_id, team_id)
     return find_lobby_of(conn, tournament_id, team_id)
 
+
+def _place_late_signup(conn: sqlite3.Connection, tournament_id: int, team_id: int) -> None:
+    """Put a sign-up from after the draw on the smallest team with room (lobbies.open_spot),
+    taking the captaincy if that team has none and they can captain (such a team is filled
+    first by someone who can), or else at the end of the waitlist. Nobody already placed
+    moves. They count as checked in if check-in has started. Doesn't commit."""
+    playing = [lobby for lobby in get_lobbies(conn, tournament_id) if get_result(conn, lobby.id) is None]
+    signup = next(s for s in get_signups(conn, tournament_id) if s.team_id == team_id)
+    spot = lobbies.open_spot([lobbies.TeamRoom(lobby.number, side, len(lobby.teams[side].players),
+                                               len(lobby.players), lobby.teams[side].captain is not None)
+                              for lobby in playing for side in SIDES], signup.can_captain)
+    if spot is None:
+        conn.execute(
+            """INSERT INTO lobby_waitlist (team_id, tournament_id, position)
+               SELECT ?, ?, COALESCE(MAX(position), 0) + 1 FROM lobby_waitlist WHERE tournament_id = ?""",
+            (team_id, tournament_id, tournament_id),
+        )
+    else:
+        lobby = next(lobby for lobby in playing if lobby.number == spot.lobby_number)
+        _add_to_team(conn, lobby.id, spot.side, team_id)
+        if lobby.teams[spot.side].captain is None and signup.can_captain:
+            _set_captain(conn, lobby.id, spot.side, team_id)
+    if db.get_tournament(conn, tournament_id)["checkin_ends_at"] is not None:
+        conn.execute(f"UPDATE lobby_signups SET checked_in_at = {_NOW} WHERE team_id = ?", (team_id,))
+
+
+def _add_to_team(conn: sqlite3.Connection, lobby_id: int, side: str, team_id: int) -> None:
+    """Put a player in the next free spot on a team."""
+    conn.execute(
+        """INSERT INTO lobby_players (lobby_id, side, spot, team_id)
+           SELECT ?, ?, COALESCE(MAX(spot), -1) + 1, ? FROM lobby_players WHERE lobby_id = ? AND side = ?""",
+        (lobby_id, side, team_id, lobby_id, side),
+    )
+
+
+def _set_captain(conn: sqlite3.Connection, lobby_id: int, side: str, team_id: Optional[int]) -> None:
+    conn.execute("UPDATE lobby_sides SET captain_team_id = ? WHERE lobby_id = ? AND side = ?",
+                 (team_id, lobby_id, side))
+
+
+def other_side(side: str) -> str:
+    return "B" if side == "A" else "A"
 
 
 # -- lobbies ----------------------------------------------------------------------
@@ -186,8 +229,7 @@ def form_lobbies(conn: sqlite3.Connection, tournament_id: int, formed: list[lobb
 
 def set_captain(conn: sqlite3.Connection, lobby_id: int, side: str, team_id: int) -> None:
     with conn:
-        conn.execute("UPDATE lobby_sides SET captain_team_id = ? WHERE lobby_id = ? AND side = ?",
-                     (team_id, lobby_id, side))
+        _set_captain(conn, lobby_id, side, team_id)
 
 
 # -- leaving and replacements --------------------------------------------------------
@@ -214,12 +256,15 @@ def _replacement_pool(conn: sqlite3.Connection, tournament_id: int) -> list[int]
 
 
 def _replace(conn: sqlite3.Connection, tournament_id: int, lobby: Lobby, leaving: int,
-             only_if_filled: bool = False) -> Optional[Change]:
+             only_if_filled: bool = False, checked_in: Optional[set[int]] = None) -> Optional[Change]:
     """Fill `leaving`'s spot in place from the waitlist, without committing. With
-    `only_if_filled`, nothing changes (and None is returned) when nobody can take it."""
+    `only_if_filled`, nothing changes (and None is returned) when nobody can take it. With
+    `checked_in`, only teammates who checked in can take over the captaincy."""
     side = lobby.side_of(leaving)
     team = lobby.teams[side]
     prefs = captain_prefs(get_signups(conn, tournament_id))
+    if checked_in is not None:
+        prefs = {player: pref if player in checked_in else "no" for player, pref in prefs.items()}
     replacement = lobbies.replace_in_place(team.players, team.captain, leaving, prefs,
                                            _replacement_pool(conn, tournament_id))
     if replacement.newcomer is None and only_if_filled:
@@ -229,8 +274,7 @@ def _replace(conn: sqlite3.Connection, tournament_id: int, lobby: Lobby, leaving
     else:
         conn.execute("DELETE FROM lobby_waitlist WHERE team_id = ?", (replacement.newcomer,))
         conn.execute("UPDATE lobby_players SET team_id = ? WHERE team_id = ?", (replacement.newcomer, leaving))
-    conn.execute("UPDATE lobby_sides SET captain_team_id = ? WHERE lobby_id = ? AND side = ?",
-                 (replacement.captain, lobby.id, side))
+    _set_captain(conn, lobby.id, side, replacement.captain)
     # The players changed, so points entered for them are out of date.
     conn.execute("DELETE FROM lobby_entries WHERE lobby_id = ?", (lobby.id,))
     lost = replacement.captain is None and team.captain is not None
@@ -264,40 +308,42 @@ def move_to_other_team(conn: sqlite3.Connection, tournament_id: int, team_id: in
         lobby = find_lobby_of(conn, tournament_id, team_id)
         if lobby is None:
             return None
-        other = "B" if lobby.side_of(team_id) == "A" else "A"
+        other = other_side(lobby.side_of(team_id))
         if len(lobby.teams[other].players) >= lobbies.MAX_LOBBY // 2:
             return None
         change = _replace(conn, tournament_id, lobby, team_id)
         conn.execute("DELETE FROM lobby_players WHERE team_id = ?", (team_id,))
-        conn.execute(
-            """INSERT INTO lobby_players (lobby_id, side, spot, team_id)
-               SELECT ?, ?, COALESCE(MAX(spot), -1) + 1, ? FROM lobby_players WHERE lobby_id = ? AND side = ?""",
-            (lobby.id, other, team_id, lobby.id, other),
-        )
+        _add_to_team(conn, lobby.id, other, team_id)
         signup = next(s for s in get_signups(conn, tournament_id) if s.team_id == team_id)
         if lobby.teams[other].captain is None and signup.can_captain:
-            conn.execute("UPDATE lobby_sides SET captain_team_id = ? WHERE lobby_id = ? AND side = ?",
-                         (team_id, lobby.id, other))
+            _set_captain(conn, lobby.id, other, team_id)
     return change
 
 
-def bring_in(conn: sqlite3.Connection, tournament_id: int, leaving: int, newcomer: int) -> bool:
+def bring_in(conn: sqlite3.Connection, tournament_id: int, leaving: int, newcomer: int) -> Optional[Change]:
     """An organizer swapping a waitlisted player into `leaving`'s spot, whatever the
-    waitlist order. The player leaving goes to the front of the waitlist. False if either
-    isn't where they should be."""
+    waitlist order. The player leaving goes to the front of the waitlist. A captain
+    leaving hands the captaincy on as lobbies.replace_in_place would: to a teammate who can
+    captain, or else the newcomer if they can. None if either isn't where they should be."""
     with conn:
         lobby = find_lobby_of(conn, tournament_id, leaving)
         if lobby is None or newcomer not in get_waitlist(conn, tournament_id):
-            return False
+            return None
         conn.execute("UPDATE lobby_players SET team_id = ? WHERE team_id = ?", (newcomer, leaving))
         conn.execute("DELETE FROM lobby_waitlist WHERE team_id = ?", (newcomer,))
         conn.execute("UPDATE lobby_waitlist SET position = position + 1 WHERE tournament_id = ?", (tournament_id,))
         conn.execute("INSERT INTO lobby_waitlist (team_id, tournament_id, position) VALUES (?, ?, 1)",
                      (leaving, tournament_id))
-        conn.execute("UPDATE lobby_sides SET captain_team_id = NULL WHERE lobby_id = ? AND captain_team_id = ?",
-                     (lobby.id, leaving))
+        side = lobby.side_of(leaving)
+        lost = False
+        if lobby.teams[side].captain == leaving:
+            prefs = captain_prefs(get_signups(conn, tournament_id))
+            teammates = [player for player in lobby.teams[side].players if player != leaving]
+            captain = lobbies.best_candidate(teammates, prefs) or lobbies.best_candidate([newcomer], prefs)
+            _set_captain(conn, lobby.id, side, captain)
+            lost = captain is None
         conn.execute("DELETE FROM lobby_entries WHERE lobby_id = ?", (lobby.id,))
-    return True
+    return Change(leaving, lobby.id, newcomer, lost)
 
 
 # -- check-in ---------------------------------------------------------------------------
@@ -359,7 +405,8 @@ def finish_checkin(conn: sqlite3.Connection, tournament_id: int) -> Optional[lis
         for lobby in get_lobbies(conn, tournament_id):
             missing = [player for player in lobby.players if player not in checked_in]
             for player in sorted(missing, key=lambda player: player not in lobby.captains):
-                change = _replace(conn, tournament_id, get_lobby(conn, lobby.id), player, only_if_filled=True)
+                change = _replace(conn, tournament_id, get_lobby(conn, lobby.id), player, only_if_filled=True,
+                                  checked_in=checked_in)
                 if change is not None:
                     changes.append(change)
         if teams_without_captain(conn, tournament_id):
@@ -405,11 +452,16 @@ def finish(conn: sqlite3.Connection, lobby_id: int, sides: list[str], user_id: i
         lobby = get_lobby(conn, lobby_id)
         over = races_over(lobby, get_finished_sides(conn, lobby_id))
         if over:
-            conn.execute(
-                """INSERT OR IGNORE INTO lobby_posts (tournament_id, post_key, channel_id)
-                   SELECT tournament_id, ?, channel_id FROM lobby_posts WHERE tournament_id = ? AND post_key = ?""",
-                (results_post_key(lobby_id), lobby.tournament_id, EVENT_POST))
+            _reserve_results_post(conn, lobby)
     return over
+
+
+def _reserve_results_post(conn: sqlite3.Connection, lobby: Lobby) -> None:
+    """Make room for the lobby's results post, in the event post's channel, if it has none."""
+    conn.execute(
+        """INSERT OR IGNORE INTO lobby_posts (tournament_id, post_key, channel_id)
+           SELECT tournament_id, ?, channel_id FROM lobby_posts WHERE tournament_id = ? AND post_key = ?""",
+        (results_post_key(lobby.id), lobby.tournament_id, EVENT_POST))
 
 
 def races_over(lobby: Lobby, finished_sides: set[str]) -> bool:
@@ -474,7 +526,7 @@ def enter_points(conn: sqlite3.Connection, lobby_id: int, side: str, user_id: in
         entries = get_entries(conn, lobby_id)
         if not is_complete(lobby, entries[side]):
             return False
-        other = "B" if side == "A" else "A"
+        other = other_side(side)
         if lobby.teams[other].captain is not None and (
                 other not in entries or not is_complete(lobby, entries[other]) or mismatched_players(lobby, entries)):
             return False
@@ -527,6 +579,7 @@ def _record_result(conn: sqlite3.Connection, lobby_id: int, points: dict[int, in
                  (lobby_id, side, by))
     conn.executemany("INSERT INTO lobby_points (lobby_id, team_id, points) VALUES (?, ?, ?)",
                      [(lobby_id, player, points[player]) for player in lobby.players])
+    _reserve_results_post(conn, lobby)  # an organizer's result can come before anyone presses Finish
     finished = conn.execute(
         """SELECT COUNT(*) = 0 FROM lobbies l WHERE l.tournament_id = ?
            AND NOT EXISTS (SELECT 1 FROM lobby_results r WHERE r.lobby_id = l.id)""",

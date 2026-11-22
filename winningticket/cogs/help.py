@@ -6,6 +6,7 @@ from discord.ext import commands
 
 from common import requires_manage_server
 from labels import CURRENT_FEATURES, PLANNED_FEATURES
+from lobby_posts import DRAFTER_HOST_URL
 
 
 def _command_list_embed(title: str, sections: list[tuple[str, str]]) -> discord.Embed:
@@ -148,7 +149,7 @@ class HelpCog(commands.Cog):
              "Before play starts you're pinged to press **Check In** (or `/checkin`). Anyone in a lobby who "
              "hasn't checked in by the end is replaced by the next checked-in player on the waitlist."),
             ("4. Play",
-             "A captain creates the room at https://drafter.uma.guide/host and presses **Submit Room Code**. "
+             f"A captain creates the room at {DRAFTER_HOST_URL} and presses **Submit Room Code**. "
              "Everyone else presses **Get Room Code** on the event's post, joins, drafts, trains their character "
              "and races. Each race gives 5, 3 and 1 points for 1st, 2nd and 3rd."),
             ("5. Results",

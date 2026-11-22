@@ -5,7 +5,7 @@ from __future__ import annotations
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import NamedTuple, Optional
+from typing import Callable, NamedTuple, Optional
 
 from bracket import (
     Match,
@@ -299,8 +299,6 @@ CREATE TABLE IF NOT EXISTS lobby_waitlist (
     tournament_id   INTEGER NOT NULL REFERENCES tournaments(id) ON DELETE CASCADE,
     position        INTEGER NOT NULL
 );
--- A captain's report of everyone's points, waiting for the other captain. `points` is
--- JSON, entrant id to points.
 -- A captain pressing Finish once their lobby's races are over (an organizer's press fills in
 -- both sides). Points are entered once both have.
 CREATE TABLE IF NOT EXISTS lobby_finishes (
@@ -310,7 +308,8 @@ CREATE TABLE IF NOT EXISTS lobby_finishes (
     finished_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
     PRIMARY KEY (lobby_id, side)
 );
--- Each captain's own entry of everyone's points in their lobby. Matching entries are the result.
+-- Each captain's own entry of the points in their lobby, entered a team at a time. `points` is
+-- JSON, entrant id to points. Matching complete entries are the result.
 CREATE TABLE IF NOT EXISTS lobby_entries (
     lobby_id        INTEGER NOT NULL REFERENCES lobbies(id) ON DELETE CASCADE,
     side            TEXT NOT NULL,
@@ -403,9 +402,7 @@ def init_db(conn: sqlite3.Connection) -> None:
         _add_column_if_missing(conn, "teams", "withdrawn_at", "TEXT")
         _add_column_if_missing(conn, "match_results", "walkover", "INTEGER NOT NULL DEFAULT 0")
         _move_report_posts(conn)
-        # One captain's report that the other confirmed or disputed, which each captain
-        # entering the points (lobby_entries) replaced before any release.
-        conn.execute("DROP TABLE IF EXISTS lobby_reports")
+        conn.execute("DROP TABLE IF EXISTS lobby_reports")  # older databases' 5v5 reports; nothing reads it
     conn.commit()
 
 
@@ -675,10 +672,11 @@ def get_teams(conn: sqlite3.Connection, tournament_id: int) -> dict[int, sqlite3
     return {r["id"]: r for r in rows}
 
 
-def register_entrant(conn: sqlite3.Connection, tournament_id: int, name: str,
-                     user_id: int | None) -> tuple[int, str] | None:
+def register_entrant(conn: sqlite3.Connection, tournament_id: int, name: str, user_id: int | None,
+                     also: Optional[Callable[[int], None]] = None) -> tuple[int, str] | None:
     """Sign up a one-person team and return its (team id, name). With no `user_id` it's
-    just a name, with no Discord account behind it.
+    just a name, with no Discord account behind it. `also` makes more writes for the new
+    entrant's id in the same transaction, such as a 5v5 sign-up's captain choice.
 
     Nothing is saved, and None is returned, if the name belongs to an entrant with no
     account behind it, or to anyone when there's no `user_id`: two name-only entrants
@@ -704,6 +702,8 @@ def register_entrant(conn: sqlite3.Connection, tournament_id: int, name: str,
                 "INSERT INTO team_members (team_id, tournament_id, user_id) VALUES (?, ?, ?)",
                 (team_id, tournament_id, user_id),
             )
+        if also is not None:
+            also(team_id)
     return team_id, unique_name
 
 

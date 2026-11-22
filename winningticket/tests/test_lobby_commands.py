@@ -480,7 +480,7 @@ def test_an_organizer_is_told_to_move_a_spare_captain_over(tmp_path):
         keeping = lobby.side_of(lobby.captains[1])
         # A second player who can captain on the team that keeps its captain.
         spare = next(p for p in lobby.teams[keeping].players if p != lobby.teams[keeping].captain)
-        lobby_db.set_captain_pref(conn, tournament["id"], spare, "can")
+        lobby_db.change_captain_pref(conn, tournament["id"], spare, "can")
         user_of = {team_id: members[0] for team_id, members in db.get_members_by_team(conn, tournament["id"]).items()}
         conn.close()
         leaving = next(u for u in users if u.id == user_of[lobby.captains[0]])
