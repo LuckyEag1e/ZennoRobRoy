@@ -181,6 +181,11 @@ def _lobby_status(conn: sqlite3.Connection, lobby: Lobby, names: Names, player_l
     return lines
 
 
+# After a name in the event post's dropout list, by db.WITHDRAWAL_REASONS. Leaving before
+# the draw deletes the sign-up, so everyone listed left after it.
+_HOW_THEY_LEFT = {"dropped": "", "withdrawn": " (withdrawn by an organizer)", "disqualified": " (disqualified)"}
+
+
 def describe_event(conn: sqlite3.Connection, tournament: sqlite3.Row, player_label: Callable[[int], str]) -> PostState:
     names = Names(conn, tournament["id"], player_label)
     name = tournament["name"]
@@ -203,6 +208,9 @@ def describe_event(conn: sqlite3.Connection, tournament: sqlite3.Row, player_lab
         lines += ["", f"**{label}:** {', '.join(waiting)}"]
     elif not finished:
         lines += ["", "**Waitlist:** nobody yet"]
+    left = [signup for signup in names.signups.values() if signup.withdrawn]
+    if left:
+        lines += ["", "**Dropped out:** " + ", ".join(names(s.team_id) + _HOW_THEY_LEFT[s.withdrawn] for s in left)]
 
     everyone = [("in", user_id) for user_id in names.user_ids([p for lobby in drawn for p in lobby.players])]
     waiters = [("in", user_id) for user_id in names.user_ids(waitlist)]

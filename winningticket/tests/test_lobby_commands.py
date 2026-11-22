@@ -504,6 +504,8 @@ def test_the_sign_up_count_leaves_out_players_who_left_after_the_draw(tmp_path):
     sim, organizer, users, tournament_id = _drawn_without_a_captain(tmp_path)
     try:
         assert "**6** signed up so far" in _post_with(sim, "signed up so far").content
+        _loop(sim)
+        assert "**Dropped out:** " in _post_with(sim, EVENT_POST).content
     finally:
         asyncio.run(sim.close())
 

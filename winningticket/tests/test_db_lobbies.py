@@ -429,3 +429,18 @@ def test_an_organizers_result_before_finish_still_gets_a_results_post(conn):
     organizer = lobby_flow.Role(None, None, False, True)
     assert "final points" in lobby_flow.finalize(conn, tournament, lobby, organizer, ORGANIZER, _points(lobby))
     assert lobby_db.get_post(conn, tournament["id"], lobby_db.results_post_key(lobby.id)) is not None
+
+
+def test_the_event_post_lists_who_dropped_out_and_how(conn):
+    tournament_id = event_with(conn, 12, captains=2)
+    close_lobby_registration(conn, tournament_id, rng=random.Random(21))
+    lobby = lobby_db.get_lobbies(conn, tournament_id)[0]
+    dropped, disqualified = [p for p in lobby.players if p not in lobby.captains][:2]
+    lobby_db.leave(conn, tournament_id, dropped, "dropped", None)
+    lobby_db.leave(conn, tournament_id, disqualified, "disqualified", ORGANIZER)
+    names = {t: row["name"] for t, row in db.get_teams(conn, tournament_id).items()}
+    post = lobby_posts.describe_event(conn, db.get_tournament(conn, tournament_id), str)
+    assert f"**Dropped out:** " in post.text
+    dropout_line = next(line for line in post.text.splitlines() if line.startswith("**Dropped out:**"))
+    users = {t: u[0] for t, u in db.get_members_by_team(conn, tournament_id).items()}
+    assert f"{users[dropped]}, {users[disqualified]} (disqualified)" in dropout_line
