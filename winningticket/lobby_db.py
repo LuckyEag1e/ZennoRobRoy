@@ -108,15 +108,14 @@ def rejoin(conn: sqlite3.Connection, tournament_id: int, team_id: int, pref: str
 
 def reinstate(conn: sqlite3.Connection, tournament_id: int, team_id: int) -> None:
     """An organizer undoing a player's leaving, keeping their captain choice. Until check-in
-    is over they're placed like any late sign-up. After it, their spot has been filled, so
-    they wait at the end of the waitlist, checked in, since the organizer vouches for them."""
+    is over they're placed like any late sign-up, but not checked in: they check in like
+    everyone else. After it, their spot has been filled, so they wait at the end of the waitlist."""
     with conn:
         _clear_withdrawal(conn, team_id)
         if db.get_tournament(conn, tournament_id)["checkin_finished"]:
             _add_to_waitlist(conn, tournament_id, team_id)
-            conn.execute(f"UPDATE lobby_signups SET checked_in_at = {_NOW} WHERE team_id = ?", (team_id,))
         else:
-            _place_late_signup(conn, tournament_id, team_id)
+            _place_late_signup(conn, tournament_id, team_id, check_in=False)
 
 
 def _clear_withdrawal(conn: sqlite3.Connection, team_id: int) -> None:
@@ -134,11 +133,12 @@ def _add_to_waitlist(conn: sqlite3.Connection, tournament_id: int, team_id: int)
     )
 
 
-def _place_late_signup(conn: sqlite3.Connection, tournament_id: int, team_id: int) -> None:
+def _place_late_signup(conn: sqlite3.Connection, tournament_id: int, team_id: int, check_in: bool = True) -> None:
     """Put a sign-up from after the draw on the smallest team with room (lobbies.open_spot),
     taking the captaincy if that team has none and they can captain (such a team is filled
     first by someone who can), or else at the end of the waitlist. Nobody already placed
-    moves. They count as checked in if check-in has started. Doesn't commit."""
+    moves. With `check_in`, they count as checked in if check-in has started, since signing
+    up then means they're here. Doesn't commit."""
     playing = [lobby for lobby in get_lobbies(conn, tournament_id) if get_result(conn, lobby.id) is None]
     signup = next(s for s in get_signups(conn, tournament_id) if s.team_id == team_id)
     spot = lobbies.open_spot([lobbies.TeamRoom(lobby.number, side, len(lobby.teams[side].players),
@@ -151,7 +151,7 @@ def _place_late_signup(conn: sqlite3.Connection, tournament_id: int, team_id: in
         _add_to_team(conn, lobby.id, spot.side, team_id)
         if lobby.teams[spot.side].captain is None and signup.can_captain:
             _set_captain(conn, lobby.id, spot.side, team_id)
-    if db.get_tournament(conn, tournament_id)["checkin_ends_at"] is not None:
+    if check_in and db.get_tournament(conn, tournament_id)["checkin_ends_at"] is not None:
         conn.execute(f"UPDATE lobby_signups SET checked_in_at = {_NOW} WHERE team_id = ?", (team_id,))
 
 

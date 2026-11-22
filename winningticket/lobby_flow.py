@@ -310,10 +310,12 @@ def reinstate(conn: sqlite3.Connection, tournament: sqlite3.Row, team_id: int) -
         return f"Every lobby in **{name}** has finished, so there's nothing to bring {who} back into."
     lobby_db.reinstate(conn, tournament["id"], team_id)
     if takes_late_signups(tournament):
-        return f"✅ Brought {who} back into **{name}**. {late_signup_line(conn, tournament['id'], team_id, False)}"
+        checking = " They still need to check in." if lobby_db.checkin_running(tournament) else ""
+        return (f"✅ Brought {who} back into **{name}**. {late_signup_line(conn, tournament['id'], team_id, False)}"
+                f"{checking}")
     position = lobby_db.get_waitlist(conn, tournament["id"]).index(team_id) + 1
-    return (f"✅ Brought {who} back into **{name}**: check-in is over, so they're **#{position} on the waitlist**, "
-            f"checked in. To give them a spot, use `/admin lobbyswap tournament:{name} leaving:<player> joining:{who}`.")
+    return (f"✅ Brought {who} back into **{name}**: check-in is over, so they're **#{position} on the waitlist**. "
+            f"To give them a spot, use `/admin lobbyswap tournament:{name} leaving:<player> joining:{who}`.")
 
 
 def checkin_start_problem(conn: sqlite3.Connection, tournament: sqlite3.Row) -> Optional[str]:

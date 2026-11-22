@@ -692,15 +692,21 @@ def test_an_organizer_reinstates_a_5v5_player(tmp_path):
         assert "Brought" in reply.content and "waitlist" in reply.content  # their spot went to the waiter
         _loop(sim)
         assert "**Dropped out:**" not in _post_with(sim, EVENT_POST).content
-        # After check-in, they come back checked in at the end of the waitlist.
+        # During check-in they come back without being checked in, and after it at the end of the waitlist.
         asyncio.run(sim.run(organizer, "admin withdraw", tournament="Duel", entrant=name, reason="withdrawn"))
         asyncio.run(sim.run(organizer, "lobby startcheckin", tournament="Duel", minutes=5))
+        reply = asyncio.run(sim.run(organizer, "admin reinstate", tournament="Duel", entrant=name)).sent
+        assert "still need to check in" in reply.content
+        conn = db.get_connection()
+        assert not next(s for s in lobby_db.get_signups(conn, tournament_id) if s.team_id == player).checked_in
+        conn.close()
+        asyncio.run(sim.run(organizer, "admin withdraw", tournament="Duel", entrant=name, reason="withdrawn"))
         asyncio.run(sim.run(organizer, "lobby endcheckin", tournament="Duel"))
         reply = asyncio.run(sim.run(organizer, "admin reinstate", tournament="Duel", entrant=name)).sent
         assert "check-in is over" in reply.content and "/admin lobbyswap" in reply.content
         conn = db.get_connection()
         assert player in lobby_db.get_waitlist(conn, tournament_id)
-        assert next(s for s in lobby_db.get_signups(conn, tournament_id) if s.team_id == player).checked_in
+        assert not next(s for s in lobby_db.get_signups(conn, tournament_id) if s.team_id == player).checked_in
         conn.close()
     finally:
         asyncio.run(sim.close())
