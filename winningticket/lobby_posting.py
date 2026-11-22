@@ -299,7 +299,7 @@ class CheckInLengthForm(BotModal, title="Start Check-In"):
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
         text = self.minutes.value.strip()
-        if not text.isdigit() or not 1 <= int(text) <= lobby_flow.MAX_CHECKIN_MINUTES:
+        if not text.isdecimal() or not 1 <= int(text) <= lobby_flow.MAX_CHECKIN_MINUTES:
             await interaction.response.send_message(
                 f"Enter a whole number of minutes from 1 to {lobby_flow.MAX_CHECKIN_MINUTES}.", ephemeral=True)
             return

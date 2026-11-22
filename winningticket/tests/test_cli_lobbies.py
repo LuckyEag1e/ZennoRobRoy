@@ -84,3 +84,22 @@ def test_a_5v5_event_from_the_cli(repl, capsys, monkeypatch):
     assert "Lobby 1: 🏆" in capsys.readouterr().out
     repl.onecmd(f"rating {captain_a}")
     assert "5v5 contribution: 1" in capsys.readouterr().out
+
+
+def test_a_timed_5v5_close_draws_lobbies_in_the_cli(repl, capsys):
+    repl.onecmd("regopen5v5 Duel --starts-in 24 --closes-in 1")
+    for user_id in range(10, 20):
+        db.record_agreement(repl.conn, cli.GUILD_ID, user_id)
+        repl.onecmd(f"as {user_id} P{user_id}")
+        repl.onecmd(f"register Duel --captain {'want' if user_id < 12 else 'no'}")
+    tournament = db.get_tournament_by_name(repl.conn, cli.GUILD_ID, "Duel")
+    repl.conn.execute("UPDATE tournaments SET registration_closes_at = ? WHERE id = ?",
+                      (db.to_db_time(datetime.now(timezone.utc) - timedelta(minutes=1)), tournament["id"]))
+    repl.conn.commit()
+    capsys.readouterr()
+    repl.onecmd("as 1 tester")
+    assert "its lobbies are drawn" in capsys.readouterr().out
+    tournament = db.get_tournament(repl.conn, tournament["id"])
+    assert tournament["status"] == "in_progress"
+    assert len(lobby_db.get_lobbies(repl.conn, tournament["id"])) == 1
+    assert not repl.conn.execute("SELECT 1 FROM matches WHERE tournament_id = ?", (tournament["id"],)).fetchone()

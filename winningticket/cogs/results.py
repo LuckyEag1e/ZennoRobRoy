@@ -27,7 +27,7 @@ from common import (
 )
 from embeds import mention, render_match_stats_embed
 from labels import team_label
-from lobby_posting import sync_posts
+from lobby_posting import refresh_signups, sync_posts
 from posting import (
     ReadyUpButton,
     ReportResultButton,
@@ -234,6 +234,7 @@ class ResultsCog(commands.Cog):
                 # A 5v5 event's posts show the change, so the reply is all that's needed.
                 reply = lobby_flow.dropout(conn, tournament_row, team_id, "dropped", interaction.user.id)
                 await interaction.response.send_message(reply, ephemeral=True)
+                await refresh_signups(self.bot, conn, tournament_row["id"])  # the count leaves them out
                 await sync_posts(self.bot, conn, tournament_row["id"])
                 return
             team = db.get_teams(conn, tournament_row["id"]).get(team_id)

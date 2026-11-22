@@ -454,3 +454,31 @@ def test_room_codes_close_once_the_races_are_over(conn):
     assert "races are over" in lobby_flow.get_room_code(conn, tournament, lobby, role_b)
     post = lobby_posts.describe_event(conn, tournament, str)
     assert post.buttons == []  # its only lobby is finished
+
+
+def test_a_swap_onto_a_team_with_no_captain_makes_a_newcomer_who_can_captain_it(conn):
+    tournament_id = event_with(conn, 10, captains=2)
+    close_lobby_registration(conn, tournament_id, rng=random.Random(23))
+    newcomer = sign_up(conn, tournament_id, 60, "want", place=True)
+    assert newcomer in lobby_db.get_waitlist(conn, tournament_id)
+    lobby = lobby_db.get_lobbies(conn, tournament_id)[0]
+    lobby_db.set_captain(conn, lobby.id, "A", None)
+    leaving = next(p for p in lobby.teams["A"].players)
+    tournament = db.get_tournament(conn, tournament_id)
+    reply = lobby_flow.swap_in(conn, tournament, leaving, newcomer)
+    assert "takes" in reply and "has no captain" not in reply
+    assert lobby_db.get_lobby(conn, lobby.id).teams["A"].captain == newcomer
+
+
+def test_points_must_be_plain_digits(conn):
+    tournament, lobby, _, _ = _playing(conn, 24)
+    assert isinstance(lobby_flow.parse_points(lobby.players, {p: "²" for p in lobby.players}), str)
+
+
+def test_captains_cant_change_once_the_races_are_over(conn):
+    tournament, lobby, (captain_a, role_a), (captain_b, role_b) = _playing(conn, 25)
+    lobby_flow.finish(conn, tournament, lobby, role_a, captain_a)
+    lobby_flow.finish(conn, tournament, lobby, role_b, captain_b)
+    other = next(p for p in lobby.teams["A"].players if p != lobby.teams["A"].captain)
+    assert "races are over" in lobby_flow.make_captain(conn, tournament, other)
+    assert lobby_db.get_lobby(conn, lobby.id).teams["A"].captain == lobby.teams["A"].captain

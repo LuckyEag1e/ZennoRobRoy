@@ -367,9 +367,10 @@ def move_to_other_team(conn: sqlite3.Connection, tournament_id: int, team_id: in
 
 def bring_in(conn: sqlite3.Connection, tournament_id: int, leaving: int, newcomer: int) -> Optional[Change]:
     """An organizer swapping a waitlisted player into `leaving`'s spot, whatever the
-    waitlist order. The player leaving goes to the front of the waitlist. A captain
-    leaving hands the captaincy on as lobbies.replace_in_place would: to a teammate who can
-    captain, or else the newcomer if they can. None if either isn't where they should be."""
+    waitlist order. The player leaving goes to the front of the waitlist. A team losing its
+    captain, or with none, gets one as lobbies.replace_in_place would give it: a teammate
+    who can captain, or else the newcomer if they can. None if either isn't where they
+    should be."""
     with conn:
         lobby = find_lobby_of(conn, tournament_id, leaving)
         if lobby is None or newcomer not in get_waitlist(conn, tournament_id):
@@ -381,7 +382,7 @@ def bring_in(conn: sqlite3.Connection, tournament_id: int, leaving: int, newcome
                      (leaving, tournament_id))
         side = lobby.side_of(leaving)
         lost = False
-        if lobby.teams[side].captain == leaving:
+        if lobby.teams[side].captain in (leaving, None):
             prefs = captain_prefs(get_signups(conn, tournament_id))
             teammates = [player for player in lobby.teams[side].players if player != leaving]
             captain = lobbies.best_candidate(teammates, prefs) or lobbies.best_candidate([newcomer], prefs)

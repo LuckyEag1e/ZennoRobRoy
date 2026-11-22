@@ -116,7 +116,7 @@ def parse_match_slots(value: str | None) -> int | None | bool:
     saying so, when it isn't a whole number of at least 1."""
     if value is None:
         return None
-    if not value.isdigit() or int(value) < 1:
+    if not value.isdecimal() or int(value) < 1:
         print("--match-slots must be a whole number of at least 1")
         return False
     return int(value)
@@ -160,6 +160,9 @@ class WinningTicketCLI(cmd.Cmd):
         does the same before each command."""
         for tournament in db.get_tournaments_due_to_close(self.conn):
             name = tournament["name"]
+            if tournament["format"] == "lobbies":
+                self._close_lobbies_when_due(tournament)
+                continue
             try:
                 count = tournament_builder.close_overdue_registration(self.conn, tournament["id"])
             except tournament_builder.RegistrationClosedError:
@@ -172,6 +175,20 @@ class WinningTicketCLI(cmd.Cmd):
                 print(f"Registration for '{name}' couldn't close automatically: {e!r}")
                 continue
             print(f"Registration for '{name}' closed automatically; {count} entrants {draw_description(tournament['seeding_mode'])}.")
+
+    def _close_lobbies_when_due(self, tournament) -> None:
+        """Draw a 5v5 event's lobbies at its sign-up deadline with the proposed split, as the
+        bot does. Without enough players, the deadline is dropped and sign-ups stay open."""
+        name = tournament["name"]
+        try:
+            tournament_builder.close_lobby_registration(self.conn, tournament["id"])
+        except tournament_builder.RegistrationClosedError:
+            return
+        except lobbies.LobbyError as e:
+            db.clear_registration_deadline(self.conn, tournament["id"])
+            print(f"Sign-ups for '{name}' couldn't close: {e} They stay open until 'regclose'.")
+            return
+        print(f"Sign-ups for '{name}' closed automatically, and its lobbies are drawn.")
 
     def _tend_matches(self) -> None:
         """The bot calls matches, warns about and gives unanswered votes, and updates each
@@ -1059,7 +1076,7 @@ class WinningTicketCLI(cmd.Cmd):
 
     def do_admin_matchrooms(self, arg: str) -> None:
         "Pretend the server has this many voice rooms for called matches: admin_matchrooms <count>"
-        if not arg.strip().isdigit():
+        if not arg.strip().isdecimal():
             print("usage: admin_matchrooms <count>")
             return
         self.rooms = list(range(1, int(arg.strip()) + 1))
@@ -1257,7 +1274,7 @@ class WinningTicketCLI(cmd.Cmd):
         if tournament is None:
             return
         minutes = parts[1] if len(parts) > 1 else str(lobby_flow.DEFAULT_CHECKIN_MINUTES)
-        if not minutes.isdigit() or not 1 <= int(minutes) <= lobby_flow.MAX_CHECKIN_MINUTES:
+        if not minutes.isdecimal() or not 1 <= int(minutes) <= lobby_flow.MAX_CHECKIN_MINUTES:
             print(f"minutes must be a whole number from 1 to {lobby_flow.MAX_CHECKIN_MINUTES}")
             return
         self._say(lobby_flow.start_checkin(self.conn, tournament, int(minutes), datetime.now(timezone.utc)))
@@ -1349,17 +1366,9 @@ class WinningTicketCLI(cmd.Cmd):
             print("usage: admin_setcaptain <name> <entrant>")
             return
         found = self._require_entrant(*parts, ("in_progress",), ("lobbies",))
-        if found is None:
-            return
-        tournament, team = found
-        lobby = lobby_db.find_lobby_of(self.conn, tournament["id"], team["id"])
-        if lobby is None:
-            print(f"{team['name']} isn't playing in a lobby.")
-        elif not db.team_member_ids(self.conn, team["id"]):
-            print(f"{team['name']} has no linked account, so they couldn't give the room code or report.")
-        else:
-            lobby_db.set_captain(self.conn, lobby.id, lobby.side_of(team["id"]), team["id"])
-            self._say(f"{team['name']} now captains their team in lobby {lobby.number}.")
+        if found is not None:
+            tournament, team = found
+            self._say(lobby_flow.make_captain(self.conn, tournament, team["id"]))
 
     def do_admin_lobbyswap(self, arg: str) -> None:
         "Bring a waitlisted player into a 5v5 lobby, a free spot or someone's: admin_lobbyswap <name> <joining> [leaving]"

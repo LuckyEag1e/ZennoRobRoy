@@ -432,15 +432,7 @@ class AdminCog(commands.Cog):
             if found is None:
                 return
             tournament_row, team = found
-            lobby = lobby_db.find_lobby_of(conn, tournament_row["id"], team["id"])
-            if lobby is None:
-                reply = f"**{entrant}** isn't playing in a lobby."
-            elif not db.team_member_ids(conn, team["id"]):
-                reply = (f"**{entrant}** has no linked account, so they couldn't give the bot the room code or report "
-                         f"the points. Pick someone with one.")
-            else:
-                lobby_db.set_captain(conn, lobby.id, lobby.side_of(team["id"]), team["id"])
-                reply = f"**{entrant}** now captains their team in lobby {lobby.number}."
+            reply = lobby_flow.make_captain(conn, tournament_row, team["id"])
             await interaction.response.send_message(reply, ephemeral=True)
             await sync_posts(self.bot, conn, tournament_row["id"])
         finally:

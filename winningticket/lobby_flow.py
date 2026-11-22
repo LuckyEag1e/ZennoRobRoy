@@ -92,6 +92,24 @@ def lineup_problem(conn: sqlite3.Connection, lobby: Lobby) -> Optional[str]:
     return None
 
 
+def make_captain(conn: sqlite3.Connection, tournament: sqlite3.Row, team_id: int) -> str:
+    """An organizer making a player captain of their team. Returns their reply."""
+    names = Names(conn, tournament["id"], str)
+    who = names.plain(team_id)
+    lobby = lobby_db.find_lobby_of(conn, tournament["id"], team_id)
+    if lobby is None:
+        return f"**{who}** isn't playing in a lobby."
+    problem = lineup_problem(conn, lobby)
+    if problem is not None:
+        return problem
+    if not db.team_member_ids(conn, team_id):
+        return (f"**{who}** has no linked account, so they couldn't give the bot the room code or report the points. "
+                f"Pick someone with one.")
+    side = lobby.side_of(team_id)
+    lobby_db.set_captain(conn, lobby.id, side, team_id)
+    return f"✅ **{who}** now captains {team_name(lobby, side, names)} in lobby {lobby.number}."
+
+
 def swap_in(conn: sqlite3.Connection, tournament: sqlite3.Row, leaving: Optional[int], joining: int) -> str:
     """An organizer bringing a waitlisted player into someone's spot, or with no one
     `leaving`, into a free spot. Returns their reply."""
@@ -576,7 +594,7 @@ def parse_points(players: list[int], entered: dict[int, str]) -> dict[int, int] 
     points = {}
     for player in players:
         text = entered.get(player, "").strip()
-        if not text.isdigit() or int(text) > MAX_POINTS:
+        if not text.isdecimal() or int(text) > MAX_POINTS:
             return "Enter each player's points as a whole number (0 if they scored none)."
         points[player] = int(text)
     return points
