@@ -11,9 +11,8 @@ from discord.ext import commands, tasks
 import db
 import lobby_db
 import lobby_flow
-from common import requires_manage_server, resolve_tournament, tournament_name_autocomplete
-from lobby_posting import (LobbyButton, is_organizer, open_points, refresh_signups, start_checkin, sync_posts,
-                           with_custom_emojis)
+from common import requires_manage_server, resolve_tournament, tournament_name_autocomplete, with_custom_emojis
+from lobby_posting import LobbyButton, is_organizer, open_points, refresh_signups, start_checkin, sync_posts
 
 log = logging.getLogger("winningticket")
 

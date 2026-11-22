@@ -30,11 +30,12 @@ FINISH = "Finish"
 FINALIZE = "Finalize Scores"
 
 # The server's custom emojis, written by name. The bot swaps each for the emoji itself
-# (lobby_posting.with_custom_emojis), and the CLI shows the names.
+# (common.with_custom_emojis), and the CLI shows the names.
+BOT_EMOJI = ":winningticket:"
 ROOM_EMOJI = ":teio_welcome:"
 RESULTS_EMOJI = ":biwahiyahide:"
 MISMATCH_EMOJI = ":mejiro_mcqueen_shocked:"
-CUSTOM_EMOJIS = (ROOM_EMOJI, RESULTS_EMOJI, MISMATCH_EMOJI)
+CUSTOM_EMOJIS = (BOT_EMOJI, ROOM_EMOJI, RESULTS_EMOJI, MISMATCH_EMOJI)
 # How much longer a custom emoji gets once swapped in: `<`, its id (up to 20 digits) and `>`.
 CUSTOM_EMOJI_GROWTH = 22
 

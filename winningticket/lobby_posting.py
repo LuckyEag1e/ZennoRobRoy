@@ -15,8 +15,8 @@ import db
 import lobby_db
 import lobby_flow
 import lobby_posts
-from common import (BotModal, BotView, edit_signups_message, resolve_emoji, send_public, signups_message,
-                    turn_away_if_banned)
+from common import (BotModal, BotView, edit_signups_message, send_public, signups_message, turn_away_if_banned,
+                    with_custom_emojis)
 from embeds import mention
 from labels import CONSENT_NOTICE
 from posting import delete_message
@@ -363,13 +363,6 @@ async def _submit_code(interaction, conn, tournament, lobby) -> None:
         await interaction.response.send_message(problem, ephemeral=True)
         return
     await interaction.response.send_modal(RoomCodeForm(lobby.id))
-
-
-def with_custom_emojis(client: discord.Client, text: str) -> str:
-    """`text` with the server's custom emojis (lobby_posts.CUSTOM_EMOJIS) swapped in for their names."""
-    for name in lobby_posts.CUSTOM_EMOJIS:
-        text = text.replace(name, resolve_emoji(client, name.strip(":")))
-    return text
 
 
 async def _get_code(interaction, conn, tournament, lobby) -> None:

@@ -17,6 +17,7 @@ import lobby_db
 from labels import OPTED_OUT_NOTE, name_held_message
 from lobby_db import SIDES, Lobby
 from lobby_posts import (
+    BOT_EMOJI,
     DRAFTER_HOST_URL,
     DRAFTER_URL,
     FINALIZE,
@@ -630,13 +631,13 @@ def lobby_signups_message(tournament: sqlite3.Row, entrants: int) -> str:
     if tournament["status"] == "registration":
         starts = db.from_db_time(tournament["starts_at"]) if tournament["starts_at"] else None
         when = f" Play starts <t:{int(starts.timestamp())}:F> (<t:{int(starts.timestamp())}:R>)." if starts else ""
-        return (f"📝 Sign-ups are open for **{name}**, a 5v5 event!{when} Press **Register** below (or run "
+        return (f"{BOT_EMOJI} Sign-ups are open for **{name}**, a 5v5 event!{when} Press **Register** below (or run "
                 f"{register_command(name)}) and say whether you'll captain. Lobbies and teams are drawn ahead of "
                 f"time, and everyone is pinged here with their lobby or their place on the waitlist. {count}")
     if takes_late_signups(tournament):
-        return (f"📝 The lobbies for **{name}** are drawn: see the post below. Pressing **Register** now puts you on a "
+        return (f"{BOT_EMOJI} The lobbies for **{name}** are drawn: see the post below. Pressing **Register** now puts you on a "
                 f"team that has room, or on the waitlist if none does. {count}")
-    return f"📝 Sign-ups for **{name}** are closed."
+    return f"{BOT_EMOJI} Sign-ups for **{name}** are closed."
 
 
 def entrant_lines(conn: sqlite3.Connection, tournament: sqlite3.Row, player_label) -> list[str]:

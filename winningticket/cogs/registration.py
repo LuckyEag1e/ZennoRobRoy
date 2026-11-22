@@ -27,6 +27,7 @@ from common import (
     signup_name_autocomplete,
     signups_message,
     tournament_name_autocomplete,
+    with_custom_emojis,
 )
 from embeds import EMBED_DESCRIPTION_LIMIT, mention
 from labels import CONSENT_NOTICE, OPTED_OUT_NOTE, draw_description, entrant_lines, join_within, name_held_message
@@ -374,7 +375,7 @@ class RegistrationCog(commands.Cog):
                 db.to_db_time(starts_at) if starts_at is not None else None, spread,
             )
             db.set_match_slots(conn, tournament_id, match_slots)
-            announcement = signups_message(db.get_tournament(conn, tournament_id), 0)
+            announcement = with_custom_emojis(interaction.client, signups_message(db.get_tournament(conn, tournament_id), 0))
             if five_v_five:
                 await interaction.response.send_message(announcement,
                                                         view=event_view(tournament_id, SIGNUP_BUTTONS))

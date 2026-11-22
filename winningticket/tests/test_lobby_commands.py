@@ -10,7 +10,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import db
 import lobby_db
-import lobby_posting
+import common
 import lobby_posts
 from sim.harness import GUILD_ID, Simulation
 
@@ -499,7 +499,7 @@ def test_an_organizer_is_told_to_move_a_spare_captain_over(tmp_path):
 def test_the_sign_up_count_leaves_out_players_who_left_after_the_draw(tmp_path):
     sim, organizer, users, tournament_id = _drawn_without_a_captain(tmp_path)
     try:
-        assert "**6** signed up so far" in _post_with(sim, "📝").content
+        assert "**6** signed up so far" in _post_with(sim, ":winningticket:").content
     finally:
         asyncio.run(sim.close())
 
@@ -507,11 +507,11 @@ def test_the_sign_up_count_leaves_out_players_who_left_after_the_draw(tmp_path):
 def test_starting_up_brings_an_old_sign_ups_post_up_to_date(tmp_path):
     sim, organizer, users, tournament_id = _drawn_without_a_captain(tmp_path)
     try:
-        post = _post_with(sim, "📝")
-        post.content = "📝 an older version's wording: **7** signed up so far."
+        post = _post_with(sim, ":winningticket:")
+        post.content = ":winningticket: an older version's wording: **7** signed up so far."
         cog = sim.cogs["LobbiesCog"]
         asyncio.run(sim.run_background("startup", lambda: cog._wait_until_ready()))
-        assert "**6** signed up so far" in _post_with(sim, "📝").content
+        assert "**6** signed up so far" in _post_with(sim, ":winningticket:").content
     finally:
         asyncio.run(sim.close())
 
@@ -612,4 +612,4 @@ def test_custom_emojis_are_swapped_in_where_the_bot_can_see_them():
         emojis = [Emoji("teio_welcome", 1)]
 
     text = f"{lobby_posts.ROOM_EMOJI} Room ready · {lobby_posts.RESULTS_EMOJI} results"
-    assert lobby_posting.with_custom_emojis(Client(), text) == "<:teio_welcome:1> Room ready · :biwahiyahide: results"
+    assert common.with_custom_emojis(Client(), text) == "<:teio_welcome:1> Room ready · :biwahiyahide: results"

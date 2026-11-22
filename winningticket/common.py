@@ -17,6 +17,7 @@ from bracket import Match, resolve_all_slots
 from embeds import render_bracket_embed
 from labels import bracket_notes, matchup_label, name_taken_message, team_label, wrong_format_message
 from lobby_flow import lobby_signups_message
+from lobby_posts import CUSTOM_EMOJIS
 
 log = logging.getLogger("winningticket")
 
@@ -232,6 +233,7 @@ async def edit_signups_message(client: discord.Client, tournament: sqlite3.Row, 
     channel = client.get_channel(tournament["channel_id"]) if tournament["channel_id"] is not None else None
     if channel is None or tournament["announcement_message_id"] is None:
         return
+    content = with_custom_emojis(client, content)
     changes = {"content": content, "view": None} if remove_buttons else {"content": content}
     try:
         await channel.get_partial_message(tournament["announcement_message_id"]).edit(**changes)
@@ -424,3 +426,10 @@ def resolve_emoji(client: discord.Client, name: str) -> str:
     that name (e.g. not in any mutual server), so it never crashes."""
     emoji = discord.utils.get(client.emojis, name=name)
     return str(emoji) if emoji is not None else f":{name}:"
+
+
+def with_custom_emojis(client: discord.Client, text: str) -> str:
+    """`text` with the server's custom emojis (lobby_posts.CUSTOM_EMOJIS) swapped in for their names."""
+    for name in CUSTOM_EMOJIS:
+        text = text.replace(name, resolve_emoji(client, name.strip(":")))
+    return text
