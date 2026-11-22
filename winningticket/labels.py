@@ -20,6 +20,19 @@ from bracket import (
 )
 from ratings import Ratings
 
+# Standard emojis the bot's posts are written with. When .env names one of the server's
+# custom emojis for one (the setting beside it), the bot swaps it in as it sends the post
+# (common.with_custom_emojis); the CLI, or a bot that can't see that emoji, keeps the standard one.
+BOT_EMOJI = "🎫"
+ROOM_EMOJI = "🎟️"
+RESULTS_EMOJI = "📸"
+MISMATCH_EMOJI = "🔍"
+CUSTOM_EMOJI_SETTINGS = {BOT_EMOJI: "BOT_EMOJI", ROOM_EMOJI: "ROOM_EMOJI", RESULTS_EMOJI: "RESULTS_EMOJI",
+                         MISMATCH_EMOJI: "MISMATCH_EMOJI"}
+# How much longer text gets per emoji swapped in: `<:name:id>`, with a name of up to 32
+# characters and an id of up to 20 digits.
+CUSTOM_EMOJI_GROWTH = 56
+
 MEDALS = {1: "🥇", 2: "🥈", 3: "🥉"}
 
 

@@ -185,7 +185,9 @@ def test_whole_event_from_close_to_result(tmp_path):
         assert "result is in" in enter(captain_b, label_b, "2").sent.content
         _loop(sim)
         assert "wins!" in _post_with(sim, "Lobby 1 results").content
-        assert "wins" in _post_with(sim, "Every lobby has finished").content
+        # Every lobby has its result, so the event's post comes down; the results post stays.
+        assert not [m for m in _public(sim) if m.content.startswith(EVENT_POST)]
+        assert "wins!" in _post_with(sim, "Lobby 1 results").content
 
         conn = db.get_connection()
         assert db.get_tournament(conn, tournament["id"])["status"] == "completed"
@@ -517,7 +519,7 @@ def test_starting_up_brings_an_old_sign_ups_post_up_to_date(tmp_path):
     sim, organizer, users, tournament_id = _drawn_without_a_captain(tmp_path)
     try:
         post = _post_with(sim, "signed up so far")
-        post.content = ":winningticket: an older version's wording: **7** signed up so far."
+        post.content = f"{lobby_posts.BOT_EMOJI} an older version's wording: **7** signed up so far."
         cog = sim.cogs["LobbiesCog"]
         asyncio.run(sim.run_background("startup", lambda: cog._wait_until_ready()))
         assert "**6** signed up so far" in _post_with(sim, "signed up so far").content
@@ -531,7 +533,7 @@ def test_starting_up_also_updates_a_sign_ups_post_from_before_the_draw(tmp_path)
         announcement.content = "📝 an older version's wording."
         cog = sim.cogs["LobbiesCog"]
         asyncio.run(sim.run_background("startup", lambda: cog._wait_until_ready()))
-        assert announcement.content.startswith(":winningticket: Sign-ups are open")
+        assert announcement.content.startswith(f"{lobby_posts.BOT_EMOJI} Sign-ups are open")
     finally:
         asyncio.run(sim.close())
 
@@ -662,7 +664,10 @@ def test_check_in_ends_once_everyone_has_checked_in(tmp_path):
         asyncio.run(sim.close())
 
 
-def test_custom_emojis_are_swapped_in_where_the_bot_can_see_them():
+def test_custom_emojis_are_swapped_in_where_the_bot_can_see_them(monkeypatch):
+    monkeypatch.setenv("ROOM_EMOJI", "room_custom")
+    monkeypatch.setenv("RESULTS_EMOJI", "missing_custom")  # set, but the bot can't see it
+
     class Emoji:
         def __init__(self, name, emoji_id):
             self.name, self.id = name, emoji_id
@@ -671,10 +676,11 @@ def test_custom_emojis_are_swapped_in_where_the_bot_can_see_them():
             return f"<:{self.name}:{self.id}>"
 
     class Client:
-        emojis = [Emoji("teio_welcome", 1)]
+        emojis = [Emoji("room_custom", 1), Emoji("other", 2)]
 
-    text = f"{lobby_posts.ROOM_EMOJI} Room ready · {lobby_posts.RESULTS_EMOJI} results"
-    assert common.with_custom_emojis(Client(), text) == "<:teio_welcome:1> Room ready · :biwahiyahide: results"
+    text = f"{lobby_posts.ROOM_EMOJI} Room ready · {lobby_posts.RESULTS_EMOJI} results · {lobby_posts.BOT_EMOJI}"
+    assert common.with_custom_emojis(Client(), text) == (
+        f"<:room_custom:1> Room ready · {lobby_posts.RESULTS_EMOJI} results · {lobby_posts.BOT_EMOJI}")
 
 
 def test_an_organizer_reinstates_a_5v5_player(tmp_path):

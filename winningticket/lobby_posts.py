@@ -13,6 +13,7 @@ from typing import Callable, Optional
 
 import db
 import lobby_db
+from labels import BOT_EMOJI, CUSTOM_EMOJI_GROWTH, CUSTOM_EMOJI_SETTINGS, MISMATCH_EMOJI, RESULTS_EMOJI, ROOM_EMOJI
 from lobby_db import SIDES, Lobby
 
 DRAFTER_URL = "https://drafter.uma.guide"
@@ -30,15 +31,6 @@ GET_ROOM_CODE = "Get Room Code"
 FINISH = "Finish"
 FINALIZE = "Finalize Scores"
 
-# The server's custom emojis, written by name. The bot swaps each for the emoji itself
-# (common.with_custom_emojis), and the CLI shows the names.
-BOT_EMOJI = ":winningticket:"
-ROOM_EMOJI = ":teio_welcome:"
-RESULTS_EMOJI = ":biwahiyahide:"
-MISMATCH_EMOJI = ":mejiro_mcqueen_shocked:"
-CUSTOM_EMOJIS = (BOT_EMOJI, ROOM_EMOJI, RESULTS_EMOJI, MISMATCH_EMOJI)
-# How much longer a custom emoji gets once swapped in: `<`, its id (up to 20 digits) and `>`.
-CUSTOM_EMOJI_GROWTH = 22
 
 
 @dataclass(frozen=True)
@@ -186,7 +178,10 @@ def _lobby_status(conn: sqlite3.Connection, lobby: Lobby, names: Names, player_l
 _HOW_THEY_LEFT = {"dropped": "", "withdrawn": " (withdrawn by an organizer)", "disqualified": " (disqualified)"}
 
 
-def describe_event(conn: sqlite3.Connection, tournament: sqlite3.Row, player_label: Callable[[int], str]) -> PostState:
+def describe_event(conn: sqlite3.Connection, tournament: sqlite3.Row, player_label: Callable[[int], str]
+                   ) -> Optional[PostState]:
+    """The event's post: every lobby's teams and where it's up to, the waitlist and who
+    dropped out. None once every lobby has a result."""
     names = Names(conn, tournament["id"], player_label)
     name = tournament["name"]
     drawn = lobby_db.get_lobbies(conn, tournament["id"])
@@ -215,7 +210,7 @@ def describe_event(conn: sqlite3.Connection, tournament: sqlite3.Row, player_lab
     everyone = [("in", user_id) for user_id in names.user_ids([p for lobby in drawn for p in lobby.players])]
     waiters = [("in", user_id) for user_id in names.user_ids(waitlist)]
     if done:
-        return PostState(_fit(lines + ["", "🏁 Every lobby has finished. Thanks for playing!"]), [])
+        return None  # each lobby's results post shows how it went, so this post is taken down
     if finished:
         playing = [lobby for lobby in drawn if lobby_db.get_result(conn, lobby.id) is None
                    and not lobby_db.races_over(lobby, lobby_db.get_finished_sides(conn, lobby.id))]
@@ -323,7 +318,7 @@ def _fit(lines: list[str]) -> str:
     """The post's text, shortening the longest lines if it's over Discord's limit, leaving
     room for its custom emojis to be swapped in."""
     text = "\n".join(lines)
-    limit = MESSAGE_LIMIT - CUSTOM_EMOJI_GROWTH * sum(text.count(emoji) for emoji in CUSTOM_EMOJIS)
+    limit = MESSAGE_LIMIT - CUSTOM_EMOJI_GROWTH * sum(text.count(emoji) for emoji in CUSTOM_EMOJI_SETTINGS)
     while len(text) > limit:
         longest = max(range(len(lines)), key=lambda i: len(lines[i]))
         lines[longest] = lines[longest][:len(lines[longest]) - (len(text) - limit) - 1] + "…"

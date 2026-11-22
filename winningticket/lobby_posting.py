@@ -540,9 +540,13 @@ async def _sync_post(client: discord.Client, conn: sqlite3.Connection, post: sql
     """Send a post that hasn't been sent, send it afresh when someone needs notifying (the
     old message is then deleted), or else edit it to match what it should show."""
     state = lobby_posts.describe(conn, post, mention)
-    if state is None:
-        return
     tournament_id, key = post["tournament_id"], post["post_key"]
+    if state is None:
+        if post["message_id"] is not None:  # a post that's done: take it down
+            lobby_db.mark_post_unsent(conn, tournament_id, key, post["message_id"])
+            if not await delete_message(client, post["channel_id"], post["message_id"]):
+                db.keep_replaced_match_post(conn, post["channel_id"], post["message_id"])
+        return
     note = lobby_posts.notification(state, post["pinged"])
     if post["message_id"] is None or note is not None:
         claim = lobby_db.claim_post_send(conn, tournament_id, key)

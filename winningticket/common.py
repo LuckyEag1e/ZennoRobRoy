@@ -15,9 +15,9 @@ from discord import app_commands
 import db
 from bracket import Match, resolve_all_slots
 from embeds import render_bracket_embed
-from labels import bracket_notes, matchup_label, name_taken_message, team_label, wrong_format_message
+from labels import (CUSTOM_EMOJI_SETTINGS, bracket_notes, matchup_label, name_taken_message, team_label,
+                    wrong_format_message)
 from lobby_flow import lobby_signups_message
-from lobby_posts import CUSTOM_EMOJIS
 
 log = logging.getLogger("winningticket")
 
@@ -420,16 +420,12 @@ class WinnerPicker(BotView):
         return pick
 
 
-def resolve_emoji(client: discord.Client, name: str) -> str:
-    """Look up a custom server emoji by name and return its mention string.
-    Falls back to `:name:` as plain text if the bot can't see an emoji with
-    that name (e.g. not in any mutual server), so it never crashes."""
-    emoji = discord.utils.get(client.emojis, name=name)
-    return str(emoji) if emoji is not None else f":{name}:"
-
-
 def with_custom_emojis(client: discord.Client, text: str) -> str:
-    """`text` with the server's custom emojis (lobby_posts.CUSTOM_EMOJIS) swapped in for their names."""
-    for name in CUSTOM_EMOJIS:
-        text = text.replace(name, resolve_emoji(client, name.strip(":")))
+    """`text` with each standard emoji that .env pairs with one of the server's custom emojis
+    (labels.CUSTOM_EMOJI_SETTINGS) swapped for it. One the bot can't see stays standard."""
+    for emoji, setting in CUSTOM_EMOJI_SETTINGS.items():
+        name = os.environ.get(setting)
+        custom = discord.utils.get(client.emojis, name=name) if name and emoji in text else None
+        if custom is not None:
+            text = text.replace(emoji, str(custom))
     return text

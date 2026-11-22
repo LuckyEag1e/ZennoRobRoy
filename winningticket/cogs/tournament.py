@@ -15,13 +15,13 @@ from common import (
     load_bracket_embed,
     refuse_taken_name,
     requires_manage_server,
-    resolve_emoji,
     resolve_tournament,
     tournament_name_autocomplete,
+    with_custom_emojis,
 )
 from csv_import import CsvValidationError, import_tournament, parse_csv
 from embeds import render_final_results_embed, render_leaderboard_embed
-from labels import SETTLED_BEFORE_LOCK
+from labels import BOT_EMOJI, SETTLED_BEFORE_LOCK
 from posting import MATCH_SLOTS_HELP, match_slots_problem
 
 
@@ -274,10 +274,9 @@ class TournamentCog(commands.Cog):
     async def open_predictions(self, interaction: discord.Interaction, name: str) -> None:
         if not await self._advance_status(interaction, name, "predictions_open"):
             return
-        emoji = resolve_emoji(self.bot, "winningticket")
-        await interaction.response.send_message(
-            f"{emoji} Predictions are now open for **{name}**! Run `/predict tournament:{name}` to fill out your bracket."
-        )
+        await interaction.response.send_message(with_custom_emojis(
+            self.bot, f"{BOT_EMOJI} Predictions are now open for **{name}**! Run `/predict tournament:{name}` to fill out "
+                      f"your bracket."))
 
     @group.command(name="lock", description="Lock predictions and start recording real results")
     @app_commands.describe(name="Tournament name")

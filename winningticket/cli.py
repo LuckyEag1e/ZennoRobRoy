@@ -219,6 +219,9 @@ class WinningTicketCLI(cmd.Cmd):
         be sent or edited, with who it notifies and its buttons."""
         state = lobby_posts.describe(self.conn, post, user_label)
         if state is None:
+            if post["message_id"] is not None:
+                print("(5v5 post deleted)")
+                lobby_db.mark_post_unsent(self.conn, post["tournament_id"], post["post_key"], post["message_id"])
             return
         note = lobby_posts.notification(state, post["pinged"])
         shown = lobby_posts.shown(state)

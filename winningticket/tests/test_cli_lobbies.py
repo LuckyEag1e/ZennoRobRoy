@@ -73,7 +73,7 @@ def test_a_5v5_event_from_the_cli(repl, capsys, monkeypatch):
     repl.onecmd(f"as {captain_a} CaptainA")
     repl.onecmd("lobby_report Duel")
     out = capsys.readouterr().out
-    assert "result is in" in out and "Every lobby has finished" in out
+    assert "result is in" in out and "(5v5 post deleted)" in out
 
     repl.onecmd("as 1 tester")
     repl.onecmd("conclude Duel")
