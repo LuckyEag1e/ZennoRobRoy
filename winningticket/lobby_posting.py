@@ -29,13 +29,14 @@ FIELD_LABEL_LIMIT = 45
 STYLES = {
     "register": discord.ButtonStyle.success, "unregister": discord.ButtonStyle.secondary,
     "startcheckin": discord.ButtonStyle.primary, "checkin": discord.ButtonStyle.success,
+    "endcheckin": discord.ButtonStyle.secondary,
     "submitcode": discord.ButtonStyle.secondary, "getcode": discord.ButtonStyle.primary,
     "finish": discord.ButtonStyle.success, "pointsa": discord.ButtonStyle.primary,
     "pointsb": discord.ButtonStyle.primary, "finalize": discord.ButtonStyle.danger,
 }
 # The id in a button's custom_id is the tournament's, except on a results post, where it's
 # the lobby's.
-EVENT_ACTIONS = {"register", "unregister", "startcheckin", "checkin"}
+EVENT_ACTIONS = {"register", "unregister", "startcheckin", "checkin", "endcheckin"}
 # Buttons that act on one lobby: the presser's own, or for an organizer, one they pick.
 LOBBY_ACTIONS = {"submitcode", "getcode", "finish"}
 RESULTS_ACTIONS = {"pointsa", "pointsb", "finalize"}
@@ -330,6 +331,19 @@ async def _start_checkin(interaction, conn, tournament, lobby) -> None:
     await interaction.response.send_modal(CheckInLengthForm(tournament["id"]))
 
 
+async def end_checkin(interaction: discord.Interaction, conn: sqlite3.Connection, tournament: sqlite3.Row) -> None:
+    await interaction.response.send_message(lobby_flow.end_checkin(conn, tournament), ephemeral=True)
+    await refresh_signups(interaction.client, conn, tournament["id"])  # late sign-ups end with check-in
+    await sync_posts(interaction.client, conn, tournament["id"])
+
+
+async def _end_checkin(interaction, conn, tournament, lobby) -> None:
+    if not is_organizer(interaction):
+        await interaction.response.send_message("Only organizers can end check-in.", ephemeral=True)
+        return
+    await end_checkin(interaction, conn, tournament)
+
+
 async def _check_in(interaction, conn, tournament, lobby) -> None:
     await interaction.response.send_message(lobby_flow.check_in(conn, tournament, interaction.user.id), ephemeral=True)
     await sync_posts(interaction.client, conn, tournament["id"])
@@ -499,6 +513,7 @@ HANDLERS = {
     "unregister": _unregister,
     "startcheckin": _start_checkin,
     "checkin": _check_in,
+    "endcheckin": _end_checkin,
     "submitcode": _submit_code,
     "getcode": _get_code,
     "finish": _finish,

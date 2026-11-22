@@ -24,6 +24,7 @@ ANSWER_WITHIN = timedelta(minutes=10)
 # Button names, each made into a real button by the bot and shown in brackets by the CLI.
 START_CHECKIN = "Start Check-In"
 CHECK_IN = "Check In"
+END_CHECKIN = "End Check-In"
 SUBMIT_ROOM_CODE = "Submit Room Code"
 GET_ROOM_CODE = "Get Room Code"
 FINISH = "Finish"
@@ -47,7 +48,7 @@ class PostButton:
 
 
 EVENT_BUTTONS = {name: PostButton(name, action) for name, action in (
-    (START_CHECKIN, "startcheckin"), (CHECK_IN, "checkin"), (SUBMIT_ROOM_CODE, "submitcode"),
+    (START_CHECKIN, "startcheckin"), (CHECK_IN, "checkin"), (END_CHECKIN, "endcheckin"), (SUBMIT_ROOM_CODE, "submitcode"),
     (GET_ROOM_CODE, "getcode"), (FINISH, "finish"))}
 
 
@@ -111,10 +112,10 @@ class Names:
         return team_id in self.signups and self.signups[team_id].checked_in
 
     def checkin_mark(self, team_id: int) -> str:
-        """✅ or ⏳ after a player's name during check-in. Players with no account are left
-        unmarked: they can't press the button, so they count as checked in without it."""
+        """✅ or ⏳ after a player's name during check-in. Players with no account are checked
+        in by an organizer, since they have to be there to play too."""
         signup = self.signups.get(team_id)
-        if signup is None or signup.user_id is None:
+        if signup is None:
             return ""
         return " ✅" if signup.checked_in else " ⏳"
 
@@ -228,9 +229,12 @@ def describe_event(conn: sqlite3.Connection, tournament: sqlite3.Row, player_lab
             when = "is open until every team has a captain"
         else:
             when = f"is open until {_when(ends, 't')} ({_when(ends)})"
-        lines += ["", f"✅ **Check-in {when}**: press **{CHECK_IN}**. Anyone in a lobby who hasn't checked in by "
-                      f"then is replaced by the next checked-in player on the waitlist."]
-        return PostState(_fit(lines), [EVENT_BUTTONS[CHECK_IN]], "checkin", everyone + waiters)
+        lines += ["", f"✅ **Check-in {when}**: press **{CHECK_IN}**. Players without a linked account: tell an "
+                      f"organizer you're here, and they'll check you in. Anyone in a lobby who hasn't checked in by "
+                      f"then is replaced by the next checked-in player on the waitlist. Check-in ends early once "
+                      f"everyone has checked in."]
+        return PostState(_fit(lines), [EVENT_BUTTONS[CHECK_IN], EVENT_BUTTONS[END_CHECKIN]], "checkin",
+                         everyone + waiters)
     lines += ["", f"Check-in opens before the start, and you'll be pinged here. Can't make it? "
                   f"`/match dropout tournament:{name}`"]
     return PostState(_fit(lines), [EVENT_BUTTONS[START_CHECKIN]], "formed", everyone + waiters)

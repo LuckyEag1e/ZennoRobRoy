@@ -12,7 +12,8 @@ import db
 import lobby_db
 import lobby_flow
 from common import requires_manage_server, resolve_tournament, tournament_name_autocomplete, with_custom_emojis
-from lobby_posting import LobbyButton, is_organizer, open_points, refresh_signups, start_checkin, sync_posts
+from lobby_posting import (LobbyButton, end_checkin, is_organizer, open_points, refresh_signups, start_checkin,
+                           sync_posts)
 
 log = logging.getLogger("winningticket")
 
@@ -130,6 +131,19 @@ class LobbiesCog(commands.Cog):
                 return
             await interaction.response.send_message(lobby_flow.cancel_checkin(conn, event), ephemeral=True)
             await sync_posts(self.bot, conn, event["id"])
+        finally:
+            conn.close()
+
+    @group.command(name="endcheckin", description="End a 5v5 event's check-in now, replacing anyone who didn't check in")
+    @app_commands.describe(tournament="Event name")
+    @app_commands.autocomplete(tournament=tournament_name_autocomplete)
+    @requires_manage_server
+    async def endcheckin(self, interaction: discord.Interaction, tournament: str) -> None:
+        conn = db.get_connection()
+        try:
+            event = await _resolve_event(interaction, conn, tournament)
+            if event is not None:
+                await end_checkin(interaction, conn, event)
         finally:
             conn.close()
 

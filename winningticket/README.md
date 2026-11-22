@@ -128,8 +128,10 @@ points wins, and a tie is settled on a tiebreaker track before anyone enters the
 3. **Start Check-In** on that post (or `/lobby startcheckin`) pings everyone to check in.
    It can't start while a team has no captain, and if a captain leaves during it, it stays
    open until the team has one again. When it ends, no-shows are replaced in place by
-   checked-in players from the waitlist. `/lobby cancelcheckin` calls it off and clears
-   everyone's check-in, and `/admin checkin` checks a player in on their behalf.
+   checked-in players from the waitlist. It ends early once everyone has checked in, or
+   when an organizer presses **End Check-In** (or `/lobby endcheckin`). Players without a
+   linked account can't press anything, so an organizer checks them in with `/admin checkin`
+   once they're there. `/lobby cancelcheckin` calls check-in off and clears everyone's check-in.
 4. A captain creates the room at https://drafter.uma.guide/host and presses **Submit Room
    Code**. Players press **Get Room Code** for a private copy, and the host is told who has no
    linked account and needs the code passed on by hand.
@@ -165,7 +167,7 @@ Commands mirror the slash commands: `create <name> <csv>`, `regopen <name> [--cl
 `admin_editteam`, `admin_setresult`, `admin_clearresult`, `admin_clearpredictions`, `admin_feedback`,
 `admin_deletefeedback`, `admin_ban`, `admin_unban`, `admin_bans`, `admin_linkplayer`, `admin_unlinkplayer`.
 5v5 events use `regopen5v5 <name> --starts-in HOURS [--spread tier|balanced|random]`, `register <name> --captain want|can|no`,
-`regclose <name> [--lobbies N] [--spread tier|balanced|random]`, `lobby_startcheckin`, `lobby_cancelcheckin`, `checkin`,
+`regclose <name> [--lobbies N] [--spread tier|balanced|random]`, `lobby_startcheckin`, `lobby_endcheckin`, `lobby_cancelcheckin`, `checkin`,
 `lobby_roomcode`, `lobby_code`, `lobby_finish`, `lobby_report`, `lobby_finalize`, `admin_setcaptain`, `admin_lobbyswap`,
 `admin_lobbymove` and `admin_checkin`.
 Use `as <user_id> <name>` to switch which simulated user you're acting as (so you can

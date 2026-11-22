@@ -35,8 +35,7 @@ class Signup:
 
 
 def get_signups(conn: sqlite3.Connection, tournament_id: int) -> list[Signup]:
-    """Everyone who signed up, in sign-up order. Entrants with no account count as checked
-    in, since they can't press anything; an organizer vouches for them."""
+    """Everyone who signed up, in sign-up order."""
     rows = conn.execute(
         """SELECT t.id, t.name, t.withdrawn, tm.user_id, COALESCE(s.captain_pref, 'no') AS captain_pref,
                   s.checked_in_at
@@ -45,8 +44,8 @@ def get_signups(conn: sqlite3.Connection, tournament_id: int) -> list[Signup]:
            WHERE t.tournament_id = ? ORDER BY t.id""",
         (tournament_id,),
     ).fetchall()
-    return [Signup(r["id"], r["name"], r["user_id"], r["captain_pref"],
-                   r["user_id"] is None or r["checked_in_at"] is not None, r["withdrawn"]) for r in rows]
+    return [Signup(r["id"], r["name"], r["user_id"], r["captain_pref"], r["checked_in_at"] is not None,
+                   r["withdrawn"]) for r in rows]
 
 
 def captain_prefs(signups: list[Signup]) -> dict[int, str]:
@@ -380,11 +379,26 @@ def check_in(conn: sqlite3.Connection, team_id: int) -> bool:
 
 
 def get_checkins_due(conn: sqlite3.Connection) -> list[sqlite3.Row]:
-    """5v5 events whose check-in has run out but hasn't been finished."""
+    """5v5 events whose check-in hasn't been finished but is due to: its time has run out,
+    or everyone in a lobby or on the waitlist has checked in, so there's nobody left to wait for."""
     return conn.execute(
-        f"""SELECT * FROM tournaments WHERE format = 'lobbies' AND status = 'in_progress'
-            AND checkin_finished = 0 AND checkin_ends_at <= {_NOW}"""
+        f"""SELECT * FROM tournaments t WHERE format = 'lobbies' AND status = 'in_progress'
+            AND checkin_finished = 0 AND checkin_ends_at IS NOT NULL
+            AND (checkin_ends_at <= {_NOW} OR NOT EXISTS (
+                SELECT 1 FROM lobby_signups s WHERE s.tournament_id = t.id AND s.checked_in_at IS NULL
+                AND (s.team_id IN (SELECT team_id FROM lobby_players)
+                     OR s.team_id IN (SELECT team_id FROM lobby_waitlist))))"""
     ).fetchall()
+
+
+def end_checkin_now(conn: sqlite3.Connection, tournament_id: int) -> bool:
+    """Bring a running check-in's end forward to now, so it's finished like one whose time
+    ran out. False if check-in isn't running."""
+    with conn:
+        return conn.execute(
+            f"""UPDATE tournaments SET checkin_ends_at = MIN(checkin_ends_at, {_NOW})
+                WHERE id = ? AND checkin_ends_at IS NOT NULL AND checkin_finished = 0""",
+            (tournament_id,)).rowcount > 0
 
 
 def finish_checkin(conn: sqlite3.Connection, tournament_id: int) -> Optional[list[Change]]:

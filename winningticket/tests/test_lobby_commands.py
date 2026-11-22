@@ -570,9 +570,6 @@ def test_an_organizer_can_call_off_check_in_and_check_someone_in(tmp_path):
         assert "Checked in Player3 (lobby 1)" in reply.content
         reply = asyncio.run(sim.run(organizer, "admin checkin", tournament="Duel", entrant="Player3")).sent
         assert "already checked in" in reply.content
-        asyncio.run(sim.run(organizer, "registration add", tournament="Duel", name="Guest", captain="no"))
-        reply = asyncio.run(sim.run(organizer, "admin checkin", tournament="Duel", entrant="Guest")).sent
-        assert "no linked account" in reply.content
         reply = asyncio.run(sim.run(organizer, "lobby cancelcheckin", tournament="Duel")).sent
         assert "called off" in reply.content
         conn = db.get_connection()
@@ -601,7 +598,7 @@ def test_checking_in_twice_says_so(tmp_path):
         asyncio.run(sim.close())
 
 
-def test_check_in_marks_only_players_who_can_check_in(tmp_path):
+def test_an_organizer_checks_in_players_without_an_account(tmp_path):
     sim, organizer, users, announcement = _event(tmp_path, players=6, captains=2)
     try:
         asyncio.run(sim.run(organizer, "registration add", tournament="Duel", name="Dummy1", captain="no"))
@@ -609,11 +606,53 @@ def test_check_in_marks_only_players_who_can_check_in(tmp_path):
         asyncio.run(sim.click(organizer, preview, "Create Lobbies"))
         asyncio.run(sim.run(organizer, "lobby startcheckin", tournament="Duel", minutes=5))
         post = _post_with(sim, EVENT_POST).content
-        assert "**Dummy1**" in post and "**Dummy1** ✅" not in post and "**Dummy1** ⏳" not in post
-        assert f"<@{users[0].id}> (captain) ⏳" in post
+        assert "**Dummy1** ⏳" in post and f"<@{users[0].id}> (captain) ⏳" in post
+        assert "tell an organizer you're here" in post
         asyncio.run(sim.click(users[0], _post_with(sim, EVENT_POST), "Check In"))
+        reply = asyncio.run(sim.run(organizer, "admin checkin", tournament="Duel", entrant="Dummy1")).sent
+        assert "Checked in Dummy1" in reply.content
         _loop(sim)
-        assert f"<@{users[0].id}> (captain) ✅" in _post_with(sim, EVENT_POST).content
+        post = _post_with(sim, EVENT_POST).content
+        assert f"<@{users[0].id}> (captain) ✅" in post and "**Dummy1** ✅" in post
+    finally:
+        asyncio.run(sim.close())
+
+
+def test_an_organizer_can_end_check_in_early(tmp_path):
+    sim, organizer, users, announcement = _event(tmp_path, players=6, captains=2)
+    try:
+        preview = asyncio.run(sim.run(organizer, "registration close", name="Duel")).sent
+        asyncio.run(sim.click(organizer, preview, "Create Lobbies"))
+        asyncio.run(sim.run(organizer, "lobby startcheckin", tournament="Duel", minutes=15))
+        post = _post_with(sim, EVENT_POST)
+        assert "End Check-In" in _buttons(post)
+        assert "Only organizers" in asyncio.run(sim.click(users[1], post, "End Check-In")).sent.content
+        assert "Ended check-in" in asyncio.run(sim.click(organizer, post, "End Check-In")).sent.content
+        conn = db.get_connection()
+        assert db.get_tournament(conn, _tournament_id())["checkin_finished"]
+        conn.close()
+        assert "Submit Room Code" in _buttons(_post_with(sim, EVENT_POST))
+    finally:
+        asyncio.run(sim.close())
+
+
+def test_check_in_ends_once_everyone_has_checked_in(tmp_path):
+    sim, organizer, users, announcement = _event(tmp_path, players=6, captains=2)
+    try:
+        preview = asyncio.run(sim.run(organizer, "registration close", name="Duel")).sent
+        asyncio.run(sim.click(organizer, preview, "Create Lobbies"))
+        asyncio.run(sim.run(organizer, "lobby startcheckin", tournament="Duel", minutes=15))
+        for user in users[:5]:
+            asyncio.run(sim.click(user, _post_with(sim, EVENT_POST), "Check In"))
+        _loop(sim)
+        conn = db.get_connection()
+        assert not db.get_tournament(conn, _tournament_id())["checkin_finished"]
+        conn.close()
+        asyncio.run(sim.click(users[5], _post_with(sim, EVENT_POST), "Check In"))
+        _loop(sim)
+        conn = db.get_connection()
+        assert db.get_tournament(conn, _tournament_id())["checkin_finished"]
+        conn.close()
     finally:
         asyncio.run(sim.close())
 

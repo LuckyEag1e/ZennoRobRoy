@@ -161,8 +161,9 @@ class HelpCog(commands.Cog):
             ("Organizers",
              "`/registration open5v5 name:<name> starts_in_hours:<hours>`, then `/registration close` "
              "(ideally a day before) to preview and create the lobbies. Start check-in with the button on the "
-             "event's post or `/lobby startcheckin`, once every team has a captain; `/lobby cancelcheckin` calls it "
-             "off. **Finish** (or `/lobby finish lobby:<n>`) finishes a lobby without waiting for its captains, "
+             "event's post or `/lobby startcheckin`, once every team has a captain. **End Check-In** (or `/lobby endcheckin`) ends it early, "
+             "`/lobby cancelcheckin` calls it off, and `/admin checkin` checks in players without an account once "
+             "they're there. **Finish** (or `/lobby finish lobby:<n>`) finishes a lobby without waiting for its captains, "
              "**Finalize Scores** on a results post settles points that don't match, `/lobby report lobby:<n>` "
              "records points directly, and "
              "`/tournament conclude` posts how each lobby went."),

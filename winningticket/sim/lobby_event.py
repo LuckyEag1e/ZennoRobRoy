@@ -247,8 +247,23 @@ class LobbyEventRun:
         for team_id in waitlist:
             if team_id in user_of:
                 await self.sim.run(self._player(user_of[team_id]).user, "checkin", tournament=NAME)
-        self._shift("UPDATE tournaments SET checkin_ends_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-1 second') "
-                    "WHERE id = ?")
+        # Players without an account can't press anything: the organizer checks in the ones who
+        # turned up, and one sometimes hasn't.
+        name_only = [p for lobby in lobbies for p in lobby.players if p not in user_of and p not in missing] + \
+                    [p for p in waitlist if p not in user_of]
+        if name_only and self.rng.random() < 0.5:
+            name_only.remove(self.rng.choice(name_only))
+        for team_id in name_only:
+            await self.sim.run(self.organizer.user, "admin checkin", tournament=NAME, entrant=names[team_id])
+        await self.sim.click(outsider.user, self._event_post(), "End Check-In")  # only organizers can
+        ending = self.rng.choice(["button", "command", "time"])
+        if ending == "button":
+            await self.sim.click(self.organizer.user, self._event_post(), "End Check-In")
+        elif ending == "command":
+            await self.sim.run(self.organizer.user, "lobby endcheckin", tournament=NAME)
+        else:
+            self._shift("UPDATE tournaments SET checkin_ends_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-1 second') "
+                        "WHERE id = ?")
         await self._tend()
         await self._give_teams_captains()
 

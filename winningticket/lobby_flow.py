@@ -331,6 +331,19 @@ def cancel_checkin(conn: sqlite3.Connection, tournament: sqlite3.Row) -> str:
     return f"✅ Check-in for **{name}** is called off, and everyone's check-in is cleared. Start it again when you're ready."
 
 
+def end_checkin(conn: sqlite3.Connection, tournament: sqlite3.Row) -> str:
+    """An organizer ending check-in now instead of when its time runs out. No-shows are
+    replaced just as they would be then."""
+    name = tournament["name"]
+    if not lobby_db.end_checkin_now(conn, tournament["id"]):
+        if tournament["checkin_finished"]:
+            return f"Check-in for **{name}** is already over."
+        return f"Check-in for **{name}** isn't open."
+    if lobby_db.finish_checkin(conn, tournament["id"]) is None:
+        return "\n".join(captain_fix_lines(conn, db.get_tournament(conn, tournament["id"])))
+    return f"✅ Ended check-in for **{name}**."
+
+
 def check_in(conn: sqlite3.Connection, tournament: sqlite3.Row, user_id: int) -> str:
     name = tournament["name"]
     team_id = db.get_entrant_team_id(conn, tournament["id"], user_id)
@@ -364,8 +377,6 @@ def check_in_for(conn: sqlite3.Connection, tournament: sqlite3.Row, team_id: int
     waitlist = lobby_db.get_waitlist(conn, tournament["id"])
     if in_lobby is None and team_id not in waitlist:
         return f"{who} is no longer playing in **{name}**."
-    if not db.team_member_ids(conn, team_id):
-        return f"{who} has no linked account, so they count as checked in already: there's nothing to do."
     if not lobby_db.check_in(conn, team_id):
         return f"{who} is already checked in."
     where = f"lobby {in_lobby.number}" if in_lobby is not None else f"#{waitlist.index(team_id) + 1} on the waitlist"

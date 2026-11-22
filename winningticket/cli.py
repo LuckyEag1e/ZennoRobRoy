@@ -1265,6 +1265,12 @@ class WinningTicketCLI(cmd.Cmd):
         if tournament is not None:
             self._say(lobby_flow.cancel_checkin(self.conn, tournament))
 
+    def do_lobby_endcheckin(self, arg: str) -> None:
+        "End a 5v5 event's check-in now, replacing anyone who didn't check in (organizers): lobby_endcheckin <name>"
+        tournament = self._require_event(arg.strip())
+        if tournament is not None:
+            self._say(lobby_flow.end_checkin(self.conn, tournament))
+
     def do_checkin(self, arg: str) -> None:
         "Check in for a 5v5 event: checkin <name>"
         tournament = self._require_event(arg.strip())
