@@ -444,3 +444,13 @@ def test_the_event_post_lists_who_dropped_out_and_how(conn):
     dropout_line = next(line for line in post.text.splitlines() if line.startswith("**Dropped out:**"))
     users = {t: u[0] for t, u in db.get_members_by_team(conn, tournament_id).items()}
     assert f"{users[dropped]}, {users[disqualified]} (disqualified)" in dropout_line
+
+
+def test_room_codes_close_once_the_races_are_over(conn):
+    tournament, lobby, (captain_a, role_a), (captain_b, role_b) = _playing(conn, 22)
+    lobby_flow.finish(conn, tournament, lobby, role_a, captain_a)
+    lobby_flow.finish(conn, tournament, lobby, role_b, captain_b)
+    assert "races are over" in lobby_flow.submit_room_code(conn, tournament, lobby, role_a, captain_a, "NEW")
+    assert "races are over" in lobby_flow.get_room_code(conn, tournament, lobby, role_b)
+    post = lobby_posts.describe_event(conn, tournament, str)
+    assert post.buttons == []  # its only lobby is finished

@@ -465,7 +465,15 @@ def room_code_problem(conn: sqlite3.Connection, tournament: sqlite3.Row, lobby: 
     """Why someone can't give the bot a room code for `lobby`, or None if they can."""
     if not role.captain and not role.organizer:
         return "Only this lobby's captains or an organizer can give the bot its room code."
-    return _not_ready_for_code(tournament)
+    return _not_ready_for_code(tournament) or _room_closed_problem(conn, lobby)
+
+
+def _room_closed_problem(conn: sqlite3.Connection, lobby: Lobby) -> Optional[str]:
+    """Why `lobby`'s room code isn't wanted any more, or None while it's being played."""
+    if lobby_db.get_result(conn, lobby.id) is not None or \
+            lobby_db.races_over(lobby, lobby_db.get_finished_sides(conn, lobby.id)):
+        return f"Lobby {lobby.number}'s races are over, so its room code isn't needed any more."
+    return None
 
 
 def submit_room_code(conn: sqlite3.Connection, tournament: sqlite3.Row, lobby: Lobby, role: Role, user_id: int,
@@ -483,7 +491,7 @@ def submit_room_code(conn: sqlite3.Connection, tournament: sqlite3.Row, lobby: L
 def get_room_code(conn: sqlite3.Connection, tournament: sqlite3.Row, lobby: Lobby, role: Role) -> str:
     if role.team_id is None and not role.organizer:
         return "The room code is only for players in this lobby."
-    problem = _not_ready_for_code(tournament)
+    problem = _not_ready_for_code(tournament) or _room_closed_problem(conn, lobby)
     if problem is not None:
         return problem
     if lobby.room_code is None:

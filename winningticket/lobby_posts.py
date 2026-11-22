@@ -225,8 +225,8 @@ def describe_event(conn: sqlite3.Connection, tournament: sqlite3.Row, player_lab
             lines += ["", f"**Everyone:** press **{GET_ROOM_CODE}** once your room is ready.",
                       f"**Captains:** when the races are over (play the tiebreaker first if the teams are level on "
                       f"points), both press **{FINISH}**. You'll each enter the points on your lobby's results post."]
-        buttons = [EVENT_BUTTONS[SUBMIT_ROOM_CODE], EVENT_BUTTONS[GET_ROOM_CODE]] + (
-            [EVENT_BUTTONS[FINISH]] if playing else [])
+        # Once every lobby's races are over, there's nothing left to press here.
+        buttons = [EVENT_BUTTONS[name] for name in (SUBMIT_ROOM_CODE, GET_ROOM_CODE, FINISH)] if playing else []
         # Once one captain presses Finish, the other is pinged to press it too.
         finishing = [(f"finish:{lobby.id}", user_id) for lobby in playing
                      for user_id in _waiting_to_finish(conn, lobby, names)]

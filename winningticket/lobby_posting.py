@@ -105,7 +105,7 @@ async def _for_a_lobby(interaction: discord.Interaction, conn: sqlite3.Connectio
         await interaction.response.send_message(f"You aren't playing in a lobby of **{tournament['name']}**.",
                                                 ephemeral=True)
         return
-    choices = _lobbies_to_act_on(conn, tournament, action)
+    choices = _lobbies_still_racing(conn, tournament)
     if len(choices) == 1:
         await HANDLERS[action](interaction, conn, tournament, choices[0])
         return
@@ -116,15 +116,12 @@ async def _for_a_lobby(interaction: discord.Interaction, conn: sqlite3.Connectio
                                             ephemeral=True)
 
 
-def _lobbies_to_act_on(conn: sqlite3.Connection, tournament: sqlite3.Row, action: str) -> list[lobby_db.Lobby]:
-    """The lobbies an organizer might mean by pressing `action`: those still being played,
-    and for Finish, those whose races aren't over yet."""
-    playing = [lobby for lobby in lobby_db.get_lobbies(conn, tournament["id"])
-               if lobby_db.get_result(conn, lobby.id) is None]
-    if action == "finish":
-        return [lobby for lobby in playing
-                if not lobby_db.races_over(lobby, lobby_db.get_finished_sides(conn, lobby.id))]
-    return playing
+def _lobbies_still_racing(conn: sqlite3.Connection, tournament: sqlite3.Row) -> list[lobby_db.Lobby]:
+    """The lobbies an organizer might mean by pressing one of the event post's lobby buttons:
+    those whose races aren't over yet."""
+    return [lobby for lobby in lobby_db.get_lobbies(conn, tournament["id"])
+            if lobby_db.get_result(conn, lobby.id) is None
+            and not lobby_db.races_over(lobby, lobby_db.get_finished_sides(conn, lobby.id))]
 
 
 class LobbyPicker(BotView):
