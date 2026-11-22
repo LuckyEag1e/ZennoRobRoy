@@ -188,7 +188,7 @@ def describe_event(conn: sqlite3.Connection, tournament: sqlite3.Row, player_lab
     running = lobby_db.checkin_running(tournament)
     finished = bool(tournament["checkin_finished"])
     starts = _start_line(tournament) if not finished else ""
-    lines = [f"🎌 **{name}**{starts}"]
+    lines = [f"{BOT_EMOJI} **{name}**{starts}"]
     for lobby in drawn:
         lines += ["", f"**Lobby {lobby.number}**"]
         if finished:

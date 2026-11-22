@@ -19,6 +19,10 @@ def _public(sim):
     return [m for m in sim.channel.messages if m.public and not m.deleted]
 
 
+# How the event's post starts; the sign-ups post starts with the same emoji but not the name.
+EVENT_POST = f"{lobby_posts.BOT_EMOJI} **"
+
+
 def _post_with(sim, text):
     return next(m for m in reversed(_public(sim)) if text in (m.content or ""))
 
@@ -91,9 +95,9 @@ def test_whole_event_from_close_to_result(tmp_path):
         assert "5v5, 2 waitlisted" in preview.content
         asyncio.run(sim.click(organizer, preview, "Create Lobbies"))
         assert "Created the lobbies" in preview.content
-        event_post = _post_with(sim, "🎌")
+        event_post = _post_with(sim, EVENT_POST)
         waiting = [u.id for u in users[10:]]
-        assert len([m for m in _public(sim) if "🎌" in (m.content or "")]) == 1
+        assert len([m for m in _public(sim) if EVENT_POST in (m.content or "")]) == 1
         assert "Lobby 1" in event_post.content and "Waitlist, in order" in event_post.content
         assert len(event_post.allowed_mentions.users) == 12
         assert "Register" in _buttons(announcement)  # late sign-ups are still taken
@@ -115,7 +119,7 @@ def test_whole_event_from_close_to_result(tmp_path):
         for player in lobby.players:
             if player != no_show:
                 asyncio.run(sim.click(by_id[user_of[player]], lobby_post, "Check In"))
-        asyncio.run(sim.click(by_id[waiting[0]], _post_with(sim, "🎌"), "Check In"))
+        asyncio.run(sim.click(by_id[waiting[0]], _post_with(sim, EVENT_POST), "Check In"))
 
         # Check-in runs out: the no-show is replaced by the waiter who checked in.
         conn = db.get_connection()
@@ -229,7 +233,7 @@ def test_one_post_for_every_lobby_and_an_organizer_picks_the_lobby(tmp_path):
     try:
         preview = asyncio.run(sim.run(organizer, "registration close", name="Duel")).sent
         asyncio.run(sim.click(organizer, preview, "Create Lobbies"))
-        posts = [m for m in _public(sim) if "🎌" in (m.content or "")]
+        posts = [m for m in _public(sim) if EVENT_POST in (m.content or "")]
         assert len(posts) == 1 and "Lobby 1" in posts[0].content and "Lobby 2" in posts[0].content
         conn = db.get_connection()
         tournament = db.get_tournament_by_name(conn, GUILD_ID, "Duel")
@@ -239,7 +243,7 @@ def test_one_post_for_every_lobby_and_an_organizer_picks_the_lobby(tmp_path):
         second = lobby_db.get_lobbies(conn, tournament["id"])[1]
         conn.close()
         _loop(sim)
-        post = _post_with(sim, "🎌")
+        post = _post_with(sim, EVENT_POST)
         # An organizer who isn't playing picks which lobby a button is for.
         picker = asyncio.run(sim.click(organizer, post, "Get Room Code")).sent
         assert "Which lobby?" in picker.content
@@ -317,7 +321,7 @@ def test_an_organizer_can_add_to_the_waitlist_after_the_draw(tmp_path):
                                     captain="no")).sent
         assert "#1 on the waitlist" in reply.content
         _loop(sim)
-        assert "Late1" in _post_with(sim, "🎌").content
+        assert "Late1" in _post_with(sim, EVENT_POST).content
     finally:
         asyncio.run(sim.close())
 
@@ -411,7 +415,7 @@ def _newcomer(sim, user_id, name):
 def test_a_team_without_a_captain_holds_its_spot_for_one(tmp_path):
     sim, organizer, users, tournament_id = _drawn_without_a_captain(tmp_path)
     try:
-        assert "needs a captain: its empty spot is held" in _post_with(sim, "🎌").content
+        assert "needs a captain: its empty spot is held" in _post_with(sim, EVENT_POST).content
         # Someone who can't captain doesn't take the held spot.
         asyncio.run(sim.run(_newcomer(sim, 500, "NoCaptain"), "register", tournament="Duel", captain="no"))
         lobby = _lobby(tournament_id)
@@ -421,7 +425,7 @@ def test_a_team_without_a_captain_holds_its_spot_for_one(tmp_path):
         assert db.get_entrant_team_id(conn, tournament_id, 501) in _lobby(tournament_id).captains
         conn.close()
         _loop(sim)
-        assert "needs a captain" not in _post_with(sim, "🎌").content
+        assert "needs a captain" not in _post_with(sim, EVENT_POST).content
     finally:
         asyncio.run(sim.close())
 
@@ -431,7 +435,7 @@ def test_check_in_cant_start_until_every_team_has_a_captain(tmp_path):
     try:
         reply = asyncio.run(sim.run(organizer, "lobby startcheckin", tournament="Duel", minutes=5)).sent
         assert "has no captain" in reply.content and "Check-in can't start" in reply.content
-        click = asyncio.run(sim.click(organizer, _post_with(sim, "🎌"), "Start Check-In"))
+        click = asyncio.run(sim.click(organizer, _post_with(sim, EVENT_POST), "Start Check-In"))
         assert click.response.modal is None and "Check-in can't start" in click.sent.content
         asyncio.run(sim.run(_newcomer(sim, 501, "NewCaptain"), "register", tournament="Duel", captain="want"))
         reply = asyncio.run(sim.run(organizer, "lobby startcheckin", tournament="Duel", minutes=5)).sent
@@ -459,7 +463,7 @@ def test_check_in_waits_when_a_captain_leaves_during_it(tmp_path):
         conn.commit()
         conn.close()
         _loop(sim)
-        assert "open until every team has a captain" in _post_with(sim, "🎌").content
+        assert "open until every team has a captain" in _post_with(sim, EVENT_POST).content
         asyncio.run(sim.run(_newcomer(sim, 501, "NewCaptain"), "register", tournament="Duel", captain="want"))
         _loop(sim)
         conn = db.get_connection()
@@ -499,7 +503,7 @@ def test_an_organizer_is_told_to_move_a_spare_captain_over(tmp_path):
 def test_the_sign_up_count_leaves_out_players_who_left_after_the_draw(tmp_path):
     sim, organizer, users, tournament_id = _drawn_without_a_captain(tmp_path)
     try:
-        assert "**6** signed up so far" in _post_with(sim, ":winningticket:").content
+        assert "**6** signed up so far" in _post_with(sim, "signed up so far").content
     finally:
         asyncio.run(sim.close())
 
@@ -507,11 +511,11 @@ def test_the_sign_up_count_leaves_out_players_who_left_after_the_draw(tmp_path):
 def test_starting_up_brings_an_old_sign_ups_post_up_to_date(tmp_path):
     sim, organizer, users, tournament_id = _drawn_without_a_captain(tmp_path)
     try:
-        post = _post_with(sim, ":winningticket:")
+        post = _post_with(sim, "signed up so far")
         post.content = ":winningticket: an older version's wording: **7** signed up so far."
         cog = sim.cogs["LobbiesCog"]
         asyncio.run(sim.run_background("startup", lambda: cog._wait_until_ready()))
-        assert "**6** signed up so far" in _post_with(sim, ":winningticket:").content
+        assert "**6** signed up so far" in _post_with(sim, "signed up so far").content
     finally:
         asyncio.run(sim.close())
 
@@ -574,7 +578,7 @@ def test_an_organizer_can_call_off_check_in_and_check_someone_in(tmp_path):
         assert not any(s.checked_in for s in lobby_db.get_signups(conn, tournament["id"]) if s.user_id is not None)
         conn.close()
         _loop(sim)
-        assert "Start Check-In" in _buttons(_post_with(sim, "🎌"))
+        assert "Start Check-In" in _buttons(_post_with(sim, EVENT_POST))
         reply = asyncio.run(sim.run(organizer, "lobby cancelcheckin", tournament="Duel")).sent
         assert "isn't open" in reply.content
     finally:
@@ -587,8 +591,8 @@ def test_checking_in_twice_says_so(tmp_path):
         preview = asyncio.run(sim.run(organizer, "registration close", name="Duel")).sent
         asyncio.run(sim.click(organizer, preview, "Create Lobbies"))
         asyncio.run(sim.run(organizer, "lobby startcheckin", tournament="Duel", minutes=5))
-        assert "✅ Checked in for lobby 1" in asyncio.run(sim.click(users[0], _post_with(sim, "🎌"), "Check In")).sent.content
-        again = asyncio.run(sim.click(users[0], _post_with(sim, "🎌"), "Check In")).sent.content
+        assert "✅ Checked in for lobby 1" in asyncio.run(sim.click(users[0], _post_with(sim, EVENT_POST), "Check In")).sent.content
+        again = asyncio.run(sim.click(users[0], _post_with(sim, EVENT_POST), "Check In")).sent.content
         assert "You're already checked in for lobby 1" in again
     finally:
         asyncio.run(sim.close())
@@ -601,12 +605,12 @@ def test_check_in_marks_only_players_who_can_check_in(tmp_path):
         preview = asyncio.run(sim.run(organizer, "registration close", name="Duel")).sent
         asyncio.run(sim.click(organizer, preview, "Create Lobbies"))
         asyncio.run(sim.run(organizer, "lobby startcheckin", tournament="Duel", minutes=5))
-        post = _post_with(sim, "🎌").content
+        post = _post_with(sim, EVENT_POST).content
         assert "**Dummy1**" in post and "**Dummy1** ✅" not in post and "**Dummy1** ⏳" not in post
         assert f"<@{users[0].id}> (captain) ⏳" in post
-        asyncio.run(sim.click(users[0], _post_with(sim, "🎌"), "Check In"))
+        asyncio.run(sim.click(users[0], _post_with(sim, EVENT_POST), "Check In"))
         _loop(sim)
-        assert f"<@{users[0].id}> (captain) ✅" in _post_with(sim, "🎌").content
+        assert f"<@{users[0].id}> (captain) ✅" in _post_with(sim, EVENT_POST).content
     finally:
         asyncio.run(sim.close())
 

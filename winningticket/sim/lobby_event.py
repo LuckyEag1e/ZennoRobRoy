@@ -66,7 +66,7 @@ class LobbyEventRun:
                      if m.public and not m.deleted and text in (m.content or "")), None)
 
     def _event_post(self):
-        return self._post(f"🎌 **{NAME}**")
+        return self._post(f"{lobby_posts.BOT_EMOJI} **{NAME}**")
 
     def _results_post(self, lobby: lobby_db.Lobby):
         return self._post(f"{lobby_posts.RESULTS_EMOJI} **{NAME} · Lobby {lobby.number} results**")
