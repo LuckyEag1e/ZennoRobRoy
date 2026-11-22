@@ -92,9 +92,19 @@ def lineup_problem(conn: sqlite3.Connection, lobby: Lobby) -> Optional[str]:
     return None
 
 
-def swap_in(conn: sqlite3.Connection, tournament: sqlite3.Row, leaving: int, joining: int) -> str:
-    """An organizer bringing a waitlisted player into someone's spot. Returns their reply."""
+def swap_in(conn: sqlite3.Connection, tournament: sqlite3.Row, leaving: Optional[int], joining: int) -> str:
+    """An organizer bringing a waitlisted player into someone's spot, or with no one
+    `leaving`, into a free spot. Returns their reply."""
     names = Names(conn, tournament["id"], str)
+    if leaving is None:
+        if joining not in lobby_db.get_waitlist(conn, tournament["id"]):
+            return f"**{names.plain(joining)}** has to be on the waitlist."
+        lobby = lobby_db.fill_free_spot(conn, tournament["id"], joining)
+        if lobby is None:
+            return (f"No team still playing has a free spot for **{names.plain(joining)}**. Add `leaving:` to swap "
+                    f"them in for someone.")
+        return (f"✅ **{names.plain(joining)}** takes a free spot on "
+                f"{team_name(lobby, lobby.side_of(joining), names)} in lobby {lobby.number}.")
     lobby = lobby_db.find_lobby_of(conn, tournament["id"], leaving)
     if lobby is None or joining not in lobby_db.get_waitlist(conn, tournament["id"]):
         return f"**{names.plain(leaving)}** has to be in a lobby and **{names.plain(joining)}** on the waitlist."
@@ -315,7 +325,8 @@ def reinstate(conn: sqlite3.Connection, tournament: sqlite3.Row, team_id: int) -
                 f"{checking}")
     position = lobby_db.get_waitlist(conn, tournament["id"]).index(team_id) + 1
     return (f"✅ Brought {who} back into **{name}**: check-in is over, so they're **#{position} on the waitlist**. "
-            f"To give them a spot, use `/admin lobbyswap tournament:{name} leaving:<player> joining:{who}`.")
+            f"To give them a spot, use `/admin lobbyswap tournament:{name} joining:{who}` (adding `leaving:` to swap "
+            f"them in for someone, if no team has a free spot).")
 
 
 def checkin_start_problem(conn: sqlite3.Connection, tournament: sqlite3.Row) -> Optional[str]:

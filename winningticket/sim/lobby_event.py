@@ -196,6 +196,9 @@ class LobbyEventRun:
         lobbies = self._lobbies()
         waiting = self._query(lambda conn: lobby_db.get_waitlist(conn, self.tournament_id))
         if waiting:
+            if self.rng.random() < 0.3:
+                # Into a free spot, which there's usually none of, so it's refused.
+                await self.sim.run(org, "admin lobbyswap", tournament=NAME, joining=names[waiting[0]])
             leaving = next(p for p in lobbies[-1].players if p not in lobbies[-1].captains)
             await self.sim.run(org, "admin lobbyswap", tournament=NAME, leaving=names[leaving], joining=names[waiting[0]])
         lobby = lobbies[0]

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+from typing import Optional
 
 import discord
 from discord import app_commands
@@ -445,23 +446,25 @@ class AdminCog(commands.Cog):
         finally:
             conn.close()
 
-    @group.command(name="lobbyswap", description="Bring a waitlisted player into a 5v5 lobby in someone's place")
-    @app_commands.describe(tournament="Event name", leaving="Player giving up their spot (goes to the front of the waitlist)",
-                           joining="Waitlisted player taking the spot")
+    @group.command(name="lobbyswap", description="Bring a waitlisted player into a 5v5 lobby: a free spot, or someone's")
+    @app_commands.describe(tournament="Event name", joining="Waitlisted player taking the spot",
+                           leaving="Player giving up their spot (goes to the front of the waitlist); leave out for a free spot")
     @app_commands.autocomplete(tournament=tournament_name_autocomplete, leaving=playing_entrant_autocomplete,
                                joining=playing_entrant_autocomplete)
-    async def lobbyswap(self, interaction: discord.Interaction, tournament: str, leaving: str, joining: str) -> None:
+    async def lobbyswap(self, interaction: discord.Interaction, tournament: str, joining: str,
+                        leaving: Optional[str] = None) -> None:
         conn = db.get_connection()
         try:
-            found = await self._find_entrant(interaction, conn, tournament, leaving, ("in_progress",), ("lobbies",))
+            found = await self._find_entrant(interaction, conn, tournament, joining, ("in_progress",), ("lobbies",))
             if found is None:
                 return
-            tournament_row, leaving_team = found
-            joining_team = db.get_team_by_name(conn, tournament_row["id"], joining)
-            if joining_team is None:
-                reply = f"**{leaving}** has to be in a lobby and **{joining}** on the waitlist."
+            tournament_row, joining_team = found
+            leaving_team = db.get_team_by_name(conn, tournament_row["id"], leaving) if leaving is not None else None
+            if leaving is not None and leaving_team is None:
+                reply = f"**{tournament}** has no entrant named **{leaving}**."
             else:
-                reply = lobby_flow.swap_in(conn, tournament_row, leaving_team["id"], joining_team["id"])
+                reply = lobby_flow.swap_in(conn, tournament_row, leaving_team["id"] if leaving_team else None,
+                                           joining_team["id"])
             await interaction.response.send_message(reply, ephemeral=True)
             await sync_posts(self.bot, conn, tournament_row["id"])
         finally:

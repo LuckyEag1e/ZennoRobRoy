@@ -710,3 +710,34 @@ def test_an_organizer_reinstates_a_5v5_player(tmp_path):
         conn.close()
     finally:
         asyncio.run(sim.close())
+
+
+def test_lobbyswap_puts_a_waiting_player_in_a_free_spot(tmp_path):
+    sim, organizer, users, announcement = _event(tmp_path, players=11, captains=2)
+    try:
+        preview = asyncio.run(sim.run(organizer, "registration close", name="Duel")).sent
+        asyncio.run(sim.click(organizer, preview, "Create Lobbies"))
+        conn = db.get_connection()
+        tournament_id = _tournament_id()
+        [waiting] = lobby_db.get_waitlist(conn, tournament_id)
+        teams = db.get_teams(conn, tournament_id)
+        conn.close()
+        reply = asyncio.run(sim.run(organizer, "admin lobbyswap", tournament="Duel", joining=teams[waiting]["name"])).sent
+        assert "No team still playing has a free spot" in reply.content  # 5v5 already
+        # Check-in ends with nobody to replace a no-show, so the organizer takes them out, leaving a spot.
+        asyncio.run(sim.run(organizer, "lobby startcheckin", tournament="Duel", minutes=5))
+        asyncio.run(sim.run(organizer, "lobby endcheckin", tournament="Duel"))
+        conn = db.get_connection()
+        lobby = lobby_db.get_lobbies(conn, tournament_id)[0]
+        gone = next(p for p in lobby.players if p not in lobby.captains)
+        conn.close()
+        asyncio.run(sim.run(organizer, "admin withdraw", tournament="Duel", entrant=teams[gone]["name"],
+                            reason="withdrawn"))
+        reply = asyncio.run(sim.run(organizer, "admin lobbyswap", tournament="Duel", joining=teams[waiting]["name"])).sent
+        assert "takes a free spot" in reply.content
+        conn = db.get_connection()
+        assert waiting in lobby_db.get_lobby(conn, lobby.id).players
+        assert lobby_db.get_waitlist(conn, tournament_id) == []
+        conn.close()
+    finally:
+        asyncio.run(sim.close())

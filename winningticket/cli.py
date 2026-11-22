@@ -1362,20 +1362,20 @@ class WinningTicketCLI(cmd.Cmd):
             self._say(f"{team['name']} now captains their team in lobby {lobby.number}.")
 
     def do_admin_lobbyswap(self, arg: str) -> None:
-        "Bring a waitlisted player into someone's 5v5 spot: admin_lobbyswap <name> <leaving> <joining>"
+        "Bring a waitlisted player into a 5v5 lobby, a free spot or someone's: admin_lobbyswap <name> <joining> [leaving]"
         parts = shlex.split(arg)
-        if len(parts) != 3:
-            print("usage: admin_lobbyswap <name> <leaving> <joining>")
+        if len(parts) not in (2, 3):
+            print("usage: admin_lobbyswap <name> <joining> [leaving]")
             return
         found = self._require_entrant(*parts[:2], ("in_progress",), ("lobbies",))
         if found is None:
             return
-        tournament, leaving = found
-        joining = db.get_team_by_name(self.conn, tournament["id"], parts[2])
-        if joining is None:
-            print(f"{parts[1]} has to be in a lobby and {parts[2]} on the waitlist.")
+        tournament, joining = found
+        leaving = db.get_team_by_name(self.conn, tournament["id"], parts[2]) if len(parts) == 3 else None
+        if len(parts) == 3 and leaving is None:
+            print(f"{parts[0]} has no entrant named {parts[2]}.")
             return
-        self._say(lobby_flow.swap_in(self.conn, tournament, leaving["id"], joining["id"]))
+        self._say(lobby_flow.swap_in(self.conn, tournament, leaving["id"] if leaving else None, joining["id"]))
 
     def do_admin_lobbymove(self, arg: str) -> None:
         "Move a 5v5 player to the other team in their lobby: admin_lobbymove <name> <entrant>"
