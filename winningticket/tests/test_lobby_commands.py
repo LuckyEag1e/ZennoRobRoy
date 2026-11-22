@@ -570,6 +570,9 @@ def test_an_organizer_can_call_off_check_in_and_check_someone_in(tmp_path):
         assert "Checked in Player3 (lobby 1)" in reply.content
         reply = asyncio.run(sim.run(organizer, "admin checkin", tournament="Duel", entrant="Player3")).sent
         assert "already checked in" in reply.content
+        asyncio.run(sim.run(organizer, "registration add", tournament="Duel", name="Guest", captain="no"))
+        reply = asyncio.run(sim.run(organizer, "admin checkin", tournament="Duel", entrant="Guest")).sent
+        assert "no linked account" in reply.content
         reply = asyncio.run(sim.run(organizer, "lobby cancelcheckin", tournament="Duel")).sent
         assert "called off" in reply.content
         conn = db.get_connection()

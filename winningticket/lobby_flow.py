@@ -364,6 +364,8 @@ def check_in_for(conn: sqlite3.Connection, tournament: sqlite3.Row, team_id: int
     waitlist = lobby_db.get_waitlist(conn, tournament["id"])
     if in_lobby is None and team_id not in waitlist:
         return f"{who} is no longer playing in **{name}**."
+    if not db.team_member_ids(conn, team_id):
+        return f"{who} has no linked account, so they count as checked in already: there's nothing to do."
     if not lobby_db.check_in(conn, team_id):
         return f"{who} is already checked in."
     where = f"lobby {in_lobby.number}" if in_lobby is not None else f"#{waitlist.index(team_id) + 1} on the waitlist"
