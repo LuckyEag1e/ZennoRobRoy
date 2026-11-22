@@ -20,6 +20,19 @@ from bracket import (
 )
 from ratings import Ratings
 
+# Standard emojis the bot's posts are written with. When .env names one of the server's
+# custom emojis for one (the setting beside it), the bot swaps it in as it sends the post
+# (common.with_custom_emojis); the CLI, or a bot that can't see that emoji, keeps the standard one.
+BOT_EMOJI = "🎫"
+ROOM_EMOJI = "🎟️"
+RESULTS_EMOJI = "📸"
+MISMATCH_EMOJI = "🔍"
+CUSTOM_EMOJI_SETTINGS = {BOT_EMOJI: "BOT_EMOJI", ROOM_EMOJI: "ROOM_EMOJI", RESULTS_EMOJI: "RESULTS_EMOJI",
+                         MISMATCH_EMOJI: "MISMATCH_EMOJI"}
+# How much longer text gets per emoji swapped in: `<:name:id>`, with a name of up to 32
+# characters and an id of up to 20 digits.
+CUSTOM_EMOJI_GROWTH = 56
+
 MEDALS = {1: "🥇", 2: "🥈", 3: "🥉"}
 
 
@@ -347,14 +360,25 @@ def opted_out_message(unlinked: int) -> str:
             f"account in each tournament's history.")
 
 
-FORMAT_NAMES = {"single_elim": "Single elimination"}
+FORMAT_NAMES = {"single_elim": "Single elimination", "lobbies": "5v5 lobbies"}
+
+
+def wrong_format_message(tournament) -> str:
+    """Why a command doesn't apply to `tournament`'s format."""
+    if tournament["format"] == "lobbies":
+        return (f"**{tournament['name']}** is a 5v5 event, so it has no bracket or predictions. Its post in the "
+                f"channel shows how it's going.")
+    return f"**{tournament['name']}** is a bracket tournament, so it has no lobbies."
 
 
 def history_line(summary) -> str:
     """One concluded tournament in /history list: its name, champion, size, format, whether
     it was played in teams, and the day its final was recorded."""
-    entrant_word = "entrant" if summary.entrants == 1 else "entrants"
     finished = summary.finished_at[:10] if summary.finished_at else "unfinished"
+    if summary.format == "lobbies":
+        player_word = "player" if summary.entrants == 1 else "players"
+        return f"{summary.name}: {summary.entrants} {player_word} · {FORMAT_NAMES[summary.format]} · {finished}"
+    entrant_word = "entrant" if summary.entrants == 1 else "entrants"
     return (f"{summary.name}: 🏆 {summary.champion or 'no champion'} · {summary.entrants} {entrant_word} · "
             f"{FORMAT_NAMES[summary.format]} · {'Teams' if summary.has_teams else 'Singles'} · {finished}")
 
@@ -406,6 +430,13 @@ def rating_lines(user_id: int, ratings: Ratings) -> list[str]:
     return [singles, team]
 
 
+def contribution_line(user_id: int, by_user: dict[int, float]) -> str:
+    """A member's 5v5 contribution, which balances teams and is separate from Elo."""
+    if user_id not in by_user:
+        return "5v5 contribution: none yet (no 5v5 lobbies played)"
+    return f"5v5 contribution: **{by_user[user_id]:.1f}** (average of your last few lobbies; used to balance teams)"
+
+
 def ban_lines(bans: list, player_label: Callable[[int], str]) -> list[str]:
     """One line per banned user, with `player_label` naming users by id."""
     lines = []
@@ -442,6 +473,8 @@ CURRENT_FEATURES = [
     "a match off. The bracket plays on with walkovers.",
     "**Final results:** concluding a tournament posts the podium and the top predictors, "
     "and keeps the results for the future.",
+    "**5v5 events:** balanced teams, captains, check-in and a waitlist for lobbies played on the drafter "
+    "site, with captains reporting everyone's points.",
     "**Anonymous feedback** for the organizers.",
 ]
 PLANNED_FEATURES = [

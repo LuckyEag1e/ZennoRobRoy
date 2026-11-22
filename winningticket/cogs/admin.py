@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import sqlite3
+from typing import Optional
 
 import discord
 from discord import app_commands
 from discord.ext import commands
 
 import db
+import lobby_db
+import lobby_flow
 from bracket import Match, bracket_order, matches_with_both_teams, resolve_all_slots
 from bracket_changes import (
     REINSTATABLE_STATUSES,
@@ -37,6 +40,7 @@ from common import (
 )
 from embeds import EMBED_DESCRIPTION_LIMIT, mention
 from labels import ban_lines, dropped_results_note, feedback_page, join_within, reinstated_line, team_label
+from lobby_posting import refresh_signups, sync_posts
 from posting import MATCH_SLOTS_HELP, match_slots_problem
 
 # A walkover follows from a withdrawal, so a played result there would mean the game was
@@ -120,7 +124,7 @@ class AdminCog(commands.Cog):
             return
         conn = db.get_connection()
         try:
-            tournament_row = await resolve_tournament(interaction, conn, tournament, needs_bracket=False)
+            tournament_row = await resolve_tournament(interaction, conn, tournament, needs_bracket=False, formats=db.FORMATS)
             if tournament_row is None:
                 return
             db.delete_tournament(conn, tournament_row["id"])
@@ -205,7 +209,7 @@ class AdminCog(commands.Cog):
                          new_name: str | None = None, new_seed: int | None = None) -> None:
         conn = db.get_connection()
         try:
-            tournament_row = await resolve_tournament(interaction, conn, tournament, needs_bracket=False)
+            tournament_row = await resolve_tournament(interaction, conn, tournament, needs_bracket=False, formats=db.FORMATS)
             if tournament_row is None:
                 return
             team_row = db.get_team_by_name(conn, tournament_row["id"], team)
@@ -375,10 +379,11 @@ class AdminCog(commands.Cog):
         )
 
     async def _find_entrant(self, interaction: discord.Interaction, conn, tournament: str, entrant: str,
-                            allowed_statuses: tuple[str, ...]) -> tuple[sqlite3.Row, sqlite3.Row] | None:
+                            allowed_statuses: tuple[str, ...], formats: tuple[str, ...] = ("single_elim",),
+                            ) -> tuple[sqlite3.Row, sqlite3.Row] | None:
         """The tournament and entrant named, if the tournament's status is one of
         `allowed_statuses`, or None after saying why not."""
-        tournament_row = await resolve_tournament(interaction, conn, tournament)
+        tournament_row = await resolve_tournament(interaction, conn, tournament, formats=formats)
         if tournament_row is None:
             return None
         if tournament_row["status"] not in allowed_statuses:
@@ -397,12 +402,19 @@ class AdminCog(commands.Cog):
     async def withdraw(self, interaction: discord.Interaction, tournament: str, entrant: str, reason: str) -> None:
         conn = db.get_connection()
         try:
-            found = await self._find_entrant(interaction, conn, tournament, entrant, WITHDRAWABLE_STATUSES)
+            found = await self._find_entrant(interaction, conn, tournament, entrant, WITHDRAWABLE_STATUSES, db.FORMATS)
             if found is None:
                 return
             tournament_row, team = found
             if team["withdrawn"]:
                 await interaction.response.send_message(f"**{entrant}** has already left **{tournament}**.", ephemeral=True)
+                return
+            if tournament_row["format"] == "lobbies":
+                # The event's post shows who took the spot, so nothing else is announced.
+                reply = lobby_flow.dropout(conn, tournament_row, team["id"], reason, interaction.user.id)
+                await interaction.response.send_message(reply, ephemeral=True)
+                await refresh_signups(self.bot, conn, tournament_row["id"])  # the count leaves them out
+                await sync_posts(self.bot, conn, tournament_row["id"])
                 return
             lines, dropped = withdraw_and_describe(conn, tournament_row, team, reason, interaction.user.id, mention)
         finally:
@@ -410,18 +422,97 @@ class AdminCog(commands.Cog):
         await announce(interaction, "\n".join(lines),
                        f"Done. Undo it with `/admin reinstate`.{dropped_results_note(dropped)}", ping=False)
 
+    @group.command(name="setcaptain", description="Make an entrant captain of their 5v5 team")
+    @app_commands.describe(tournament="Event name", entrant="Entrant to make captain")
+    @app_commands.autocomplete(tournament=tournament_name_autocomplete, entrant=playing_entrant_autocomplete)
+    async def setcaptain(self, interaction: discord.Interaction, tournament: str, entrant: str) -> None:
+        conn = db.get_connection()
+        try:
+            found = await self._find_entrant(interaction, conn, tournament, entrant, ("in_progress",), ("lobbies",))
+            if found is None:
+                return
+            tournament_row, team = found
+            reply = lobby_flow.make_captain(conn, tournament_row, team["id"])
+            await interaction.response.send_message(reply, ephemeral=True)
+            await sync_posts(self.bot, conn, tournament_row["id"])
+        finally:
+            conn.close()
+
+    @group.command(name="lobbyswap", description="Bring a waitlisted player into a 5v5 lobby: a free spot, or someone's")
+    @app_commands.describe(tournament="Event name", joining="Waitlisted player taking the spot",
+                           leaving="Player giving up their spot (goes to the front of the waitlist); leave out for a free spot")
+    @app_commands.autocomplete(tournament=tournament_name_autocomplete, leaving=playing_entrant_autocomplete,
+                               joining=playing_entrant_autocomplete)
+    async def lobbyswap(self, interaction: discord.Interaction, tournament: str, joining: str,
+                        leaving: Optional[str] = None) -> None:
+        conn = db.get_connection()
+        try:
+            found = await self._find_entrant(interaction, conn, tournament, joining, ("in_progress",), ("lobbies",))
+            if found is None:
+                return
+            tournament_row, joining_team = found
+            leaving_team = db.get_team_by_name(conn, tournament_row["id"], leaving) if leaving is not None else None
+            if leaving is not None and leaving_team is None:
+                reply = f"**{tournament}** has no entrant named **{leaving}**."
+            else:
+                reply = lobby_flow.swap_in(conn, tournament_row, leaving_team["id"] if leaving_team else None,
+                                           joining_team["id"])
+            await interaction.response.send_message(reply, ephemeral=True)
+            await sync_posts(self.bot, conn, tournament_row["id"])
+        finally:
+            conn.close()
+
+    @group.command(name="lobbymove", description="Move a 5v5 player to the other team in their lobby")
+    @app_commands.describe(tournament="Event name", entrant="Player to move (their old spot is filled from the waitlist)")
+    @app_commands.autocomplete(tournament=tournament_name_autocomplete, entrant=playing_entrant_autocomplete)
+    async def lobbymove(self, interaction: discord.Interaction, tournament: str, entrant: str) -> None:
+        conn = db.get_connection()
+        try:
+            found = await self._find_entrant(interaction, conn, tournament, entrant, ("in_progress",), ("lobbies",))
+            if found is None:
+                return
+            tournament_row, team = found
+            await interaction.response.send_message(lobby_flow.move_player(conn, tournament_row, team["id"]),
+                                                    ephemeral=True)
+            await sync_posts(self.bot, conn, tournament_row["id"])
+        finally:
+            conn.close()
+
+    @group.command(name="checkin", description="Check a 5v5 player in on their behalf")
+    @app_commands.describe(tournament="Event name", entrant="Player to check in")
+    @app_commands.autocomplete(tournament=tournament_name_autocomplete, entrant=playing_entrant_autocomplete)
+    async def checkin(self, interaction: discord.Interaction, tournament: str, entrant: str) -> None:
+        conn = db.get_connection()
+        try:
+            found = await self._find_entrant(interaction, conn, tournament, entrant, ("in_progress",), ("lobbies",))
+            if found is None:
+                return
+            tournament_row, team = found
+            await interaction.response.send_message(lobby_flow.check_in_for(conn, tournament_row, team["id"]),
+                                                    ephemeral=True)
+            await sync_posts(self.bot, conn, tournament_row["id"])
+        finally:
+            conn.close()
+
     @group.command(name="reinstate", description="Undo a dropout, withdrawal or disqualification")
     @app_commands.describe(tournament="Tournament name", entrant="Entrant to bring back")
     @app_commands.autocomplete(tournament=tournament_name_autocomplete, entrant=withdrawn_entrant_autocomplete)
     async def reinstate(self, interaction: discord.Interaction, tournament: str, entrant: str) -> None:
         conn = db.get_connection()
         try:
-            found = await self._find_entrant(interaction, conn, tournament, entrant, REINSTATABLE_STATUSES)
+            found = await self._find_entrant(interaction, conn, tournament, entrant, REINSTATABLE_STATUSES, db.FORMATS)
             if found is None:
                 return
             tournament_row, team = found
             if not team["withdrawn"]:
                 await interaction.response.send_message(f"**{entrant}** is still playing.", ephemeral=True)
+                return
+            if tournament_row["format"] == "lobbies":
+                # The event's post shows them back, so nothing else is announced.
+                reply = lobby_flow.reinstate(conn, tournament_row, team["id"])
+                await interaction.response.send_message(reply, ephemeral=True)
+                await refresh_signups(self.bot, conn, tournament_row["id"])
+                await sync_posts(self.bot, conn, tournament_row["id"])
                 return
             refusal = reinstate_problem(conn, tournament_row, team["id"])
             if refusal is not None:

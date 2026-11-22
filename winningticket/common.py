@@ -15,7 +15,9 @@ from discord import app_commands
 import db
 from bracket import Match, resolve_all_slots
 from embeds import render_bracket_embed
-from labels import bracket_notes, matchup_label, name_taken_message, team_label
+from labels import (CUSTOM_EMOJI_SETTINGS, bracket_notes, matchup_label, name_taken_message, team_label,
+                    wrong_format_message)
+from lobby_flow import lobby_signups_message
 
 log = logging.getLogger("winningticket")
 
@@ -50,12 +52,18 @@ class TournamentSession:
 
 
 async def resolve_tournament(
-    interaction: discord.Interaction, conn: sqlite3.Connection, name: str, needs_bracket: bool = True
+    interaction: discord.Interaction, conn: sqlite3.Connection, name: str, needs_bracket: bool = True,
+    formats: tuple[str, ...] = ("single_elim",),
 ) -> sqlite3.Row | None:
     """Fetch a tournament by name for this guild, or send an ephemeral error and return None.
     A tournament still taking sign-ups has no bracket yet, so it's an error too unless the
-    command passes needs_bracket=False because it works without one."""
+    command passes needs_bracket=False because it works without one. So is a tournament
+    whose format isn't in `formats`: bracket commands are the default, and commands that
+    also work for 5v5 events say so."""
     tournament = db.get_tournament_by_name(conn, interaction.guild_id, name)
+    if tournament is not None and tournament["format"] not in formats:
+        await interaction.response.send_message(wrong_format_message(tournament), ephemeral=True)
+        return None
     if tournament is None:
         if db.get_concluded_tournament_by_name(conn, interaction.guild_id, name) is not None:
             message = f"**{name}** has concluded. `/history` shows its bracket, seeding and leaderboard."
@@ -102,8 +110,20 @@ async def tournament_name_autocomplete(
 async def registration_name_autocomplete(
     interaction: discord.Interaction, current: str
 ) -> list[app_commands.Choice[str]]:
-    """Only tournaments still taking sign-ups."""
+    """Only tournaments still in registration."""
     return _tournament_choices(interaction, current, "registration")
+
+
+async def signup_name_autocomplete(
+    interaction: discord.Interaction, current: str
+) -> list[app_commands.Choice[str]]:
+    """Tournaments taking sign-ups, including 5v5 events whose waitlist still takes them."""
+    conn = db.get_connection()
+    try:
+        names = db.get_signup_tournament_names(conn, interaction.guild_id)
+    finally:
+        conn.close()
+    return _matching_choices(names, current)
 
 
 def _entrant_choices(interaction: discord.Interaction, current: str,
@@ -194,6 +214,8 @@ def signups_message(tournament: sqlite3.Row, entrants: int) -> str:
     open and rewritten as people sign up and when sign-ups close, so the channel gets one
     message that stays current instead of a post per sign-up."""
     name = tournament["name"]
+    if tournament["format"] == "lobbies":
+        return lobby_signups_message(tournament, entrants)
     if tournament["status"] != "registration":
         return f"📝 Sign-ups for **{name}** are closed."
     closes_at = tournament["registration_closes_at"]
@@ -205,13 +227,16 @@ def signups_message(tournament: sqlite3.Row, entrants: int) -> str:
             f"**{entrants}** entered so far.")
 
 
-async def edit_signups_message(client: discord.Client, tournament: sqlite3.Row, content: str) -> None:
+async def edit_signups_message(client: discord.Client, tournament: sqlite3.Row, content: str,
+                               remove_buttons: bool = False) -> None:
     """Rewrite a tournament's sign-ups announcement, if it has one the bot can still find."""
     channel = client.get_channel(tournament["channel_id"]) if tournament["channel_id"] is not None else None
     if channel is None or tournament["announcement_message_id"] is None:
         return
+    content = with_custom_emojis(client, content)
+    changes = {"content": content, "view": None} if remove_buttons else {"content": content}
     try:
-        await channel.get_partial_message(tournament["announcement_message_id"]).edit(content=content)
+        await channel.get_partial_message(tournament["announcement_message_id"]).edit(**changes)
     except discord.HTTPException:
         log.warning("Couldn't update the sign-ups message for tournament %s", tournament["id"])
 
@@ -237,13 +262,20 @@ async def announce(interaction: discord.Interaction, public: str, private: str, 
 
 
 async def send_public(channel: discord.abc.Messageable | None, text: str, ping: bool = True,
-                      view: discord.ui.View | None = None) -> discord.Message | None:
+                      view: discord.ui.View | None = None,
+                      notify: Iterable[int] | None = None) -> discord.Message | None:
     """Post `text` in `channel`, or return None if there's no channel or Discord refused.
-    Without `ping`, users mentioned in `text` show by name but aren't notified."""
+    Without `ping`, users mentioned in `text` show by name but aren't notified. With
+    `notify`, only those users are."""
     if channel is None:
         return None
+    if notify is not None:
+        allowed = discord.AllowedMentions(everyone=False, roles=False,
+                                          users=[discord.Object(id=user_id) for user_id in notify])
+    else:
+        allowed = None if ping else discord.AllowedMentions.none()
     try:
-        return await channel.send(text, view=view, allowed_mentions=None if ping else discord.AllowedMentions.none())
+        return await channel.send(text, view=view, allowed_mentions=allowed)
     except discord.HTTPException:
         log.exception("Couldn't post in channel %s", getattr(channel, "id", channel))
         return None
@@ -388,9 +420,12 @@ class WinnerPicker(BotView):
         return pick
 
 
-def resolve_emoji(client: discord.Client, name: str) -> str:
-    """Look up a custom server emoji by name and return its mention string.
-    Falls back to `:name:` as plain text if the bot can't see an emoji with
-    that name (e.g. not in any mutual server), so it never crashes."""
-    emoji = discord.utils.get(client.emojis, name=name)
-    return str(emoji) if emoji is not None else f":{name}:"
+def with_custom_emojis(client: discord.Client, text: str) -> str:
+    """`text` with each standard emoji that .env pairs with one of the server's custom emojis
+    (labels.CUSTOM_EMOJI_SETTINGS) swapped for it. One the bot can't see stays standard."""
+    for emoji, setting in CUSTOM_EMOJI_SETTINGS.items():
+        name = os.environ.get(setting)
+        custom = discord.utils.get(client.emojis, name=name) if name and emoji in text else None
+        if custom is not None:
+            text = text.replace(emoji, str(custom))
+    return text

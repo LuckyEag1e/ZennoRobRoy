@@ -36,6 +36,7 @@ from sim.actors import (
 from cogs.tournament import LIVE_POST_IN_VIEW, render_live_post
 from sim.discord_fakes import FakeAttachment, FakeCategory
 from sim.harness import GUILD_ID, Simulation
+from sim.lobby_event import LobbyEventRun
 
 CONFIRM_BRACKET = "Confirm & Save Bracket"
 # A spammer's burst: about as many commands as one person can fire before Discord slows them.
@@ -75,7 +76,7 @@ class Scenario:
     simultaneous: bool = False     # and the bot handles their interactions at the same instant
     co_organizer: bool = False     # a second organizer records results alongside the first
     tournaments: int = 1           # played one after another by the same people, so later ones are seeded by rating
-    format: str = "single_elim"    # the only format the bot supports so far
+    format: str = "single_elim"    # or "lobbies" for a 5v5 event (sim/lobby_event.py)
     dropouts: bool = False         # as play starts, entrants drop out or are disqualified, and a game is called off
     self_reported: bool = False    # players report their own matches; organizers settle the rest
     coordinated: bool = False      # the bot calls matches into voice rooms, and players ready up
@@ -106,6 +107,9 @@ SCENARIOS = {
                  self_reported=True, coordinated=True),
         Scenario("dropouts", "As play starts, a player drops out, a guest is disqualified and a game is called off.",
                  ((DILIGENT, 4), (CASUAL, 4)), SLOPPY, guests=2, dropouts=True),
+        Scenario("lobbies", "A 5v5 event: 23 sign-ups, late ones on the waitlist, a dropout, missed check-ins, "
+                 "tied and disputed reports, and one nobody answers.",
+                 ((DILIGENT, 8), (CASUAL, 10), (CHAOTIC, 3)), SLOPPY, guests=2, format="lobbies"),
     ]
 }
 
@@ -1087,6 +1091,11 @@ async def _play(sim: Simulation, scenario: Scenario, rng: random.Random) -> None
         players[0].agrees, players[1].agrees = False, True
     co_organizer = Organizer(sim.add_user(2, "Co-organizer", organizer=True), scenario.organizer) if scenario.co_organizer else None
     newcomer = None
+    if scenario.format == "lobbies":
+        event = LobbyEventRun(sim, scenario, rng, organizer, players)
+        await event.play()
+        event.check_final_state()
+        return
     for number in range(scenario.tournaments):
         run = TournamentRun(sim, scenario, rng, organizer, players, name=TOURNAMENT_NAMES[number],
                             co_organizer=co_organizer, newcomer=newcomer)

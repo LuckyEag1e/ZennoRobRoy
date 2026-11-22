@@ -5,6 +5,10 @@ an admin imports the already-seeded bracket, members each fill out their own
 predicted bracket, and as real results come in the bot scores everyone against
 reality.
 
+It also runs 5v5 events played on [drafter.uma.guide](https://drafter.uma.guide): the
+bot handles sign-ups, check-in and the waitlist, draws balanced teams with captains,
+hands out the room code, and records the points captains report (see "5v5 events" below).
+
 ## Setup
 
 1. Create a Discord application + bot at https://discord.com/developers/applications.
@@ -107,6 +111,43 @@ Everyone:
 - `/history bracket|seeding|leaderboard tournament:<name>` — look back at a concluded
   tournament's final bracket, how it was seeded, and its prediction leaderboard (only you see the reply)
 
+## 5v5 events
+
+Up to ten players play in a drafter room as two teams of up to five (5v5, 5v4, 4v4 and so on), with a
+captain each. Each race gives 5, 3 and 1 points for 1st, 2nd and 3rd, the team with more
+points wins, and a tie is settled on a tiebreaker track before anyone enters the points.
+
+1. An organizer runs `/registration open5v5 name:<name> starts_in_hours:<hours>
+   [spread:tier|balanced|random]`. Players press **Register** on the sign-ups post (or run
+   `/register tournament:<name> captain:<choice>`) and say whether they want to captain, can if needed, or won't.
+2. `/registration close name:<name>`, ideally a day before, shows the organizer the proposed
+   split (such as "5v5 + 5v4, 3 waitlisted") to accept or change, then draws the lobbies.
+   One post in the channel shows every lobby and the waitlist, and carries the event's
+   buttons from then on. Teams are balanced on each player's 5v5 contribution, two opposing captains per lobby. Late
+   sign-ups fill the smallest team with room (up to 5) or join the end of the waitlist, and a dropout's spot goes to the first one waiting.
+3. **Start Check-In** on that post (or `/lobby startcheckin`) pings everyone to check in.
+   It can't start while a team has no captain, and if a captain leaves during it, it stays
+   open until the team has one again. When it ends, no-shows are replaced in place by
+   checked-in players from the waitlist. It ends early once everyone has checked in, or
+   when an organizer presses **End Check-In** (or `/lobby endcheckin`). Players without a
+   linked account can't press anything, so an organizer checks them in with `/admin checkin`
+   once they're there. `/lobby cancelcheckin` calls check-in off and clears everyone's check-in.
+4. A captain creates the room at https://drafter.uma.guide/host and presses **Submit Room
+   Code**. Players press **Get Room Code** for a private copy, and the host is told who has no
+   linked account and needs the code passed on by hand.
+5. After the races, both captains press **Finish** (an organizer's press finishes the lobby
+   at once). A results post for the lobby then has a button for each team, and each captain
+   presses both to enter everyone's points, one team's form at a time. Matching points are
+   final, and if only one captain finishes entering theirs, they're accepted after 10 minutes. Points that don't match are listed on the post
+   until a captain corrects theirs or an organizer presses **Finalize Scores**.
+   `/lobby report lobby:<n>` lets an organizer record points directly. `/tournament conclude`
+   posts how each lobby went.
+
+A player's **contribution** in a lobby is 10 for its top scorer down to 1, +3 for the winning
+team and +1 more for its captain. Teams are balanced on the average of each player's last
+3 lobbies. It's separate from Elo, and `/rating` shows your own. `/admin setcaptain`, `/admin lobbymove` and
+`/admin lobbyswap` fix a lobby by hand.
+
 ## Local CLI (no Discord needed)
 
 `cli.py` is a terminal REPL that drives the exact same `db.py`/`bracket.py`/`csv_import.py`
@@ -118,13 +159,17 @@ python cli.py
 ```
 
 Commands mirror the slash commands: `create <name> <csv>`, `regopen <name> [--closes-in HOURS]`, `register <name>`,
-`unregister <name>`, `entrants <name>`, `regadd <name> <entrant> [user_id]`, `regremove <name> <entrant>`,
+`unregister <name>`, `entrants <name>`, `regadd <name> <entrant> [user_id] [--captain want|can|no]`, `regremove <name> <entrant>`,
 `regclose <name>`, `open <name>`, `predict <name>`,
 `lock <name>`, `conclude <name>`, `matchresult <name>`, `matchstats <name>`, `mypicks <name>`, `bracket <name>`,
 `leaderboard <name>`, `tournaments`, `history`, `history_bracket <name>`, `history_seeding <name>`,
 `history_leaderboard <name>`, `features`, `feedback <message>`, and the admin set: `admin_setstatus`, `admin_delete`,
 `admin_editteam`, `admin_setresult`, `admin_clearresult`, `admin_clearpredictions`, `admin_feedback`,
 `admin_deletefeedback`, `admin_ban`, `admin_unban`, `admin_bans`, `admin_linkplayer`, `admin_unlinkplayer`.
+5v5 events use `regopen5v5 <name> --starts-in HOURS [--spread tier|balanced|random]`, `register <name> --captain want|can|no`,
+`regclose <name> [--lobbies N] [--spread tier|balanced|random]`, `lobby_startcheckin`, `lobby_endcheckin`, `lobby_cancelcheckin`, `checkin`,
+`lobby_roomcode`, `lobby_code`, `lobby_finish`, `lobby_report`, `lobby_finalize`, `admin_setcaptain`, `admin_lobbyswap`,
+`admin_lobbymove` and `admin_checkin`.
 Use `as <user_id> <name>` to switch which simulated user you're acting as (so you can
 submit multiple different predictions and see the leaderboard play out). Commands that
 take more than one argument (like `create`) need quotes around a multi-word name;

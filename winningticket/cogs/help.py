@@ -6,6 +6,7 @@ from discord.ext import commands
 
 from common import requires_manage_server
 from labels import CURRENT_FEATURES, PLANNED_FEATURES
+from lobby_posts import DRAFTER_HOST_URL
 
 
 def _command_list_embed(title: str, sections: list[tuple[str, str]]) -> discord.Embed:
@@ -38,6 +39,7 @@ class HelpCog(commands.Cog):
             ("/match stats tournament:<name>", "See what % of the pool picked each side of a matchup."),
             ("/history list", "See every concluded tournament, with its champion, size, format and date."),
             ("/history bracket tournament:<name>", "Look back at a concluded tournament. `/history seeding` and `/history leaderboard` show how it was seeded and how the pool did."),
+            ("5v5 events", "Signing up for a 5v5 played on the drafter site? `/help 5v5` walks through it."),
             ("/features", "What the bot can be used for, and what's coming."),
             ("/feedback", "Send the organizers anonymous feedback."),
         ])
@@ -99,6 +101,8 @@ class HelpCog(commands.Cog):
              "to the channel. The tournament's results are kept and count toward players' "
              "ratings. From then on only `/history` shows it, and its name can't be used "
              "again. Only a completed tournament can be concluded."),
+            ("5v5 events",
+             "For 5v5 lobbies played on the drafter site instead of a bracket, see `/help 5v5`."),
             ("Fixing mistakes",
              "Wrong result, bad team name, etc.? See `/help admin`."),
         ])
@@ -121,18 +125,59 @@ class HelpCog(commands.Cog):
             ("/rating user:<member>", "See any member's Elo rating. Members can only see their own."),
             ("/admin linkplayer tournament:<name> entrant:<name> user:<member>", "Link an entrant to the member who plays as them, such as one entered by name before they agreed, so its games count for their rating."),
             ("/admin unlinkplayer tournament:<name> entrant:<name>", "Unlink the member behind an entrant, such as one linked to the wrong entry. Their agreement and other entries stay as they are."),
+            ("/admin setcaptain tournament:<name> entrant:<name>", "5v5: make a player (with a linked account) captain of their team, such as when a team has none."),
+            ("/admin lobbyswap tournament:<name> joining:<name> [leaving:<name>]", "5v5: put a waitlisted player in a free spot, or in someone's spot with leaving:. The player leaving goes to the front of the waitlist."),
+            ("/admin lobbymove tournament:<name> entrant:<name>", "5v5: move a player to the other team in their lobby, such as to give a team with no captain one. Their old spot is filled from the waitlist."),
+            ("/admin checkin tournament:<name> entrant:<name>", "5v5: check a player in on their behalf while check-in is open."),
             ("/admin feedback [page:<n>]", "Read anonymous feedback, newest first. `/admin deletefeedback number:<n>` removes one."),
             ("/admin ban user:<member> [reason:<text>]", "Block a member from using the bot. `/admin unban` undoes it, and `/admin bans` lists everyone banned."),
+        ])
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @group.command(name="5v5", description="How a 5v5 event works, for players and organizers")
+    async def five_v_five(self, interaction: discord.Interaction) -> None:
+        embed = _command_list_embed("5v5 events", [
+            ("1. Sign up",
+             "Press **Register** on the sign-ups post (or `/register tournament:<name> captain:<choice>`) and say whether you want to captain, can if "
+             "needed, or won't. Each team needs a captain, who hosts the drafter room and reports the points."),
+            ("2. Lobbies are drawn",
+             "Ahead of the event, players are drawn into lobbies of two teams of up to five, balanced by past "
+             "5v5 results, with captains picked automatically. They're all on one post in the channel, "
+             "with the waitlist, and you're pinged there. Can't make it? `/match dropout` gives your spot to the "
+             "next player waiting."),
+            ("3. Check in",
+             "Before play starts you're pinged to press **Check In** (or `/checkin`). Anyone in a lobby who "
+             "hasn't checked in by the end is replaced by the next checked-in player on the waitlist."),
+            ("4. Play",
+             f"A captain creates the room at {DRAFTER_HOST_URL} and presses **Submit Room Code**. "
+             "Everyone else presses **Get Room Code** on the event's post, joins, drafts, trains their character "
+             "and races. Each race gives 5, 3 and 1 points for 1st, 2nd and 3rd."),
+            ("5. Results",
+             "After the races (and a tiebreaker track if the teams are level), both captains press **Finish**. "
+             "A results post for the lobby then has a button for each team, and each captain presses both to enter "
+             "everyone's points. Matching points are final; if only one captain finishes entering theirs, they're "
+             "accepted after 10 minutes. Points that don't match wait for a captain to correct theirs, or for an organizer. "
+             "`/rating` shows your 5v5 contribution."),
+            ("Organizers",
+             "`/registration open5v5 name:<name> starts_in_hours:<hours>`, then `/registration close` "
+             "(ideally a day before) to preview and create the lobbies. Start check-in with the button on the "
+             "event's post or `/lobby startcheckin`, once every team has a captain. **End Check-In** (or `/lobby endcheckin`) ends it early, "
+             "`/lobby cancelcheckin` calls it off, and `/admin checkin` checks in players without an account once "
+             "they're there. **Finish** (or `/lobby finish lobby:<n>`) finishes a lobby without waiting for its captains, "
+             "**Finalize Scores** on a results post settles points that don't match, `/lobby report lobby:<n>` "
+             "records points directly, and "
+             "`/tournament conclude` posts how each lobby went."),
         ])
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
     @app_commands.command(name="features", description="What WinningTicket can be used for, and what's coming")
     @app_commands.guild_only()
     async def features(self, interaction: discord.Interaction) -> None:
+        # The feature list is longer than an embed field allows (1024 characters), so it goes in the description.
         embed = _command_list_embed("WinningTicket", [
-            ("What it does", "\n".join(f"• {line}" for line in CURRENT_FEATURES)),
             ("Coming soon", "\n".join(f"• {line}" for line in PLANNED_FEATURES)),
         ])
+        embed.description = "**What it does**\n" + "\n".join(f"• {line}" for line in CURRENT_FEATURES)
         embed.set_footer(text="See /help players for the commands.")
         await interaction.response.send_message(embed=embed, ephemeral=True)
 

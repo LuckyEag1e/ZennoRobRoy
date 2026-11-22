@@ -143,9 +143,10 @@ def test_a_concluded_tournament_can_still_be_found_by_name(conn):
 
 def test_version_6_database_gets_single_elimination_for_existing_tournaments(tmp_path):
     conn = db.get_connection(tmp_path / "v6.db")
-    # Version 6 had neither format nor the match_slots column (and its comment) added since.
+    # Version 6 had none of the columns (and their comments) added since: format, match_slots and the 5v5 ones.
     v6_table = "\n".join(line for line in db._tournaments_table_sql("tournaments").splitlines()
-                         if not any(newer in line for newer in ("format", "match_slots", "matches the bot calls")))
+                         if not any(newer in line for newer in ("format", "match_slots", "matches the bot calls", "5v5", "check-in", "starts_at",
+                                                                    "lobby_spread", "checkin")))
     v6_table = v6_table.replace("DEFAULT 'random',", "DEFAULT 'random'")
     conn.executescript(v6_table + "PRAGMA user_version = 6;")
     conn.execute("INSERT INTO tournaments (guild_id, name, created_by) VALUES (1, 'Cup', 1)")

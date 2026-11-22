@@ -251,7 +251,7 @@ async def sync_match_post(client: discord.Client, conn: sqlite3.Connection, matc
             old = post["message_id"]
         else:
             old = message.id  # the post moved on while this was sending, so this message isn't wanted
-        if old is not None and not await _delete_message(client, post["channel_id"], old):
+        if old is not None and not await delete_message(client, post["channel_id"], old):
             db.keep_replaced_match_post(conn, post["channel_id"], old)
         if old == message.id:
             return
@@ -297,7 +297,7 @@ async def announce_match_change(client: discord.Client, channel: discord.abc.Mes
 
 async def delete_replaced_post(client: discord.Client, conn: sqlite3.Connection, replaced: sqlite3.Row) -> None:
     """Delete a match post a new message took the place of, if Discord can be reached."""
-    if await _delete_message(client, replaced["channel_id"], replaced["message_id"]):
+    if await delete_message(client, replaced["channel_id"], replaced["message_id"]):
         db.forget_replaced_match_post(conn, replaced["message_id"])
 
 
@@ -320,7 +320,7 @@ async def _edit(client: discord.Client, conn: sqlite3.Connection, post: sqlite3.
     return PostEdit.EDITED
 
 
-async def _delete_message(client: discord.Client, channel_id: int, message_id: int) -> bool:
+async def delete_message(client: discord.Client, channel_id: int, message_id: int) -> bool:
     """Delete a message, or one someone already deleted. False if Discord couldn't be reached."""
     channel = client.get_channel(channel_id)
     if channel is None:
