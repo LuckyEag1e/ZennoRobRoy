@@ -380,7 +380,7 @@ def get_room_code(conn: sqlite3.Connection, tournament: sqlite3.Row, lobby: Lobb
     if problem is not None:
         return problem
     if lobby.room_code is None:
-        return "The room code isn't in yet. A captain enters it once they've created the room; check back in a moment."
+        return "The room code isn't in yet. You'll be pinged on the event's post as soon as a captain enters it."
     text = (f"🎮 Room code for lobby {lobby.number}: **{lobby.room_code}**\nJoin at https://drafter.uma.guide with that "
             f"code.")
     if role.captain or role.organizer:

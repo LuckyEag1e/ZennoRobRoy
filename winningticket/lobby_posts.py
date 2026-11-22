@@ -5,6 +5,7 @@ points. Shared by the bot and the CLI, which do the posting."""
 
 from __future__ import annotations
 
+import hashlib
 import sqlite3
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -160,7 +161,7 @@ def _lobby_status(conn: sqlite3.Connection, lobby: Lobby, names: Names, player_l
         return lines + missing
     if lobby.room_code is None:
         return lines + ["Waiting for a captain to create the room"]
-    lines.append(f"🎮 Room ready, hosted by {player_label(lobby.host_user_id)}")
+    lines.append(f"🎮 Room ready, hosted by {player_label(lobby.host_user_id)}: press **{GET_ROOM_CODE}** to join")
     waiting = [lobby.teams[side].captain for side in SIDES if side not in finished]
     if finished:
         lines.append(f"🏁 {' and '.join(names(c) for c in lobby.captains if lobby.side_of(c) in finished)} pressed "
@@ -209,7 +210,7 @@ def describe_event(conn: sqlite3.Connection, tournament: sqlite3.Row, player_lab
         # Once one captain presses Finish, the other is pinged to press it too.
         finishing = [(f"finish:{lobby.id}", user_id) for lobby in playing
                      for user_id in _waiting_to_finish(conn, lobby, names)]
-        return PostState(_fit(lines), buttons, "play", everyone + finishing)
+        return PostState(_fit(lines), buttons, "play", everyone + _room_ready(playing, names) + finishing)
     if running:
         ends = db.from_db_time(tournament["checkin_ends_at"])
         if ends <= datetime.now(timezone.utc) and lobby_db.teams_without_captain(conn, tournament["id"]):
@@ -222,6 +223,14 @@ def describe_event(conn: sqlite3.Connection, tournament: sqlite3.Row, player_lab
     lines += ["", f"Check-in opens before the start, and you'll be pinged here. Can't make it? "
                   f"`/match dropout tournament:{name}`"]
     return PostState(_fit(lines), [EVENT_BUTTONS[START_CHECKIN]], "formed", everyone + waiters)
+
+
+def _room_ready(playing: list[Lobby], names: Names) -> list[tuple[str, int]]:
+    """Each lobby's players are pinged when its room code is in, and again if a new one
+    replaces it, so nobody has to keep checking. Not the host, who entered it."""
+    return [(f"room:{lobby.id}:{hashlib.sha1(lobby.room_code.encode()).hexdigest()[:8]}", user_id)
+            for lobby in playing if lobby.room_code is not None
+            for user_id in names.user_ids(lobby.players) if user_id != lobby.host_user_id]
 
 
 def _waiting_to_finish(conn: sqlite3.Connection, lobby: Lobby, names: Names) -> list[int]:

@@ -136,6 +136,11 @@ def test_whole_event_from_close_to_result(tmp_path):
         assert "aren't playing" in asyncio.run(sim.click(outsider, ready, "Get Room Code")).sent.content
         form = asyncio.run(sim.click(captain_a, ready, "Submit Room Code")).response.modal
         asyncio.run(sim.submit_fields(captain_a, form, ["ABC123"]))
+        _loop(sim)
+        # The lobby's players are pinged that the room is ready; the host entered it, so isn't.
+        ready_post = _post_with(sim, "hosted by")
+        linked = {user_of[p] for p in lobby.players if p in user_of}
+        assert {u.id for u in ready_post.allowed_mentions.users} == linked - {captain_a.id}
         player = by_id[user_of[next(p for p in lobby.players if p not in lobby.captains)]]
         assert "ABC123" in asyncio.run(sim.click(player, _post_with(sim, "hosted by"), "Get Room Code")).sent.content
 
