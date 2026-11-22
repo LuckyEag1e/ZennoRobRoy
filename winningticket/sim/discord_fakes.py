@@ -215,8 +215,11 @@ class FakeFollowup:
         await interaction.channel.network()
         if not interaction.response.is_done():
             raise _not_found("Unknown Webhook")  # Discord has no follow-up channel until the first answer
-        return interaction.channel.post(content, [embed] if embed else [], view,
-                                        interaction.user.id if ephemeral else None)
+        message = interaction.channel.post(content, [embed] if embed else [], view,
+                                           interaction.user.id if ephemeral else None)
+        if interaction.sent is None:
+            interaction.sent = message  # after a defer, the follow-up is the answer
+        return message
 
 
 class FakeAttachment:

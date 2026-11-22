@@ -12,8 +12,8 @@ import db
 import lobby_db
 import lobby_flow
 from common import requires_manage_server, resolve_tournament, tournament_name_autocomplete, with_custom_emojis
-from lobby_posting import (LobbyButton, end_checkin, is_organizer, open_points, refresh_signups, start_checkin,
-                           sync_posts)
+from lobby_posting import (LobbyButton, answer_after_posts, end_checkin, is_organizer, open_points, refresh_signups,
+                           start_checkin, sync_posts)
 
 log = logging.getLogger("winningticket")
 
@@ -160,8 +160,7 @@ class LobbiesCog(commands.Cog):
                 return
             role = lobby_flow.role_in(conn, found, interaction.user.id, is_organizer(interaction))
             reply = lobby_flow.submit_room_code(conn, event, found, role, interaction.user.id, code)
-            await interaction.response.send_message(reply, ephemeral=True)
-            await sync_posts(self.bot, conn, event["id"])
+            await answer_after_posts(interaction, conn, event["id"], reply)
         finally:
             conn.close()
 
@@ -192,9 +191,8 @@ class LobbiesCog(commands.Cog):
             if not found:
                 return
             role = lobby_flow.role_in(conn, found, interaction.user.id, is_organizer(interaction))
-            await interaction.response.send_message(lobby_flow.finish(conn, event, found, role, interaction.user.id),
-                                                    ephemeral=True)
-            await sync_posts(self.bot, conn, event["id"])
+            reply = lobby_flow.finish(conn, event, found, role, interaction.user.id)
+            await answer_after_posts(interaction, conn, event["id"], reply)
         finally:
             conn.close()
 

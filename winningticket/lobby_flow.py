@@ -528,14 +528,16 @@ def finish(conn: sqlite3.Connection, tournament: sqlite3.Row, lobby: Lobby, role
                if side != role.side and side not in finished and lobby.teams[side].captain is not None]
     if not role.captain or role.side in finished:
         if not role.organizer:
-            return f"You've already pressed **{FINISH}**. Waiting for {' and '.join(names.plain(c) for c in waiting)}."
+            return (f"You've already pressed **{FINISH}**. Lobby {lobby.number} finishes once "
+                    f"{' and '.join(names.plain(c) for c in waiting)} presses it too.")
         lobby_db.finish(conn, lobby.id, list(SIDES), user_id)
-        return f"✅ Finished lobby {lobby.number}. Its captains enter the points on its results post."
+        return f"✅ Lobby {lobby.number} is finished. Its captains enter the points on its results post."
     if lobby_db.finish(conn, lobby.id, [role.side], user_id):
-        return f"✅ Finished. Enter the points on lobby {lobby.number}'s results post."
-    reply = f"✅ Finished. Waiting for {' and '.join(names.plain(c) for c in waiting)} to press **{FINISH}** too."
+        return f"✅ Lobby {lobby.number} is finished. Enter the points on its results post."
+    reply = (f"✅ You've pressed **{FINISH}**. Lobby {lobby.number} finishes once "
+             f"{' and '.join(names.plain(c) for c in waiting)} presses it too.")
     if role.organizer:
-        reply += f" You're also an organizer: press **{FINISH}** again to finish the lobby without waiting."
+        reply += f" You're also an organizer: press **{FINISH}** again to finish it without waiting."
     return reply
 
 

@@ -309,13 +309,23 @@ class CheckInLengthForm(BotModal, title="Start Check-In"):
         await start_checkin(interaction, self.tournament_id, int(text))
 
 
+async def answer_after_posts(interaction: discord.Interaction, conn: sqlite3.Connection, tournament_id: int,
+                             reply: Optional[str]) -> None:
+    """Bring the event's posts up to date, then answer privately. A post sent afresh to
+    notify someone lands below anything already sent, so answering first would leave the
+    reply above the post it's about. No `reply` just acknowledges the press."""
+    await interaction.response.defer(ephemeral=True)
+    await sync_posts(interaction.client, conn, tournament_id)
+    if reply is not None:
+        await interaction.followup.send(reply, ephemeral=True)
+
+
 async def start_checkin(interaction: discord.Interaction, tournament_id: int, minutes: int) -> None:
     conn = db.get_connection()
     try:
         reply = lobby_flow.start_checkin(conn, db.get_tournament(conn, tournament_id), minutes,
                                          datetime.now(timezone.utc))
-        await interaction.response.send_message(reply, ephemeral=True)
-        await sync_posts(interaction.client, conn, tournament_id)
+        await answer_after_posts(interaction, conn, tournament_id, reply)
     finally:
         conn.close()
 
@@ -332,9 +342,9 @@ async def _start_checkin(interaction, conn, tournament, lobby) -> None:
 
 
 async def end_checkin(interaction: discord.Interaction, conn: sqlite3.Connection, tournament: sqlite3.Row) -> None:
-    await interaction.response.send_message(lobby_flow.end_checkin(conn, tournament), ephemeral=True)
+    reply = lobby_flow.end_checkin(conn, tournament)
     await refresh_signups(interaction.client, conn, tournament["id"])  # late sign-ups end with check-in
-    await sync_posts(interaction.client, conn, tournament["id"])
+    await answer_after_posts(interaction, conn, tournament["id"], reply)
 
 
 async def _end_checkin(interaction, conn, tournament, lobby) -> None:
@@ -364,8 +374,7 @@ class RoomCodeForm(BotModal, title="Submit Room Code"):
             tournament = db.get_tournament(conn, lobby.tournament_id)
             role = lobby_flow.role_in(conn, lobby, interaction.user.id, is_organizer(interaction))
             reply = lobby_flow.submit_room_code(conn, tournament, lobby, role, interaction.user.id, self.code.value)
-            await interaction.response.send_message(reply, ephemeral=True)
-            await sync_posts(interaction.client, conn, tournament["id"])
+            await answer_after_posts(interaction, conn, tournament["id"], reply)
         finally:
             conn.close()
 
@@ -464,11 +473,8 @@ class PointsEntry:
                 reply = lobby_flow.finalize(conn, tournament, lobby, role, interaction.user.id, points)
             else:
                 reply = lobby_flow.enter_points(conn, tournament, lobby, role, interaction.user.id, points)
-            if reply is None:
-                await interaction.response.defer()  # the results post shows what they've entered
-            else:
-                await interaction.response.send_message(reply, ephemeral=True)
-            await sync_posts(interaction.client, conn, tournament["id"])
+            # No reply when the results post shows all there is to say: what they've entered.
+            await answer_after_posts(interaction, conn, tournament["id"], reply)
         finally:
             conn.close()
 
@@ -491,9 +497,8 @@ async def open_points(interaction: discord.Interaction, conn: sqlite3.Connection
 
 async def _finish(interaction, conn, tournament, lobby) -> None:
     role = lobby_flow.role_in(conn, lobby, interaction.user.id, is_organizer(interaction))
-    await interaction.response.send_message(lobby_flow.finish(conn, tournament, lobby, role, interaction.user.id),
-                                            ephemeral=True)
-    await sync_posts(interaction.client, conn, tournament["id"])
+    reply = lobby_flow.finish(conn, tournament, lobby, role, interaction.user.id)
+    await answer_after_posts(interaction, conn, tournament["id"], reply)
 
 
 async def _points_a(interaction, conn, tournament, lobby) -> None:

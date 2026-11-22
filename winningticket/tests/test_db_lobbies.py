@@ -169,7 +169,7 @@ def test_both_captains_finish_then_matching_points_are_final(conn):
     tournament, lobby, (captain_a, role_a), (captain_b, role_b) = _playing(conn, 6)
     points = _points(lobby)
     assert "both captains press" in lobby_flow.enter_points(conn, tournament, lobby, role_a, captain_a, points)
-    assert "Waiting for" in lobby_flow.finish(conn, tournament, lobby, role_a, captain_a)
+    assert "You've pressed **Finish**" in lobby_flow.finish(conn, tournament, lobby, role_a, captain_a)
     assert "already pressed" in lobby_flow.finish(conn, tournament, lobby, role_a, captain_a)
     assert lobby_db.get_post(conn, tournament["id"], lobby_db.results_post_key(lobby.id)) is None
     assert "results post" in lobby_flow.finish(conn, tournament, lobby, role_b, captain_b)
@@ -215,7 +215,7 @@ def test_points_that_tie_once_complete_are_refused(conn):
 def test_one_captains_points_are_accepted_when_the_other_enters_none(conn):
     tournament, lobby, (captain_a, role_a), (captain_b, role_b) = _playing(conn, 7)
     organizer = lobby_flow.Role(None, None, False, True)
-    assert "Finished lobby" in lobby_flow.finish(conn, tournament, lobby, organizer, ORGANIZER)
+    assert "is finished" in lobby_flow.finish(conn, tournament, lobby, organizer, ORGANIZER)
     lobby_flow.enter_points(conn, tournament, lobby, role_b, captain_b, _points(lobby, 1, 7))
     lobby_flow.accept_due_entries(conn, datetime.now(timezone.utc))
     assert lobby_db.get_result(conn, lobby.id) is None
@@ -264,7 +264,7 @@ def test_a_captain_who_is_an_organizer_can_finish_for_both(conn):
     tournament, lobby, (captain_a, role_a), (captain_b, role_b) = _playing(conn, 10)
     both = lobby_flow.Role(role_a.team_id, role_a.side, True, True)
     assert "press **Finish** again" in lobby_flow.finish(conn, tournament, lobby, both, captain_a)
-    assert "Finished lobby" in lobby_flow.finish(conn, tournament, lobby, both, captain_a)
+    assert "is finished" in lobby_flow.finish(conn, tournament, lobby, both, captain_a)
     assert lobby_db.races_over(lobby, lobby_db.get_finished_sides(conn, lobby.id))
 
 

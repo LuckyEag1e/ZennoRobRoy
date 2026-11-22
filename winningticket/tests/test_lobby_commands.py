@@ -151,9 +151,12 @@ def test_whole_event_from_close_to_result(tmp_path):
 
         # Both captains press Finish, then each enters everyone's points, in two forms.
         post = _post_with(sim, "hosted by")
-        assert "Waiting for" in asyncio.run(sim.click(captain_a, post, "Finish")).sent.content
+        reply = asyncio.run(sim.click(captain_a, post, "Finish")).sent
+        assert "You've pressed **Finish**" in reply.content
         reminder = _post_with(sim, "pressed **Finish**")
         assert [u.id for u in reminder.allowed_mentions.users] == [captain_b.id]
+        # The post was sent afresh to ping the other captain; the private reply comes after it.
+        assert sim.channel.messages.index(reply) > sim.channel.messages.index(reminder)
         assert "results post" in asyncio.run(sim.click(captain_b, reminder, "Finish")).sent.content
         _loop(sim)
         results = _post_with(sim, "Lobby 1 results")
