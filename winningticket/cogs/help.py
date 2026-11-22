@@ -153,9 +153,9 @@ class HelpCog(commands.Cog):
              "and races. Each race gives 5, 3 and 1 points for 1st, 2nd and 3rd."),
             ("5. Results",
              "After the races (and a tiebreaker track if the teams are level), both captains press **Finish**. "
-             "A results post for the lobby then asks each captain to enter everyone's points with the button "
-             "named after them. Matching points are final; if only one captain enters any, theirs are accepted "
-             "after 10 minutes. Points that don't match wait for a captain to correct theirs, or for an organizer. "
+             "A results post for the lobby then has a button for each team, and each captain presses both to enter "
+             "everyone's points. Matching points are final; if only one captain finishes entering theirs, they're "
+             "accepted after 10 minutes. Points that don't match wait for a captain to correct theirs, or for an organizer. "
              "`/rating` shows your 5v5 contribution."),
             ("Organizers",
              "`/registration open5v5 name:<name> starts_in_hours:<hours>`, then `/registration close` "

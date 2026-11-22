@@ -430,15 +430,11 @@ def finish(conn: sqlite3.Connection, tournament: sqlite3.Row, lobby: Lobby, role
     return reply
 
 
-def points_problem(conn: sqlite3.Connection, tournament: sqlite3.Row, lobby: Lobby, role: Role, side: str
-                   ) -> Optional[str]:
-    """Why someone can't enter `side`'s captain's points for `lobby`, or None if they can."""
-    captain = lobby.teams[side].captain
-    if not role.captain or role.side != side:
-        name = Names(conn, tournament["id"], str).plain(captain) if captain is not None else "this team's captain"
-        hint = f" Organizers enter the final points with **{FINALIZE}** if the captains' don't match." \
-            if role.organizer else ""
-        return f"This button is for {name}.{hint}"
+def points_problem(conn: sqlite3.Connection, tournament: sqlite3.Row, lobby: Lobby, role: Role) -> Optional[str]:
+    """Why someone can't enter captain's points for `lobby`, or None if they can."""
+    if not role.captain:
+        hint = f" Organizers press **{FINALIZE}** if the captains' points don't match." if role.organizer else ""
+        return f"Only lobby {lobby.number}'s captains enter its points.{hint}"
     if lobby_db.get_result(conn, lobby.id) is not None:
         return f"Lobby {lobby.number}'s result is already in. Ask an organizer if it needs correcting."
     if not lobby_db.races_over(lobby, lobby_db.get_finished_sides(conn, lobby.id)):
@@ -453,38 +449,47 @@ def finalize_problem(conn: sqlite3.Connection, tournament: sqlite3.Row, lobby: L
     return _playing_problem(conn, tournament, lobby)
 
 
-def parse_points(lobby: Lobby, entered: dict[int, str]) -> dict[int, int] | str:
-    """Everyone's points from what was typed, or why they can't be used."""
+def parse_points(players: list[int], entered: dict[int, str]) -> dict[int, int] | str:
+    """The players' points from what was typed, or why they can't be used."""
     points = {}
-    for player in lobby.players:
+    for player in players:
         text = entered.get(player, "").strip()
         if not text.isdigit() or int(text) > MAX_POINTS:
             return "Enter each player's points as a whole number (0 if they scored none)."
         points[player] = int(text)
-    if lobby_db.winning_side(lobby, points) is None:
-        return ("The teams are level on points. Play the tiebreaker track first, then enter everyone's points with "
-                "the tiebreaker's included.")
     return points
 
 
-def enter_points(conn: sqlite3.Connection, tournament: sqlite3.Row, lobby: Lobby, role: Role, side: str,
-                 user_id: int, points: dict[int, int]) -> str:
-    """A captain entering everyone's points. They're final when they match the other
-    captain's, or when the other team has no captain to enter any."""
-    problem = points_problem(conn, tournament, lobby, role, side)
+TIED = ("The teams are level on points, so these weren't saved. Play the tiebreaker track first, then enter the "
+        "points again with the tiebreaker's included.")
+
+
+def enter_points(conn: sqlite3.Connection, tournament: sqlite3.Row, lobby: Lobby, role: Role, user_id: int,
+                 points: dict[int, int]) -> Optional[str]:
+    """A captain entering points, one team's or everyone's, into their own entry. It's final
+    once it's complete and matches the other captain's, or when the other team has no
+    captain to enter any. None when there's nothing to say beyond what the results post shows."""
+    problem = points_problem(conn, tournament, lobby, role)
     if problem is not None:
         return problem
-    if lobby_db.enter_points(conn, lobby.id, side, user_id, points):
+    side = role.side
+    own = lobby_db.get_entries(conn, lobby.id).get(side)
+    merged = {**(own.points if own else {}), **points}
+    if all(player in merged for player in lobby.players) and lobby_db.winning_side(lobby, merged) is None:
+        return TIED
+    if lobby_db.enter_points(conn, lobby.id, side, user_id, merged):
         return f"✅ Lobby {lobby.number}'s result is in."
+    entries = lobby_db.get_entries(conn, lobby.id)
+    if not lobby_db.is_complete(lobby, entries[side]):
+        return None  # the results post shows which team's points they still have to enter
     names = Names(conn, tournament["id"], str)
     other = names.plain(lobby.teams["B" if side == "A" else "A"].captain)
-    entries = lobby_db.get_entries(conn, lobby.id)
-    mismatched = lobby_db.mismatched_players(entries)
+    mismatched = lobby_db.mismatched_players(lobby, entries)
     if mismatched:
         return (f"Saved, but your points don't match {other}'s for {', '.join(names.plain(p) for p in mismatched)}. "
-                f"Check with them; whoever's wrong presses their button again to correct theirs.")
+                f"Check with them; whoever's wrong presses that team's button again to correct theirs.")
     return (f"✅ Saved. They're final once {other}'s match, or <t:{int(entry_due_at(entries[side]).timestamp())}:R> "
-            f"if {other} doesn't enter any.")
+            f"if {other} doesn't enter theirs.")
 
 
 def finalize(conn: sqlite3.Connection, tournament: sqlite3.Row, lobby: Lobby, role: Role, user_id: int,
@@ -493,6 +498,8 @@ def finalize(conn: sqlite3.Connection, tournament: sqlite3.Row, lobby: Lobby, ro
     problem = finalize_problem(conn, tournament, lobby, role)
     if problem is not None:
         return problem
+    if lobby_db.winning_side(lobby, points) is None:
+        return TIED
     lobby_db.record_result(conn, lobby.id, points, user_id)
     return f"✅ Recorded the final points for lobby {lobby.number}."
 
@@ -510,7 +517,7 @@ def points_defaults(conn: sqlite3.Connection, lobby: Lobby, side: Optional[str])
 
 
 def accept_due_entries(conn: sqlite3.Connection, now: datetime) -> None:
-    """Accept one captain's points when the other captain hasn't entered any in time."""
+    """Accept one captain's points when the other captain hasn't completed theirs in time."""
     for entry in lobby_db.get_lone_entries(conn):
         if entry_due_at(entry) <= now:
             try:

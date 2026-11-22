@@ -420,7 +420,7 @@ def races_over(lobby: Lobby, finished_sides: set[str]) -> bool:
 
 @dataclass(frozen=True)
 class Entry:
-    """One captain's entry of everyone's points in their lobby."""
+    """One captain's entry of the points in their lobby: everyone's, or so far one team's."""
     lobby_id: int
     side: str
     points: dict[int, int]
@@ -438,18 +438,30 @@ def get_entries(conn: sqlite3.Connection, lobby_id: int) -> dict[str, Entry]:
                                                              (lobby_id,))}
 
 
-def mismatched_players(entries: dict[str, Entry]) -> list[int]:
-    """The players the two captains entered different points for, or [] unless both have."""
-    if len(entries) < 2:
+def is_complete(lobby: Lobby, entry: Entry) -> bool:
+    """Whether a captain's entry has every player's points. They enter one team's at a time."""
+    return all(player in entry.points for player in lobby.players)
+
+
+def mismatched_players(lobby: Lobby, entries: dict[str, Entry]) -> list[int]:
+    """The players the two captains entered different points for, or [] until both have
+    entered everyone's."""
+    if len(entries) < 2 or not all(is_complete(lobby, entry) for entry in entries.values()):
         return []
     a, b = entries["A"].points, entries["B"].points
-    return [player for player in a if a[player] != b.get(player)]
+    return [player for player in lobby.players if a[player] != b[player]]
+
+
+def lone_entry(lobby: Lobby, entries: dict[str, Entry]) -> Optional[Entry]:
+    """The one captain's complete entry, while the other captain hasn't completed theirs."""
+    complete = [entry for entry in entries.values() if is_complete(lobby, entry)]
+    return complete[0] if len(complete) == 1 else None
 
 
 def enter_points(conn: sqlite3.Connection, lobby_id: int, side: str, user_id: int, points: dict[int, int]) -> bool:
-    """Save a captain's entry, replacing their earlier one. When it matches the other
-    captain's, or the other team has no captain to enter one, it's recorded as the result.
-    Returns whether it was."""
+    """Save a captain's entry, replacing their earlier one. Once it's complete and matches
+    the other captain's, or the other team has no captain to enter one, it's recorded as
+    the result. Returns whether it was."""
     with conn:
         conn.execute(
             f"""INSERT INTO lobby_entries (lobby_id, side, points, entered_by, changed_at)
@@ -459,32 +471,32 @@ def enter_points(conn: sqlite3.Connection, lobby_id: int, side: str, user_id: in
             (lobby_id, side, json.dumps(points), user_id),
         )
         lobby = get_lobby(conn, lobby_id)
-        other = "B" if side == "A" else "A"
         entries = get_entries(conn, lobby_id)
-        if lobby.teams[other].captain is not None and (other not in entries or mismatched_players(entries)):
+        if not is_complete(lobby, entries[side]):
+            return False
+        other = "B" if side == "A" else "A"
+        if lobby.teams[other].captain is not None and (
+                other not in entries or not is_complete(lobby, entries[other]) or mismatched_players(lobby, entries)):
             return False
         _record_result(conn, lobby_id, points, user_id)
     return True
 
 
 def get_lone_entries(conn: sqlite3.Connection) -> list[Entry]:
-    """Entries the other captain hasn't matched with one of their own yet, in lobbies with no result."""
-    return [_entry(row) for row in conn.execute(
-        """SELECT e.* FROM lobby_entries e WHERE NOT EXISTS (SELECT 1 FROM lobby_entries o
-               WHERE o.lobby_id = e.lobby_id AND o.side != e.side)
-           AND NOT EXISTS (SELECT 1 FROM lobby_results r WHERE r.lobby_id = e.lobby_id)""")]
+    """Complete entries the other captain hasn't completed one beside yet, in lobbies with no result."""
+    lobby_ids = [row[0] for row in conn.execute(
+        """SELECT DISTINCT e.lobby_id FROM lobby_entries e
+           WHERE NOT EXISTS (SELECT 1 FROM lobby_results r WHERE r.lobby_id = e.lobby_id)""")]
+    found = (lone_entry(get_lobby(conn, lobby_id), get_entries(conn, lobby_id)) for lobby_id in lobby_ids)
+    return [entry for entry in found if entry is not None]
 
 
 def accept_lone_entry(conn: sqlite3.Connection, entry: Entry) -> bool:
-    """Record one captain's entry as the result, the other captain having entered none in
-    time. Only if it's unchanged and still alone, so a late entry is never overruled."""
+    """Record one captain's entry as the result, the other captain not having completed
+    theirs in time. Only if it's unchanged and still alone, so a late entry is never overruled."""
     with conn:
-        still = conn.execute(
-            """SELECT 1 FROM lobby_entries e WHERE e.lobby_id = ? AND e.side = ? AND e.changed_at = ?
-               AND NOT EXISTS (SELECT 1 FROM lobby_entries o WHERE o.lobby_id = e.lobby_id AND o.side != e.side)
-               AND NOT EXISTS (SELECT 1 FROM lobby_results r WHERE r.lobby_id = e.lobby_id)""",
-            (entry.lobby_id, entry.side, entry.changed_at)).fetchone()
-        if still is None:
+        lobby = get_lobby(conn, entry.lobby_id)
+        if get_result(conn, entry.lobby_id) is not None or lone_entry(lobby, get_entries(conn, entry.lobby_id)) != entry:
             return False
         _record_result(conn, entry.lobby_id, entry.points, None)
     return True

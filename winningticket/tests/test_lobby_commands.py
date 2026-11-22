@@ -148,26 +148,28 @@ def test_whole_event_from_close_to_result(tmp_path):
         _loop(sim)
         results = _post_with(sim, "Lobby 1 results")
         assert {u.id for u in results.allowed_mentions.users} == {captain_a.id, captain_b.id}
-        labels = _buttons(results)
-        assert len(labels) == 2 and all(label.endswith("'s Results") for label in labels)
-
-        def enter(captain, label, a_points, b_points):
-            first = asyncio.run(sim.click(captain, _post_with(sim, "Lobby 1 results"), label)).response.modal
-            between = asyncio.run(sim.submit_fields(captain, first, [a_points] * 5)).sent
-            second = asyncio.run(sim.click(captain, between, _buttons(between)[0])).response.modal
-            return asyncio.run(sim.submit_fields(captain, second, [b_points] * 5)).sent
-
         conn = db.get_connection()
         name_of = {side: db.get_teams(conn, tournament["id"])[lobby.teams[side].captain]["name"] for side in "AB"}
         conn.close()
-        label_a, label_b = (lobby_posts.points_button_label(name_of[side]) for side in "AB")
-        assert "This button is for" in asyncio.run(
-            sim.click(captain_a, _post_with(sim, "Lobby 1 results"), label_b)).sent.content
-        assert "They're final once" in enter(captain_a, label_a, "9", "2").content
-        assert "don't match" in enter(captain_b, label_b, "9", "3").content
+        label_a, label_b = (lobby_posts.team_points_label(f"Team {name_of[side]}") for side in "AB")
+        assert _buttons(results) == [label_a, label_b]
+
+        def enter(captain, label, points):
+            """Press one team's button and fill in its form."""
+            form = asyncio.run(sim.click(captain, _post_with(sim, "Lobby 1 results"), label)).response.modal
+            return asyncio.run(sim.submit_fields(captain, form, [points] * 5))
+
+        assert "Only lobby" in asyncio.run(
+            sim.click(player, _post_with(sim, "Lobby 1 results"), label_a)).sent.content
+        assert enter(captain_a, label_b, "2").response.kind == "defer"  # half done: the post shows it
+        _loop(sim)
+        assert "still to enter" in _post_with(sim, "Lobby 1 results").content
+        assert "They're final once" in enter(captain_a, label_a, "9").sent.content
+        enter(captain_b, label_a, "9")
+        assert "don't match" in enter(captain_b, label_b, "3").sent.content
         _loop(sim)
         assert "Finalize Scores" in _buttons(_post_with(sim, "The points don't match"))
-        assert "result is in" in enter(captain_b, label_b, "9", "2").content
+        assert "result is in" in enter(captain_b, label_b, "2").sent.content
         _loop(sim)
         assert "wins!" in _post_with(sim, "Lobby 1 results").content
         assert "wins" in _post_with(sim, "Every lobby has finished").content

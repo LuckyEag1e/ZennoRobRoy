@@ -373,7 +373,7 @@ class TeamPointsForm(BotModal):
     """One team's points: a field per player, labelled with their name."""
 
     def __init__(self, flow: PointsEntry, side: str) -> None:
-        super().__init__(title=f"{flow.team_names[side]} Points"[:FIELD_LABEL_LIMIT])
+        super().__init__(title=lobby_posts.team_points_label(flow.team_names[side])[:FIELD_LABEL_LIMIT])
         self.flow = flow
         self.side = side
         self.fields: dict[int, discord.ui.TextInput] = {}
@@ -387,37 +387,45 @@ class TeamPointsForm(BotModal):
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
         self.flow.entered.update({player: field.value for player, field in self.fields.items()})
-        if self.side == "A":
+        following = self.flow.team_after(self.side)
+        if following is not None:
             await interaction.response.send_message(
-                f"Got {self.flow.team_names['A']}'s points. Now enter {self.flow.team_names['B']}'s.",
-                view=self.flow.next_step_view(), ephemeral=True)
+                f"Got {self.flow.team_names[self.side]}'s points. Now enter {self.flow.team_names[following]}'s.",
+                view=self.flow.next_step_view(following), ephemeral=True)
             return
         await self.flow.submit(interaction)
 
 
 class PointsEntry:
-    """Entering everyone's points in a lobby takes two forms, one per team, since a form
-    holds at most five fields. Discord won't open a form straight from another, so a button
-    sits between. `side` is the captain's whose points these are, or None for an
-    organizer's final points."""
+    """Entering points, a form per team in `teams`, since a form holds at most five fields.
+    The results post has a button per team, so a captain fills in one at a time there. An
+    organizer's final points, or a captain's by command, take both forms, and since Discord
+    won't open a form straight from another, a button sits between them. `side` is the
+    captain's whose entry this is, or None for an organizer's final points."""
 
-    def __init__(self, conn: sqlite3.Connection, lobby: lobby_db.Lobby, side: Optional[str]) -> None:
+    def __init__(self, conn: sqlite3.Connection, lobby: lobby_db.Lobby, side: Optional[str],
+                 teams: tuple[str, ...]) -> None:
         self.lobby = lobby
         self.side = side
+        self.teams = teams
         names = lobby_posts.Names(conn, lobby.tournament_id, str)
         self.team_names = {s: lobby_posts.team_name(lobby, s, names) for s in lobby_db.SIDES}
         self.player_names = {player: names.plain(player) for player in lobby.players}
         self.defaults = lobby_flow.points_defaults(conn, lobby, side)
         self.entered: dict[int, str] = {}
 
-    def next_step_view(self) -> BotView:
+    def team_after(self, side: str) -> Optional[str]:
+        following = self.teams[self.teams.index(side) + 1:]
+        return following[0] if following else None
+
+    def next_step_view(self, side: str) -> BotView:
         view = BotView(timeout=600)
-        button = discord.ui.Button(label=f"Enter {self.team_names['B']} Points"[:80], style=discord.ButtonStyle.primary)
+        button = discord.ui.Button(label=f"Enter {self.team_names[side]} Points"[:80], style=discord.ButtonStyle.primary)
 
-        async def open_second(interaction: discord.Interaction) -> None:
-            await interaction.response.send_modal(TeamPointsForm(self, "B"))
+        async def open_next(interaction: discord.Interaction) -> None:
+            await interaction.response.send_modal(TeamPointsForm(self, side))
 
-        button.callback = open_second
+        button.callback = open_next
         view.add_item(button)
         return view
 
@@ -431,7 +439,7 @@ class PointsEntry:
                     ephemeral=True)
                 return
             tournament = db.get_tournament(conn, lobby.tournament_id)
-            points = lobby_flow.parse_points(lobby, self.entered)
+            points = lobby_flow.parse_points(list(self.entered), self.entered)
             if isinstance(points, str):
                 await interaction.response.send_message(points, ephemeral=True)
                 return
@@ -439,25 +447,30 @@ class PointsEntry:
             if self.side is None:
                 reply = lobby_flow.finalize(conn, tournament, lobby, role, interaction.user.id, points)
             else:
-                reply = lobby_flow.enter_points(conn, tournament, lobby, role, self.side, interaction.user.id, points)
-            await interaction.response.send_message(reply, ephemeral=True)
+                reply = lobby_flow.enter_points(conn, tournament, lobby, role, interaction.user.id, points)
+            if reply is None:
+                await interaction.response.defer()  # the results post shows what they've entered
+            else:
+                await interaction.response.send_message(reply, ephemeral=True)
             await sync_posts(interaction.client, conn, tournament["id"])
         finally:
             conn.close()
 
 
 async def open_points(interaction: discord.Interaction, conn: sqlite3.Connection, tournament: sqlite3.Row,
-                      lobby: lobby_db.Lobby, side: Optional[str]) -> None:
-    """Open the points forms: for `side`'s captain, or with no side for an organizer's final points."""
+                      lobby: lobby_db.Lobby, final: bool, teams: tuple[str, ...] = lobby_db.SIDES) -> None:
+    """Open the forms for `teams`' points: an organizer's final points, or else the
+    presser's entry as one of the lobby's captains."""
     role = lobby_flow.role_in(conn, lobby, interaction.user.id, is_organizer(interaction))
-    if side is None:
+    if final:
         problem = lobby_flow.finalize_problem(conn, tournament, lobby, role)
     else:
-        problem = lobby_flow.points_problem(conn, tournament, lobby, role, side)
+        problem = lobby_flow.points_problem(conn, tournament, lobby, role)
     if problem is not None:
         await interaction.response.send_message(problem, ephemeral=True)
         return
-    await interaction.response.send_modal(TeamPointsForm(PointsEntry(conn, lobby, side), "A"))
+    flow = PointsEntry(conn, lobby, None if final else role.side, teams)
+    await interaction.response.send_modal(TeamPointsForm(flow, teams[0]))
 
 
 async def _finish(interaction, conn, tournament, lobby) -> None:
@@ -468,15 +481,15 @@ async def _finish(interaction, conn, tournament, lobby) -> None:
 
 
 async def _points_a(interaction, conn, tournament, lobby) -> None:
-    await open_points(interaction, conn, tournament, lobby, "A")
+    await open_points(interaction, conn, tournament, lobby, final=False, teams=("A",))
 
 
 async def _points_b(interaction, conn, tournament, lobby) -> None:
-    await open_points(interaction, conn, tournament, lobby, "B")
+    await open_points(interaction, conn, tournament, lobby, final=False, teams=("B",))
 
 
 async def _finalize(interaction, conn, tournament, lobby) -> None:
-    await open_points(interaction, conn, tournament, lobby, None)
+    await open_points(interaction, conn, tournament, lobby, final=True)
 
 
 HANDLERS = {

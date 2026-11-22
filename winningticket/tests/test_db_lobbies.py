@@ -167,24 +167,55 @@ def _points(lobby, a_scores=10, b_scores=3):
 def test_both_captains_finish_then_matching_points_are_final(conn):
     tournament, lobby, (captain_a, role_a), (captain_b, role_b) = _playing(conn, 6)
     points = _points(lobby)
-    assert "both captains press" in lobby_flow.enter_points(conn, tournament, lobby, role_a, "A", captain_a, points)
+    assert "both captains press" in lobby_flow.enter_points(conn, tournament, lobby, role_a, captain_a, points)
     assert "Waiting for" in lobby_flow.finish(conn, tournament, lobby, role_a, captain_a)
     assert "already pressed" in lobby_flow.finish(conn, tournament, lobby, role_a, captain_a)
     assert lobby_db.get_post(conn, tournament["id"], lobby_db.results_post_key(lobby.id)) is None
     assert "results post" in lobby_flow.finish(conn, tournament, lobby, role_b, captain_b)
     assert lobby_db.get_post(conn, tournament["id"], lobby_db.results_post_key(lobby.id)) is not None
-    assert "This button is for" in lobby_flow.enter_points(conn, tournament, lobby, role_a, "B", captain_a, points)
-    assert "They're final once" in lobby_flow.enter_points(conn, tournament, lobby, role_a, "A", captain_a, points)
-    assert "result is in" in lobby_flow.enter_points(conn, tournament, lobby, role_b, "B", captain_b, points)
+    organizer = lobby_flow.Role(None, None, False, True)
+    assert "Only lobby" in lobby_flow.enter_points(conn, tournament, lobby, organizer, ORGANIZER, points)
+    assert "They're final once" in lobby_flow.enter_points(conn, tournament, lobby, role_a, captain_a, points)
+    assert "result is in" in lobby_flow.enter_points(conn, tournament, lobby, role_b, captain_b, points)
     assert lobby_db.get_result(conn, lobby.id).winning_side == "A"
     assert db.get_tournament(conn, tournament["id"])["status"] == "completed"
+
+
+def test_captains_enter_a_team_at_a_time(conn):
+    tournament, lobby, (captain_a, role_a), (captain_b, role_b) = _playing(conn, 11)
+    lobby_flow.finish(conn, tournament, lobby, role_a, captain_a)
+    lobby_flow.finish(conn, tournament, lobby, role_b, captain_b)
+    points = _points(lobby)
+    team = {side: {p: points[p] for p in lobby.teams[side].players} for side in "AB"}
+    assert lobby_flow.enter_points(conn, tournament, lobby, role_a, captain_a, team["B"]) is None
+    post = lobby_posts.describe_results(conn, lobby, str)
+    assert "still to enter" in post.text
+    assert "They're final once" in lobby_flow.enter_points(conn, tournament, lobby, role_a, captain_a, team["A"])
+    # Half an entry beside a complete one isn't compared, and doesn't stop the complete one's time.
+    assert lobby_flow.enter_points(conn, tournament, lobby, role_b, captain_b, {**team["A"], **{
+        p: 0 for p in team["A"]}}) is None
+    assert lobby_db.mismatched_players(lobby, lobby_db.get_entries(conn, lobby.id)) == []
+    lobby_flow.accept_due_entries(conn, datetime.now(timezone.utc) + timedelta(minutes=11))
+    assert lobby_db.get_result(conn, lobby.id).points == points
+
+
+def test_points_that_tie_once_complete_are_refused(conn):
+    tournament, lobby, (captain_a, role_a), (captain_b, role_b) = _playing(conn, 12)
+    lobby_flow.finish(conn, tournament, lobby, role_a, captain_a)
+    lobby_flow.finish(conn, tournament, lobby, role_b, captain_b)
+    level = _points(lobby, 4, 4)
+    lobby_flow.enter_points(conn, tournament, lobby, role_a, captain_a, {p: level[p] for p in lobby.teams["A"].players})
+    reply = lobby_flow.enter_points(conn, tournament, lobby, role_a, captain_a,
+                                    {p: level[p] for p in lobby.teams["B"].players})
+    assert "level on points" in reply
+    assert not any(p in lobby_db.get_entries(conn, lobby.id)["A"].points for p in lobby.teams["B"].players)
 
 
 def test_one_captains_points_are_accepted_when_the_other_enters_none(conn):
     tournament, lobby, (captain_a, role_a), (captain_b, role_b) = _playing(conn, 7)
     organizer = lobby_flow.Role(None, None, False, True)
     assert "Finished lobby" in lobby_flow.finish(conn, tournament, lobby, organizer, ORGANIZER)
-    lobby_flow.enter_points(conn, tournament, lobby, role_b, "B", captain_b, _points(lobby, 1, 7))
+    lobby_flow.enter_points(conn, tournament, lobby, role_b, captain_b, _points(lobby, 1, 7))
     lobby_flow.accept_due_entries(conn, datetime.now(timezone.utc))
     assert lobby_db.get_result(conn, lobby.id) is None
     lobby_flow.accept_due_entries(conn, datetime.now(timezone.utc) + timedelta(minutes=11))
@@ -196,11 +227,11 @@ def test_points_that_dont_match_wait_until_corrected_or_finalized(conn):
     lobby_flow.finish(conn, tournament, lobby, role_a, captain_a)
     lobby_flow.finish(conn, tournament, lobby, role_b, captain_b)
     points = _points(lobby)
-    lobby_flow.enter_points(conn, tournament, lobby, role_a, "A", captain_a, points)
+    lobby_flow.enter_points(conn, tournament, lobby, role_a, captain_a, points)
     wrong = dict(points)
     first = lobby.players[0]
     wrong[first] = 2
-    reply = lobby_flow.enter_points(conn, tournament, lobby, role_b, "B", captain_b, wrong)
+    reply = lobby_flow.enter_points(conn, tournament, lobby, role_b, captain_b, wrong)
     first_name = db.get_teams(conn, tournament["id"])[first]["name"]
     assert "don't match" in reply and first_name in reply
     post = lobby_posts.describe_results(conn, lobby, lambda user_id: f"<@{user_id}>")
@@ -211,7 +242,7 @@ def test_points_that_dont_match_wait_until_corrected_or_finalized(conn):
     assert lobby_db.get_result(conn, lobby.id) is None
     assert lobby_flow.points_defaults(conn, lobby, "B") == wrong
     assert first not in lobby_flow.points_defaults(conn, lobby, None)
-    assert "result is in" in lobby_flow.enter_points(conn, tournament, lobby, role_b, "B", captain_b, points)
+    assert "result is in" in lobby_flow.enter_points(conn, tournament, lobby, role_b, captain_b, points)
     post = lobby_posts.describe_results(conn, lobby, lambda user_id: f"<@{user_id}>")
     assert "wins!" in post.text and post.buttons == []
 
@@ -220,8 +251,8 @@ def test_an_organizer_finalizes_points_that_dont_match(conn):
     tournament, lobby, (captain_a, role_a), (captain_b, role_b) = _playing(conn, 9)
     lobby_flow.finish(conn, tournament, lobby, role_a, captain_a)
     lobby_flow.finish(conn, tournament, lobby, role_b, captain_b)
-    lobby_flow.enter_points(conn, tournament, lobby, role_a, "A", captain_a, _points(lobby))
-    lobby_flow.enter_points(conn, tournament, lobby, role_b, "B", captain_b, _points(lobby, 1, 7))
+    lobby_flow.enter_points(conn, tournament, lobby, role_a, captain_a, _points(lobby))
+    lobby_flow.enter_points(conn, tournament, lobby, role_b, captain_b, _points(lobby, 1, 7))
     assert "Only organizers" in lobby_flow.finalize(conn, tournament, lobby, role_a, captain_a, _points(lobby))
     organizer = lobby_flow.Role(None, None, False, True)
     assert "final points" in lobby_flow.finalize(conn, tournament, lobby, organizer, ORGANIZER, _points(lobby, 1, 7))

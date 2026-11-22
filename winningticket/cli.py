@@ -1303,13 +1303,13 @@ class WinningTicketCLI(cmd.Cmd):
         if found is None:
             return
         tournament, lobby, role = found
-        side = role.side if role.captain else None
-        if side is None:
+        if not role.captain:
             print("Only a lobby's captains enter its points. Organizers use lobby_finalize.")
             return
-        points = self._ask_points(tournament, lobby, lobby_flow.points_problem(self.conn, tournament, lobby, role, side))
+        points = self._ask_points(tournament, lobby, lobby_flow.points_problem(self.conn, tournament, lobby, role))
         if points is not None:
-            self._say(lobby_flow.enter_points(self.conn, tournament, lobby, role, side, self.user_id, points))
+            # Every player's points at once, so there's always something to say.
+            self._say(lobby_flow.enter_points(self.conn, tournament, lobby, role, self.user_id, points))
 
     def do_lobby_finalize(self, arg: str) -> None:
         "Enter a lobby's final points (organizers), asked player by player: lobby_finalize <name> [lobby]"
@@ -1328,7 +1328,7 @@ class WinningTicketCLI(cmd.Cmd):
             return None
         names = lobby_posts.Names(self.conn, tournament["id"], user_label)
         entered = {player: input(f"{names.plain(player)}'s points: ") for player in lobby.players}
-        points = lobby_flow.parse_points(lobby, entered)
+        points = lobby_flow.parse_points(lobby.players, entered)
         if isinstance(points, str):
             print(points)
             return None

@@ -39,9 +39,9 @@ EVENT_BUTTONS = {name: PostButton(name, action) for name, action in (
     (GET_ROOM_CODE, "getcode"), (FINISH, "finish"))}
 
 
-def points_button_label(captain_name: str) -> str:
-    """The results post's button for one captain to enter the points."""
-    return f"{captain_name}'s Results"
+def team_points_label(team: str) -> str:
+    """The results post's button for entering one team's points, and that team's form's title."""
+    return f"{team} Points"
 
 
 @dataclass
@@ -247,33 +247,44 @@ def describe_results(conn: sqlite3.Connection, lobby: Lobby, player_label: Calla
                               + ["", f"🏆 **{winner} wins!** Congratulations, and thanks for playing."]), [])
     captains = {side: lobby.teams[side].captain for side in SIDES if lobby.teams[side].captain is not None}
     entries = lobby_db.get_entries(conn, lobby.id)
-    buttons = [PostButton(points_button_label(names.plain(captain)), f"points{side.lower()}")
-               for side, captain in captains.items()]
-    lines = [title, "", f"{' and '.join(names(c) for c in captains.values())}: each press the button with your name "
-                        f"and enter every player's points, including the tiebreaker if one was played. Points you "
-                        f"both enter the same are final."]
-    mismatched = lobby_db.mismatched_players(entries)
+    teams = {side: team_name(lobby, side, names) for side in SIDES}
+    buttons = [PostButton(team_points_label(teams[side]), f"points{side.lower()}") for side in SIDES]
+    lines = [title, "", f"{' and '.join(names(c) for c in captains.values())}: press both buttons below and enter "
+                        f"every player's points, including the tiebreaker if one was played."
+             + (" Points you both enter the same are final." if len(captains) == 2 else "")]
+    audience = [("points", u) for u in names.user_ids(list(captains.values()))]
+    mismatched = lobby_db.mismatched_players(lobby, entries)
     if mismatched:
         a, b = (names.plain(lobby.teams[side].captain) for side in SIDES)
         lines += ["", "⚠️ **The points don't match** for: " + "; ".join(
-            f"{names(p)} ({a}: {entries['A'].points[p]}, {b}: {entries['B'].points.get(p)})" for p in mismatched),
-            "**Captains:** check with each other, and the one who's wrong presses their button to correct theirs. "
-            "Once they match, they're final.",
+            f"{names(p)} ({a}: {entries['A'].points[p]}, {b}: {entries['B'].points[p]})" for p in mismatched),
+            "**Captains:** check with each other, and the one who's wrong presses that team's button to correct "
+            "theirs. Once they match, they're final.",
             f"**Organizers:** press **{FINALIZE}** to enter the right points."]
-        audience = [(f"mismatch:{entries['A'].changed_at}:{entries['B'].changed_at}", user_id)
-                    for user_id in names.user_ids(list(captains.values()))]
-        return PostState(_fit(lines), buttons + [PostButton(FINALIZE, "finalize")], "points",
-                         [("points", u) for u in names.user_ids(list(captains.values()))] + audience)
+        audience += [(f"mismatch:{entries['A'].changed_at}:{entries['B'].changed_at}", user_id)
+                     for user_id in names.user_ids(list(captains.values()))]
+        return PostState(_fit(lines), buttons + [PostButton(FINALIZE, "finalize")], "points", audience)
     lines.append("")
     for side, captain in captains.items():
-        lines.append(f"✅ {names(captain)} has entered points" if side in entries
-                     else f"⏳ Waiting for {names(captain)}")
-    if len(entries) == 1 and len(captains) == 2:
-        [entry] = entries.values()
-        other = next(c for side, c in captains.items() if side != entry.side)
-        lines.append(f"If {names(other)} doesn't enter theirs, {names.plain(captains[entry.side])}'s are accepted "
-                     f"{_when(entry_due_at(entry))}.")
-    return PostState(_fit(lines), buttons, "points", [("points", u) for u in names.user_ids(list(captains.values()))])
+        lines.append(_entry_progress(lobby, entries.get(side), names(captain), teams))
+    lone = lobby_db.lone_entry(lobby, entries)
+    if lone is not None and len(captains) == 2:
+        other = next(c for side, c in captains.items() if side != lone.side)
+        lines.append(f"If {names(other)} doesn't finish entering theirs, {names.plain(captains[lone.side])}'s are "
+                     f"accepted {_when(entry_due_at(lone))}.")
+    return PostState(_fit(lines), buttons, "points", audience)
+
+
+def _entry_progress(lobby: Lobby, entry: Optional[lobby_db.Entry], captain: str, teams: dict[str, str]) -> str:
+    """How far one captain has got with entering the points."""
+    if entry is None:
+        return f"⏳ Waiting for {captain}"
+    if lobby_db.is_complete(lobby, entry):
+        return f"✅ {captain} has entered points"
+    done = [side for side in SIDES if all(p in entry.points for p in lobby.teams[side].players)]
+    to_go = [teams[side] for side in SIDES if side not in done]
+    return (f"⏳ {captain} has entered {' and '.join(teams[side] for side in done)}'s points, "
+            f"still to enter {' and '.join(to_go)}'s")
 
 
 def _fit(lines: list[str]) -> str:

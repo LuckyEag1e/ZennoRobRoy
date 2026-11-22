@@ -196,7 +196,7 @@ class LobbiesCog(commands.Cog):
             if not found:
                 return
             role = lobby_flow.role_in(conn, found, interaction.user.id, is_organizer(interaction))
-            await open_points(interaction, conn, event, found, role.side if role.captain else None)
+            await open_points(interaction, conn, event, found, final=not role.captain)
         finally:
             conn.close()
 

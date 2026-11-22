@@ -331,7 +331,8 @@ class LobbyEventRun:
 
     def _labels(self, lobby: lobby_db.Lobby) -> dict[str, str]:
         names = self._query(lambda conn: {t: row["name"] for t, row in db.get_teams(conn, self.tournament_id).items()})
-        return {side: lobby_posts.points_button_label(names[lobby.teams[side].captain]) for side in lobby_db.SIDES}
+        return {side: lobby_posts.team_points_label(f"Team {names[lobby.teams[side].captain]}")
+                for side in lobby_db.SIDES}
 
     def _winning_points(self, lobby: lobby_db.Lobby) -> dict[int, str]:
         points = self._points(lobby)
@@ -340,45 +341,55 @@ class LobbyEventRun:
         return points
 
     async def _enter_results(self, host: Player, other: Player, lobby: lobby_db.Lobby) -> None:
-        """Each captain enters everyone's points on the results post: they match, or one is
-        wrong and corrects theirs, or they're left for an organizer, or only one captain
-        enters any and they're accepted when the other's time runs out."""
+        """Each captain enters everyone's points on the results post, a team at a time: they
+        match, or one is wrong and corrects theirs, or they're left for an organizer, or only
+        one captain finishes entering theirs and they're accepted when the other's time runs out."""
         post = self._results_post(lobby)
         if post is None:
             self.sim._problem(f"lobby {lobby.number} has no results post after both captains finished")
             return
-        labels = self._labels(lobby)
-        sides = {player.user.id: side for side in lobby_db.SIDES for player in (host, other)
-                 if self._user_of().get(lobby.teams[side].captain) == player.user.id}
-        await self.sim.click(host.user, post, labels["B" if sides.get(host.user.id) == "A" else "A"])  # not theirs
+        bystander = next((p for p in self.players if p.user.id not in (host.user.id, other.user.id)), None)
+        if bystander is not None:
+            await self.sim.click(bystander.user, post, self._labels(lobby)["A"])  # not a captain
         points = self._winning_points(lobby)
         if self.rng.random() < 0.3:
-            await self._enter_points(host, labels[sides[host.user.id]], lobby, self._points(lobby, tied=True))
-        await self._enter_points(host, labels[sides[host.user.id]], lobby, points)
-        outcome = self.rng.choice(["match", "corrected", "organizer", "alone"])
+            await self._enter_points(host, lobby, self._points(lobby, tied=True))
+        await self._enter_points(host, lobby, points)
+        outcome = self.rng.choice(["match", "corrected", "organizer", "alone", "half"])
         if outcome == "alone":
             return
+        if outcome == "half":
+            await self._enter_points(other, lobby, points, teams=self.rng.sample(lobby_db.SIDES, 1))
+            return
         if outcome == "match":
-            await self._enter_points(other, labels[sides[other.user.id]], lobby, points)
+            await self._enter_points(other, lobby, points)
             return
         wrong = dict(points)
         wrong[lobby.players[0]] = str(int(wrong[lobby.players[0]]) + 50)
         if lobby_db.winning_side(lobby, {p: int(v) for p, v in wrong.items()}) is None:
             wrong[lobby.players[1]] = str(int(wrong[lobby.players[1]]) + 1)
-        await self._enter_points(other, labels[sides[other.user.id]], lobby, wrong)
+        await self._enter_points(other, lobby, wrong)
         if outcome == "corrected":
-            await self._enter_points(other, labels[sides[other.user.id]], lobby, points)
+            await self._enter_points(other, lobby, points, teams=[lobby.side_of(lobby.players[0])])
 
-    async def _enter_points(self, captain: Player, label: str, lobby: lobby_db.Lobby, points: dict[int, str],
-                            organizer: bool = False) -> None:
-        await self._tend()
-        user = self.organizer.user if organizer else captain.user
-        click = await self.sim.click(user, self._results_post(lobby), label)
-        if click is None or click.response.modal is None:
-            return
-        await self._submit_points(user, click.response.modal, lobby, points)
+    async def _enter_points(self, captain: Player, lobby: lobby_db.Lobby, points: dict[int, str],
+                            teams: Optional[list[str]] = None) -> None:
+        """A captain presses each team's button on the results post (both, in either order,
+        unless `teams` says which) and fills in its form."""
+        labels = self._labels(lobby)
+        for side in teams or self.rng.sample(lobby_db.SIDES, 2):
+            await self._tend()
+            post = self._results_post(lobby)
+            if post is None or labels[side] not in _buttons(post):
+                return
+            click = await self.sim.click(captain.user, post, labels[side])
+            if click is None or click.response.modal is None:
+                return
+            await self.sim.submit_fields(captain.user, click.response.modal,
+                                         [points[p] for p in lobby.teams[side].players])
 
     async def _submit_points(self, user, modal, lobby: lobby_db.Lobby, points: dict[int, str]) -> None:
+        """Both teams' forms, one after the other, as an organizer's final points take."""
         first = await self.sim.submit_fields(user, modal, [points[p] for p in lobby.teams["A"].players])
         between = first.sent if first is not None else None
         if between is None or not _buttons(between):
@@ -395,7 +406,10 @@ class LobbyEventRun:
             post = self._results_post(lobby)
             points = self._winning_points(lobby)
             if post is not None and lobby_posts.FINALIZE in _buttons(post):
-                await self._enter_points(self.organizer, lobby_posts.FINALIZE, lobby, points, organizer=True)
+                await self._tend()
+                click = await self.sim.click(self.organizer.user, self._results_post(lobby), lobby_posts.FINALIZE)
+                if click is not None and click.response.modal is not None:
+                    await self._submit_points(self.organizer.user, click.response.modal, lobby, points)
                 continue
             if self.rng.random() < 0.5:
                 continue  # the captains' time to enter theirs hasn't run out yet

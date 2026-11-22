@@ -134,9 +134,9 @@ points wins, and a tie is settled on a tiebreaker track before anyone enters the
    Code**. Players press **Get Room Code** for a private copy, and the host is told who has no
    linked account and needs the code passed on by hand.
 5. After the races, both captains press **Finish** (an organizer's press finishes the lobby
-   at once). A results post for the lobby then has a button for each captain, who each
-   enter everyone's points. Matching points are final, and if only one captain enters any,
-   theirs are accepted after 10 minutes. Points that don't match are listed on the post
+   at once). A results post for the lobby then has a button for each team, and each captain
+   presses both to enter everyone's points, one team's form at a time. Matching points are
+   final, and if only one captain finishes entering theirs, they're accepted after 10 minutes. Points that don't match are listed on the post
    until a captain corrects theirs or an organizer presses **Finalize Scores**.
    `/lobby report lobby:<n>` lets an organizer record points directly. `/tournament conclude`
    posts how each lobby went.
