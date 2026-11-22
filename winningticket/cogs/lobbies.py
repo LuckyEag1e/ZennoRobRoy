@@ -12,7 +12,8 @@ import db
 import lobby_db
 import lobby_flow
 from common import requires_manage_server, resolve_tournament, tournament_name_autocomplete
-from lobby_posting import LobbyButton, open_points, refresh_signups, start_checkin, sync_posts, is_organizer
+from lobby_posting import (LobbyButton, is_organizer, open_points, refresh_signups, start_checkin, sync_posts,
+                           with_custom_emojis)
 
 log = logging.getLogger("winningticket")
 
@@ -163,7 +164,8 @@ class LobbiesCog(commands.Cog):
             if not found:
                 return
             role = lobby_flow.role_in(conn, found, interaction.user.id, is_organizer(interaction))
-            await interaction.response.send_message(lobby_flow.get_room_code(conn, event, found, role), ephemeral=True)
+            reply = lobby_flow.get_room_code(conn, event, found, role)
+            await interaction.response.send_message(with_custom_emojis(self.bot, reply), ephemeral=True)
         finally:
             conn.close()
 

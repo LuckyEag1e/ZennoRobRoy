@@ -15,7 +15,8 @@ import db
 import lobby_db
 import lobby_flow
 import lobby_posts
-from common import BotModal, BotView, edit_signups_message, send_public, signups_message, turn_away_if_banned
+from common import (BotModal, BotView, edit_signups_message, resolve_emoji, send_public, signups_message,
+                    turn_away_if_banned)
 from embeds import mention
 from labels import CONSENT_NOTICE
 from posting import delete_message
@@ -364,9 +365,17 @@ async def _submit_code(interaction, conn, tournament, lobby) -> None:
     await interaction.response.send_modal(RoomCodeForm(lobby.id))
 
 
+def with_custom_emojis(client: discord.Client, text: str) -> str:
+    """`text` with the server's custom emojis (lobby_posts.CUSTOM_EMOJIS) swapped in for their names."""
+    for name in lobby_posts.CUSTOM_EMOJIS:
+        text = text.replace(name, resolve_emoji(client, name.strip(":")))
+    return text
+
+
 async def _get_code(interaction, conn, tournament, lobby) -> None:
     role = lobby_flow.role_in(conn, lobby, interaction.user.id, is_organizer(interaction))
-    await interaction.response.send_message(lobby_flow.get_room_code(conn, tournament, lobby, role), ephemeral=True)
+    reply = lobby_flow.get_room_code(conn, tournament, lobby, role)
+    await interaction.response.send_message(with_custom_emojis(interaction.client, reply), ephemeral=True)
 
 
 class TeamPointsForm(BotModal):
@@ -530,7 +539,7 @@ async def _sync_post(client: discord.Client, conn: sqlite3.Connection, post: sql
         if claim is None:
             return  # something else is sending it right now
         pinged, notify = note if note is not None else (post["pinged"], [])
-        message = await send_public(client.get_channel(post["channel_id"]), state.text,
+        message = await send_public(client.get_channel(post["channel_id"]), with_custom_emojis(client, state.text),
                                     view=_post_view(state, post), notify=notify)
         if message is None:
             lobby_db.release_post_send(conn, tournament_id, key)
@@ -549,7 +558,7 @@ async def _sync_post(client: discord.Client, conn: sqlite3.Connection, post: sql
         return
     try:
         await channel.get_partial_message(post["message_id"]).edit(
-            content=state.text, view=_post_view(state, post))
+            content=with_custom_emojis(client, state.text), view=_post_view(state, post))
     except discord.NotFound:
         lobby_db.mark_post_unsent(conn, tournament_id, key, post["message_id"])
         return

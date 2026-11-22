@@ -20,6 +20,7 @@ from lobby_posts import (
     DRAFTER_HOST_URL,
     FINALIZE,
     FINISH,
+    ROOM_EMOJI,
     SUBMIT_ROOM_CODE,
     entry_due_at,
     register_command,
@@ -381,7 +382,7 @@ def get_room_code(conn: sqlite3.Connection, tournament: sqlite3.Row, lobby: Lobb
         return problem
     if lobby.room_code is None:
         return "The room code isn't in yet. You'll be pinged on the event's post as soon as a captain enters it."
-    text = (f"🎮 Room code for lobby {lobby.number}: **{lobby.room_code}**\nJoin at https://drafter.uma.guide with that "
+    text = (f"{ROOM_EMOJI} Room code for lobby {lobby.number}: **{lobby.room_code}**\nJoin at https://drafter.uma.guide with that "
             f"code.")
     if role.captain or role.organizer:
         text += _name_only_note(conn, lobby)

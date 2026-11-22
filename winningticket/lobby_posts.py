@@ -28,6 +28,15 @@ GET_ROOM_CODE = "Get Room Code"
 FINISH = "Finish"
 FINALIZE = "Finalize Scores"
 
+# The server's custom emojis, written by name. The bot swaps each for the emoji itself
+# (lobby_posting.with_custom_emojis), and the CLI shows the names.
+ROOM_EMOJI = ":teio_welcome:"
+RESULTS_EMOJI = ":biwahiyahide:"
+MISMATCH_EMOJI = ":mejiro_mcqueen_shocked:"
+CUSTOM_EMOJIS = (ROOM_EMOJI, RESULTS_EMOJI, MISMATCH_EMOJI)
+# How much longer a custom emoji gets once swapped in: `<`, its id (up to 20 digits) and `>`.
+CUSTOM_EMOJI_GROWTH = 22
+
 
 @dataclass(frozen=True)
 class PostButton:
@@ -161,7 +170,7 @@ def _lobby_status(conn: sqlite3.Connection, lobby: Lobby, names: Names, player_l
         return lines + missing
     if lobby.room_code is None:
         return lines + ["Waiting for a captain to create the room"]
-    lines.append(f"🎮 Room ready, hosted by {player_label(lobby.host_user_id)}: press **{GET_ROOM_CODE}** to join")
+    lines.append(f"{ROOM_EMOJI} Room ready, hosted by {player_label(lobby.host_user_id)}: press **{GET_ROOM_CODE}** to join")
     waiting = [lobby.teams[side].captain for side in SIDES if side not in finished]
     if finished:
         lines.append(f"🏁 {' and '.join(names(c) for c in lobby.captains if lobby.side_of(c) in finished)} pressed "
@@ -248,7 +257,7 @@ def describe_results(conn: sqlite3.Connection, lobby: Lobby, player_label: Calla
     organizer can finalize them."""
     tournament = db.get_tournament(conn, lobby.tournament_id)
     names = Names(conn, lobby.tournament_id, player_label)
-    title = f"📋 **{tournament['name']} · Lobby {lobby.number} results**"
+    title = f"{RESULTS_EMOJI} **{tournament['name']} · Lobby {lobby.number} results**"
     result = lobby_db.get_result(conn, lobby.id)
     if result is not None:
         winner = team_name(lobby, result.winning_side, names)
@@ -265,7 +274,7 @@ def describe_results(conn: sqlite3.Connection, lobby: Lobby, player_label: Calla
     mismatched = lobby_db.mismatched_players(lobby, entries)
     if mismatched:
         a, b = (names.plain(lobby.teams[side].captain) for side in SIDES)
-        lines += ["", "⚠️ **The points don't match** for: " + "; ".join(
+        lines += ["", f"{MISMATCH_EMOJI} **The points don't match** for: " + "; ".join(
             f"{names(p)} ({a}: {entries['A'].points[p]}, {b}: {entries['B'].points[p]})" for p in mismatched),
             "**Captains:** check with each other, and the one who's wrong presses that team's button to correct "
             "theirs. Once they match, they're final.",
@@ -297,11 +306,13 @@ def _entry_progress(lobby: Lobby, entry: Optional[lobby_db.Entry], captain: str,
 
 
 def _fit(lines: list[str]) -> str:
-    """The post's text, shortening the longest lines if it's over Discord's limit."""
+    """The post's text, shortening the longest lines if it's over Discord's limit, leaving
+    room for its custom emojis to be swapped in."""
     text = "\n".join(lines)
-    while len(text) > MESSAGE_LIMIT:
+    limit = MESSAGE_LIMIT - CUSTOM_EMOJI_GROWTH * sum(text.count(emoji) for emoji in CUSTOM_EMOJIS)
+    while len(text) > limit:
         longest = max(range(len(lines)), key=lambda i: len(lines[i]))
-        lines[longest] = lines[longest][:len(lines[longest]) - (len(text) - MESSAGE_LIMIT) - 1] + "…"
+        lines[longest] = lines[longest][:len(lines[longest]) - (len(text) - limit) - 1] + "…"
         text = "\n".join(lines)
     return text
 

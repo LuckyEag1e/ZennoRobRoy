@@ -10,6 +10,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import db
 import lobby_db
+import lobby_posting
 import lobby_posts
 from sim.harness import GUILD_ID, Simulation
 
@@ -597,3 +598,18 @@ def test_check_in_marks_only_players_who_can_check_in(tmp_path):
         assert f"<@{users[0].id}> (captain) ✅" in _post_with(sim, "🎌").content
     finally:
         asyncio.run(sim.close())
+
+
+def test_custom_emojis_are_swapped_in_where_the_bot_can_see_them():
+    class Emoji:
+        def __init__(self, name, emoji_id):
+            self.name, self.id = name, emoji_id
+
+        def __str__(self):
+            return f"<:{self.name}:{self.id}>"
+
+    class Client:
+        emojis = [Emoji("teio_welcome", 1)]
+
+    text = f"{lobby_posts.ROOM_EMOJI} Room ready · {lobby_posts.RESULTS_EMOJI} results"
+    assert lobby_posting.with_custom_emojis(Client(), text) == "<:teio_welcome:1> Room ready · :biwahiyahide: results"

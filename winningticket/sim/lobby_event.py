@@ -69,7 +69,7 @@ class LobbyEventRun:
         return self._post(f"🎌 **{NAME}**")
 
     def _results_post(self, lobby: lobby_db.Lobby):
-        return self._post(f"📋 **{NAME} · Lobby {lobby.number} results**")
+        return self._post(f"{lobby_posts.RESULTS_EMOJI} **{NAME} · Lobby {lobby.number} results**")
 
     async def _tend(self) -> None:
         cog = self.sim.cogs["LobbiesCog"]
