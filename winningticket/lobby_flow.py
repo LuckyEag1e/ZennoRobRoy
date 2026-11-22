@@ -301,6 +301,21 @@ def dropout(conn: sqlite3.Connection, tournament: sqlite3.Row, team_id: int, rea
     return reply
 
 
+def reinstate(conn: sqlite3.Connection, tournament: sqlite3.Row, team_id: int) -> str:
+    """An organizer bringing back a player who left (or was removed) after the draw. Returns
+    their reply; the event's post shows where the player went."""
+    name = tournament["name"]
+    who = Names(conn, tournament["id"], str).plain(team_id)
+    if tournament["status"] != "in_progress":
+        return f"Every lobby in **{name}** has finished, so there's nothing to bring {who} back into."
+    lobby_db.reinstate(conn, tournament["id"], team_id)
+    if takes_late_signups(tournament):
+        return f"✅ Brought {who} back into **{name}**. {late_signup_line(conn, tournament['id'], team_id, False)}"
+    position = lobby_db.get_waitlist(conn, tournament["id"]).index(team_id) + 1
+    return (f"✅ Brought {who} back into **{name}**: check-in is over, so they're **#{position} on the waitlist**, "
+            f"checked in. To give them a spot, use `/admin lobbyswap tournament:{name} leaving:<player> joining:{who}`.")
+
+
 def checkin_start_problem(conn: sqlite3.Connection, tournament: sqlite3.Row) -> Optional[str]:
     """Why an organizer can't start check-in now, or None if they can."""
     name = tournament["name"]

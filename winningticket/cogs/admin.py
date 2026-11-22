@@ -39,7 +39,7 @@ from common import (
 )
 from embeds import EMBED_DESCRIPTION_LIMIT, mention
 from labels import ban_lines, dropped_results_note, feedback_page, join_within, reinstated_line, team_label
-from lobby_posting import sync_posts
+from lobby_posting import refresh_signups, sync_posts
 from posting import MATCH_SLOTS_HELP, match_slots_problem
 
 # A walkover follows from a withdrawal, so a played result there would mean the game was
@@ -412,6 +412,7 @@ class AdminCog(commands.Cog):
                 # The event's post shows who took the spot, so nothing else is announced.
                 reply = lobby_flow.dropout(conn, tournament_row, team["id"], reason, interaction.user.id)
                 await interaction.response.send_message(reply, ephemeral=True)
+                await refresh_signups(self.bot, conn, tournament_row["id"])  # the count leaves them out
                 await sync_posts(self.bot, conn, tournament_row["id"])
                 return
             lines, dropped = withdraw_and_describe(conn, tournament_row, team, reason, interaction.user.id, mention)
@@ -504,12 +505,19 @@ class AdminCog(commands.Cog):
     async def reinstate(self, interaction: discord.Interaction, tournament: str, entrant: str) -> None:
         conn = db.get_connection()
         try:
-            found = await self._find_entrant(interaction, conn, tournament, entrant, REINSTATABLE_STATUSES)
+            found = await self._find_entrant(interaction, conn, tournament, entrant, REINSTATABLE_STATUSES, db.FORMATS)
             if found is None:
                 return
             tournament_row, team = found
             if not team["withdrawn"]:
                 await interaction.response.send_message(f"**{entrant}** is still playing.", ephemeral=True)
+                return
+            if tournament_row["format"] == "lobbies":
+                # The event's post shows them back, so nothing else is announced.
+                reply = lobby_flow.reinstate(conn, tournament_row, team["id"])
+                await interaction.response.send_message(reply, ephemeral=True)
+                await refresh_signups(self.bot, conn, tournament_row["id"])
+                await sync_posts(self.bot, conn, tournament_row["id"])
                 return
             refusal = reinstate_problem(conn, tournament_row, team["id"])
             if refusal is not None:

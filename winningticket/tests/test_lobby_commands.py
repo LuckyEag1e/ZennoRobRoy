@@ -672,3 +672,35 @@ def test_custom_emojis_are_swapped_in_where_the_bot_can_see_them():
 
     text = f"{lobby_posts.ROOM_EMOJI} Room ready · {lobby_posts.RESULTS_EMOJI} results"
     assert common.with_custom_emojis(Client(), text) == "<:teio_welcome:1> Room ready · :biwahiyahide: results"
+
+
+def test_an_organizer_reinstates_a_5v5_player(tmp_path):
+    sim, organizer, users, announcement = _event(tmp_path, players=11, captains=2)
+    try:
+        preview = asyncio.run(sim.run(organizer, "registration close", name="Duel")).sent
+        asyncio.run(sim.click(organizer, preview, "Create Lobbies"))
+        conn = db.get_connection()
+        tournament_id = _tournament_id()
+        lobby = lobby_db.get_lobbies(conn, tournament_id)[0]
+        player = next(p for p in lobby.players if p not in lobby.captains)
+        name = db.get_teams(conn, tournament_id)[player]["name"]
+        conn.close()
+        asyncio.run(sim.run(organizer, "admin withdraw", tournament="Duel", entrant=name, reason="withdrawn"))
+        _loop(sim)
+        assert "**Dropped out:**" in _post_with(sim, EVENT_POST).content
+        reply = asyncio.run(sim.run(organizer, "admin reinstate", tournament="Duel", entrant=name)).sent
+        assert "Brought" in reply.content and "waitlist" in reply.content  # their spot went to the waiter
+        _loop(sim)
+        assert "**Dropped out:**" not in _post_with(sim, EVENT_POST).content
+        # After check-in, they come back checked in at the end of the waitlist.
+        asyncio.run(sim.run(organizer, "admin withdraw", tournament="Duel", entrant=name, reason="withdrawn"))
+        asyncio.run(sim.run(organizer, "lobby startcheckin", tournament="Duel", minutes=5))
+        asyncio.run(sim.run(organizer, "lobby endcheckin", tournament="Duel"))
+        reply = asyncio.run(sim.run(organizer, "admin reinstate", tournament="Duel", entrant=name)).sent
+        assert "check-in is over" in reply.content and "/admin lobbyswap" in reply.content
+        conn = db.get_connection()
+        assert player in lobby_db.get_waitlist(conn, tournament_id)
+        assert next(s for s in lobby_db.get_signups(conn, tournament_id) if s.team_id == player).checked_in
+        conn.close()
+    finally:
+        asyncio.run(sim.close())

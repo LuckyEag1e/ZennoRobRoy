@@ -171,11 +171,14 @@ class LobbyEventRun:
         await self._tend()
 
     async def _organizer_fixes_before_checkin(self) -> None:
-        """A guest is disqualified, a waiting player changes their mind, and a member pokes
+        """A guest is disqualified (sometimes by mistake, and reinstated), a waiting player changes their mind, and a member pokes
         at an organizer command."""
         org = self.organizer.user
         if self.scenario.guests:
             await self.sim.run(org, "admin withdraw", tournament=NAME, entrant="Guest 1", reason="disqualified")
+            if self.rng.random() < 0.4:
+                # The wrong guest: the organizer brings them back.
+                await self.sim.run(org, "admin reinstate", tournament=NAME, entrant="Guest 1")
         user_of = self._user_of()
         waiting = [user_of[t] for t in self._query(lambda conn: lobby_db.get_waitlist(conn, self.tournament_id))
                    if t in user_of]

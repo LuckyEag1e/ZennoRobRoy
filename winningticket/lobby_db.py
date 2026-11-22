@@ -100,12 +100,38 @@ def rejoin(conn: sqlite3.Connection, tournament_id: int, team_id: int, pref: str
     """Bring back a player who left after the draw, with a new captain choice, placed like
     any late sign-up. Returns the lobby they joined, or None if they're waiting."""
     with conn:
-        conn.execute("UPDATE teams SET withdrawn = NULL, withdrawn_by = NULL, withdrawn_at = NULL WHERE id = ?",
-                     (team_id,))
-        conn.execute("UPDATE lobby_signups SET checked_in_at = NULL WHERE team_id = ?", (team_id,))
+        _clear_withdrawal(conn, team_id)
         _save_pref(conn, tournament_id, team_id, pref)
         _place_late_signup(conn, tournament_id, team_id)
     return find_lobby_of(conn, tournament_id, team_id)
+
+
+def reinstate(conn: sqlite3.Connection, tournament_id: int, team_id: int) -> None:
+    """An organizer undoing a player's leaving, keeping their captain choice. Until check-in
+    is over they're placed like any late sign-up. After it, their spot has been filled, so
+    they wait at the end of the waitlist, checked in, since the organizer vouches for them."""
+    with conn:
+        _clear_withdrawal(conn, team_id)
+        if db.get_tournament(conn, tournament_id)["checkin_finished"]:
+            _add_to_waitlist(conn, tournament_id, team_id)
+            conn.execute(f"UPDATE lobby_signups SET checked_in_at = {_NOW} WHERE team_id = ?", (team_id,))
+        else:
+            _place_late_signup(conn, tournament_id, team_id)
+
+
+def _clear_withdrawal(conn: sqlite3.Connection, team_id: int) -> None:
+    """A player back in the event, needing to check in again."""
+    conn.execute("UPDATE teams SET withdrawn = NULL, withdrawn_by = NULL, withdrawn_at = NULL WHERE id = ?",
+                 (team_id,))
+    conn.execute("UPDATE lobby_signups SET checked_in_at = NULL WHERE team_id = ?", (team_id,))
+
+
+def _add_to_waitlist(conn: sqlite3.Connection, tournament_id: int, team_id: int) -> None:
+    conn.execute(
+        """INSERT INTO lobby_waitlist (team_id, tournament_id, position)
+           SELECT ?, ?, COALESCE(MAX(position), 0) + 1 FROM lobby_waitlist WHERE tournament_id = ?""",
+        (team_id, tournament_id, tournament_id),
+    )
 
 
 def _place_late_signup(conn: sqlite3.Connection, tournament_id: int, team_id: int) -> None:
@@ -119,11 +145,7 @@ def _place_late_signup(conn: sqlite3.Connection, tournament_id: int, team_id: in
                                                len(lobby.players), lobby.teams[side].captain is not None)
                               for lobby in playing for side in SIDES], signup.can_captain)
     if spot is None:
-        conn.execute(
-            """INSERT INTO lobby_waitlist (team_id, tournament_id, position)
-               SELECT ?, ?, COALESCE(MAX(position), 0) + 1 FROM lobby_waitlist WHERE tournament_id = ?""",
-            (team_id, tournament_id, tournament_id),
-        )
+        _add_to_waitlist(conn, tournament_id, team_id)
     else:
         lobby = next(lobby for lobby in playing if lobby.number == spot.lobby_number)
         _add_to_team(conn, lobby.id, spot.side, team_id)

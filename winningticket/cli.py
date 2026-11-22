@@ -1019,12 +1019,15 @@ class WinningTicketCLI(cmd.Cmd):
         if len(parts) != 2:
             print("usage: admin_reinstate <name> <entrant>")
             return
-        found = self._require_entrant(*parts, REINSTATABLE_STATUSES)
+        found = self._require_entrant(*parts, REINSTATABLE_STATUSES, db.FORMATS)
         if found is None:
             return
         tournament, team = found
         if not team["withdrawn"]:
             print(f"{team['name']} is still playing.")
+            return
+        if tournament["format"] == "lobbies":
+            self._say(lobby_flow.reinstate(self.conn, tournament, team["id"]))
             return
         refusal = reinstate_problem(self.conn, tournament, team["id"])
         if refusal is not None:
