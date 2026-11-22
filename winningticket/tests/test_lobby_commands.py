@@ -516,6 +516,17 @@ def test_starting_up_brings_an_old_sign_ups_post_up_to_date(tmp_path):
         asyncio.run(sim.close())
 
 
+def test_starting_up_also_updates_a_sign_ups_post_from_before_the_draw(tmp_path):
+    sim, organizer, users, announcement = _event(tmp_path, players=3, captains=1)
+    try:
+        announcement.content = "📝 an older version's wording."
+        cog = sim.cogs["LobbiesCog"]
+        asyncio.run(sim.run_background("startup", lambda: cog._wait_until_ready()))
+        assert announcement.content.startswith(":winningticket: Sign-ups are open")
+    finally:
+        asyncio.run(sim.close())
+
+
 def test_waiting_while_a_team_without_a_captain_has_room_says_why(tmp_path):
     sim, organizer, users, tournament_id = _drawn_without_a_captain(tmp_path)
     try:

@@ -652,6 +652,15 @@ def get_tournaments_with_posts(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     ).fetchall()
 
 
+def get_tournaments_taking_signups(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    """5v5 events with a sign-ups post still taking sign-ups: before the draw, or after it
+    until check-in is over."""
+    return conn.execute(
+        """SELECT * FROM tournaments WHERE format = 'lobbies' AND announcement_message_id IS NOT NULL
+           AND (status = 'registration' OR (status = 'in_progress' AND checkin_finished = 0))"""
+    ).fetchall()
+
+
 def claim_post_send(conn: sqlite3.Connection, tournament_id: int, key: str) -> Optional[str]:
     """Claim the sending of a new message for a post, as db.claim_post_send does for match posts."""
     with conn:

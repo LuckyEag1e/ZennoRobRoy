@@ -80,9 +80,8 @@ class LobbiesCog(commands.Cog):
         # an older version of the bot would keep its old wording and count until then.
         conn = db.get_connection()
         try:
-            for tournament in lobby_db.get_tournaments_with_posts(conn):
-                if lobby_flow.takes_late_signups(tournament):
-                    await refresh_signups(self.bot, conn, tournament["id"])
+            for tournament in lobby_db.get_tournaments_taking_signups(conn):
+                await refresh_signups(self.bot, conn, tournament["id"])
         except Exception:
             log.exception("Couldn't refresh the 5v5 sign-ups posts")
         finally:
