@@ -1,6 +1,6 @@
 # ZennoRobRoy
 
-Two independent Discord bots for an Umamusume community. They don't share code,
+Three independent Discord bots for an Umamusume community. They don't share code,
 a runtime, or a deployment target — each lives in its own directory with its own setup.
 
 - **[`zennorobroy/`](zennorobroy/README.md)** — Node.js. Reports club (circle) stats from the
@@ -10,5 +10,8 @@ a runtime, or a deployment target — each lives in its own directory with its o
   results, the bot scores everyone against reality. It comes with a simulator that plays whole
   tournaments against the real code to catch bugs; see
   [how the simulator works and what it tests](winningticket/sim/README.md).
+- **[`matikanefukukitaru/`](matikanefukukitaru/README.md)** ("Fuku") — Python. A new bot,
+  only a skeleton so far. Developed test-first, and its start script won't launch the bot
+  unless every test passes.
 
 See each directory's own `README.md` for setup, usage, and deployment.
