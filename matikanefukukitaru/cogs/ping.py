@@ -13,10 +13,10 @@ class PingCog(commands.Cog):
     async def ping(self, interaction: discord.Interaction) -> None:
         latency = self.bot.latency
         if math.isfinite(latency):
-            message = f"Pong! {round(latency * 1000)} ms"
+            message = f"🔮 Pong! {round(latency * 1000)} ms"
         else:
             # discord.py reports inf until the first heartbeat is acknowledged.
-            message = "Pong! Latency not measured yet."
+            message = "🔮 Pong! Latency not measured yet."
         await interaction.response.send_message(message, ephemeral=True)
 
 

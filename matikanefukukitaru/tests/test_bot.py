@@ -1,16 +1,14 @@
 import asyncio
 
-import discord
-from discord.ext import commands
-
 import bot
+from store import Store
 
 
 def test_every_cog_in_the_list_loads():
     """A typo in INITIAL_COGS or a broken setup() would otherwise only show up at startup."""
 
-    async def load_all() -> commands.Bot:
-        client = commands.Bot(command_prefix=commands.when_mentioned, intents=discord.Intents.default())
+    async def load_all() -> bot.Fuku:
+        client = bot.Fuku(dev_guild_id=None, store=Store(":memory:"), approver_role_id=None)
         for cog in bot.INITIAL_COGS:
             await client.load_extension(cog)
         return client

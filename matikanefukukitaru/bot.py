@@ -5,17 +5,24 @@ import discord
 from discord.ext import commands
 from dotenv import load_dotenv
 
+from store import Store
+
 INITIAL_COGS = [
     "cogs.ping",
+    "cogs.banners",
 ]
 
 log = logging.getLogger("fuku")
 
 
 class Fuku(commands.Bot):
-    def __init__(self, dev_guild_id: int | None) -> None:
+    def __init__(self, dev_guild_id: int | None, store: Store, approver_role_id: int | None) -> None:
         super().__init__(command_prefix=commands.when_mentioned, intents=discord.Intents.default())
         self.dev_guild_id = dev_guild_id
+        self.store = store
+        # Besides admins and the server owner, members with this role can create banners
+        # and approve pulls.
+        self.approver_role_id = approver_role_id
 
     async def setup_hook(self) -> None:
         for cog in INITIAL_COGS:
@@ -39,7 +46,9 @@ def main() -> None:
     if not token:
         raise SystemExit("DISCORD_BOT_TOKEN is not set. Copy .env.example to .env and fill it in.")
     dev_guild = os.environ.get("DEV_GUILD_ID")
-    Fuku(int(dev_guild) if dev_guild else None).run(token, root_logger=True)
+    approver_role = os.environ.get("FUKU_APPROVER_ROLE_ID")
+    Fuku(int(dev_guild) if dev_guild else None, Store(),
+         int(approver_role) if approver_role else None).run(token, root_logger=True)
 
 
 if __name__ == "__main__":
